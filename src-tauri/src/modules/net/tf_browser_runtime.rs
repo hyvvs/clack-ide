@@ -394,12 +394,28 @@ struct ChildElementAction {
     action: String,
     approval_id: String,
     state: String,
+    #[serde(default)]
+    target_url_sha256: Option<String>,
 }
 
+#[cfg(test)]
 fn validate_element_action_reply(
     frame: &[u8],
     request: &ParentElementAction<'_>,
 ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectTerminal, &'static str> {
+    validate_element_action_reply_with_target(frame, request).map(|(terminal, _)| terminal)
+}
+
+fn validate_element_action_reply_with_target(
+    frame: &[u8],
+    request: &ParentElementAction<'_>,
+) -> Result<
+    (
+        crate::modules::net::tf_browser_contract::NativeEffectTerminal,
+        Option<String>,
+    ),
+    &'static str,
+> {
     use crate::modules::net::tf_browser_contract::NativeEffectTerminal as T;
     if frame.is_empty() || frame.len() > 1024 {
         return Err("browser-action-reply-bounds");
@@ -420,13 +436,23 @@ fn validate_element_action_reply(
     {
         return Err("browser-action-reply-identity-denied");
     }
-    match reply.state.as_str() {
-        "DISPATCHED" => Ok(T::Dispatched),
-        "STALE" => Ok(T::Stale),
-        "DENIED_TARGET" => Ok(T::Denied),
-        "UNKNOWN" => Ok(T::Unknown),
-        _ => Err("browser-action-reply-state-denied"),
+    let terminal = match reply.state.as_str() {
+        "DISPATCHED" => T::Dispatched,
+        "STALE" => T::Stale,
+        "DENIED_TARGET" => T::Denied,
+        "UNKNOWN" => T::Unknown,
+        _ => return Err("browser-action-reply-state-denied"),
+    };
+    if reply.target_url_sha256.as_ref().is_some_and(|digest| {
+        digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) || (terminal != T::Dispatched && reply.target_url_sha256.is_some())
+    {
+        return Err("browser-action-reply-target-denied");
     }
+    Ok((terminal, reply.target_url_sha256))
 }
 
 /// A test-only, sealed read-only identity recheck. The ordinal and index are
@@ -1928,7 +1954,13 @@ mod windows_owner {
         pub(crate) async fn dispatch_exact_click_in_control_turn(
             &mut self,
             approval: super::NativeConsumedExactClickApproval,
-        ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectReceipt, String> {
+        ) -> Result<
+            (
+                crate::modules::net::tf_browser_contract::NativeEffectReceipt,
+                Option<String>,
+            ),
+            String,
+        > {
             use crate::modules::net::tf_browser_contract::{
                 NativeEffectReceipt, NativeEffectTerminal,
             };
@@ -1988,16 +2020,19 @@ mod windows_owner {
                 let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
                     .await
                     .map_err(|_| "native-click-read-worker-failed")??;
-                validate_element_action_reply(&bytes, &request).map_err(str::to_owned)
+                validate_element_action_reply_with_target(&bytes, &request).map_err(str::to_owned)
             }
             .await;
             match result {
-                Ok(terminal) if terminal != NativeEffectTerminal::Unknown => {
+                Ok((terminal, target_digest)) if terminal != NativeEffectTerminal::Unknown => {
                     self.poisoned = false;
                     flight.committed = true;
-                    Ok(NativeEffectReceipt::classify(terminal))
+                    Ok((NativeEffectReceipt::classify(terminal), target_digest))
                 }
-                _ => Ok(NativeEffectReceipt::classify(NativeEffectTerminal::Unknown)),
+                _ => Ok((
+                    NativeEffectReceipt::classify(NativeEffectTerminal::Unknown),
+                    None,
+                )),
             }
         }
 
@@ -3180,6 +3215,34 @@ mod tests {
         assert_eq!(
             validate_element_action_reply(raw.to_string().as_bytes(), &request),
             Ok(T::Dispatched)
+        );
+        let digest = "a".repeat(64);
+        let mut bound = raw.clone();
+        bound["targetUrlSha256"] = serde_json::json!(digest);
+        assert_eq!(
+            validate_element_action_reply_with_target(bound.to_string().as_bytes(), &request),
+            Ok((T::Dispatched, Some("a".repeat(64))))
+        );
+        for invalid_digest in [
+            String::new(),
+            "A".to_owned(),
+            "A".repeat(64),
+            "z".repeat(64),
+        ] {
+            let mut forged = bound.clone();
+            forged["targetUrlSha256"] = serde_json::json!(invalid_digest);
+            assert!(validate_element_action_reply_with_target(
+                forged.to_string().as_bytes(),
+                &request
+            )
+            .is_err());
+        }
+        let mut forged = bound.clone();
+        forged["state"] = serde_json::json!("STALE");
+        assert!(
+            validate_element_action_reply_with_target(forged.to_string().as_bytes(), &request)
+                .is_err(),
+            "a denied native action cannot carry a destination proof"
         );
         let receipt = NativeEffectReceipt::classify(T::Dispatched);
         assert_eq!(receipt.effect_state, "Unknown");

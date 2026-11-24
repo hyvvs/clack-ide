@@ -283,7 +283,7 @@ mod host {
     // and dispatch at most one HTMLElement.click(). This is a programmatic
     // DOM activation, NOT a trusted hardware pointer event or effect proof.
     // Caller-provided JS, selectors, element strings and retries are absent.
-    const DOM_EXACT_CLICK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return false; const node = this.nodes[slot]; if (!node || !node.isConnected || node.ownerDocument !== document || (node.tagName !== 'BUTTON' && node.tagName !== 'A') || node.disabled === true || !node.getClientRects().length) return false; this.state.changed = true; node.click(); return true; }";
+    const DOM_EXACT_CLICK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return {dispatched:false,targetHref:null}; const node = this.nodes[slot]; if (!node || !node.isConnected || node.ownerDocument !== document || node.tagName !== 'A' || node.disabled === true || !node.getClientRects().length) return {dispatched:false,targetHref:null}; const targetHref = node.href; if (!targetHref || targetHref.length > 2048) return {dispatched:false,targetHref:null}; this.state.changed = true; node.click(); return {dispatched:true,targetHref}; }";
     // Debug-build-only *fixed* physical acceptance probe for the specifically
     // owned, one-document 127.0.0.1 HTTPS fixture. It never accepts code,
     // selectors, tag names, values or a mutation target from a caller. This
@@ -1527,6 +1527,8 @@ mod host {
         action: &'static str,
         approval_id: &'a str,
         state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target_url_sha256: Option<&'a str>,
     }
 
     fn dom_recheck_reply(
@@ -1644,9 +1646,7 @@ mod host {
                 .snapshot
                 .elements
                 .iter()
-                .map(|item| {
-                    item.visible && item.enabled && matches!(item.role.as_str(), "button" | "link")
-                })
+                .map(|item| item.visible && item.enabled && item.role == "link")
                 .collect();
             self.root_object_id = Some(captured.root_object_id.clone());
             Ok(())
@@ -1971,23 +1971,69 @@ mod host {
     // The only positive response is a closed boolean emitted *after* the
     // fixed activation function reached its single click call. This does not
     // prove navigation or server writes: it means DISPATCHED, not CONFIRMED.
-    fn parse_dom_activation_response(raw: &str) -> Result<bool, &'static str> {
-        if raw.is_empty() || raw.len() > 2048 {
+    fn parse_dom_activation_response(
+        raw: &str,
+        expected_url: &str,
+    ) -> Result<(bool, Option<String>), &'static str> {
+        if raw.is_empty() || raw.len() > 4096 {
             return Err("action-com-response-unknown");
         }
         let Ok(response) = serde_json::from_str::<serde_json::Value>(raw) else {
             return Err("action-com-response-unknown");
         };
         if response.get("exceptionDetails").is_some()
-            || response.pointer("/result/type").and_then(|v| v.as_str()) != Some("boolean")
+            || response.pointer("/result/type").and_then(|v| v.as_str()) != Some("object")
             || response.pointer("/result/objectId").is_some()
         {
             return Err("action-com-response-unknown");
         }
-        response
+        let value = response
             .pointer("/result/value")
+            .and_then(|v| v.as_object())
+            .ok_or("action-com-response-unknown")?;
+        if value.len() != 2 {
+            return Err("action-com-response-unknown");
+        }
+        let dispatched = value
+            .get("dispatched")
             .and_then(|v| v.as_bool())
-            .ok_or("action-com-response-unknown")
+            .ok_or("action-com-response-unknown")?;
+        if !dispatched {
+            return if value
+                .get("targetHref")
+                .is_some_and(serde_json::Value::is_null)
+            {
+                Ok((false, None))
+            } else {
+                Err("action-com-response-unknown")
+            };
+        }
+        let raw_target = value
+            .get("targetHref")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty() && s.len() <= 2048)
+            .ok_or("action-com-response-unknown")?;
+        let target = reqwest::Url::parse(raw_target).map_err(|_| "action-com-response-unknown")?;
+        let source =
+            reqwest::Url::parse(expected_url).map_err(|_| "action-com-response-unknown")?;
+        if target.scheme() != "https"
+            || target.origin() != source.origin()
+            || target.username() != ""
+            || target.password().is_some()
+            || target.query().is_some()
+            || target.fragment().is_some()
+            || target == source
+        {
+            // The DOM click may already have dispatched. Never recast an
+            // unknown action as a definitely denied/no-effect gesture.
+            return Err("action-com-response-unknown");
+        }
+        // This sensitive href is never sent through the parent protocol, UI
+        // or receipts; only the normalized destination digest survives.
+        Ok((
+            true,
+            Some(format!("{:x}", Sha256::digest(target.as_str().as_bytes()))),
+        ))
     }
 
     #[cfg(debug_assertions)]
@@ -2904,7 +2950,7 @@ mod host {
         stats: Arc<BrokerStats>,
         debug_replace_heading: bool,
         activate_exact_click: bool,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<(bool, Option<String>), &'static str> {
         if debug_replace_heading && activate_exact_click {
             return Err("action-mode-conflict");
         }
@@ -2920,7 +2966,7 @@ mod host {
             return Err("recheck-page-stale");
         }
         let expected = expected_url.to_owned();
-        let (tx, rx) = mpsc::sync_channel::<Result<bool, &'static str>>(1);
+        let (tx, rx) = mpsc::sync_channel::<Result<(bool, Option<String>), &'static str>>(1);
         let app_for_ui = app.clone();
         app.run_on_main_thread(move || {
             let tx_ui = tx.clone();
@@ -2974,7 +3020,7 @@ mod host {
                                 "objectId": reference.root_object_id,
                                 "functionDeclaration": declaration,
                                 "arguments": [{ "value": reference.slot }],
-                                "returnByValue": false,
+                                "returnByValue": activate_exact_click,
                                 "silent": true,
                                 "awaitPromise": false,
                                 "generatePreview": false
@@ -2993,7 +3039,10 @@ mod host {
                                         // *pre*-dispatch reference. Failure
                                         // to get a closed ACK is UNKNOWN.
                                         if activate_exact_click {
-                                            return parse_dom_activation_response(&remote?);
+                                            return parse_dom_activation_response(
+                                                &remote?,
+                                                &callback_expected,
+                                            );
                                         }
                                         let mut source = PWSTR::null();
                                         if unsafe { callback_core.Source(&mut source) }.is_err() {
@@ -3011,8 +3060,9 @@ mod host {
                                         if debug_replace_heading {
                                             #[cfg(debug_assertions)]
                                             {
-                                                return Ok(parse_dom_debug_replacement_response(
-                                                    &raw,
+                                                return Ok((
+                                                    parse_dom_debug_replacement_response(&raw),
+                                                    None,
                                                 ));
                                             }
                                             #[cfg(not(debug_assertions))]
@@ -3020,7 +3070,7 @@ mod host {
                                                 return Err("debug-dom-replacement-unavailable");
                                             }
                                         }
-                                        Ok(parse_dom_node_recheck_response(&raw))
+                                        Ok((parse_dom_node_recheck_response(&raw), None))
                                     })();
                                     let _ = sender.send(checked);
                                 }),
@@ -3091,6 +3141,7 @@ mod host {
                 debug_replace_heading,
                 false,
             )
+            .map(|result| result.0)
             .unwrap_or(false)
         } else {
             false
@@ -3140,9 +3191,9 @@ mod host {
         // Burn the shared native command sequence for every syntactically
         // authorized attempt, including DENIED_TARGET / STALE / UNKNOWN.
         *last_check_sequence = request.check_sequence;
-        let state = match reference {
-            None => "STALE",
-            Some(reference) if !identities.may_click(&reference) => "DENIED_TARGET",
+        let (state, target_url_sha256) = match reference {
+            None => ("STALE", None),
+            Some(reference) if !identities.may_click(&reference) => ("DENIED_TARGET", None),
             Some(reference) => {
                 let outcome = recheck_dom_on_ui(
                     app,
@@ -3159,9 +3210,9 @@ mod host {
                 // an ambiguous action must NEVER be automatically retried.
                 identities.invalidate(request.observation_id, request.page_generation);
                 match outcome {
-                    Ok(true) => "DISPATCHED",
-                    Ok(false) => "STALE",
-                    Err(_) => "UNKNOWN",
+                    Ok((true, Some(digest))) => ("DISPATCHED", Some(digest)),
+                    Ok((false, _)) => ("STALE", None),
+                    _ => ("UNKNOWN", None),
                 }
             }
         };
@@ -3178,6 +3229,7 @@ mod host {
             action: "click",
             approval_id: &request.approval_id,
             state,
+            target_url_sha256: target_url_sha256.as_deref(),
         };
         let bytes = serde_json::to_vec(&reply).map_err(|_| "action-reply-invalid")?;
         if bytes.is_empty() || bytes.len() > 1024 {
@@ -7071,6 +7123,7 @@ mod host {
         #[test]
         fn production_exact_click_is_one_shot_closed_and_rejects_forged_authority() {
             let mut snapshot = production_dom_case();
+            snapshot["elements"][2]["role"] = json!("link");
             snapshot["elements"][2]["visible"] = json!(true);
             snapshot["elements"][2]["enabled"] = json!(true);
             let mut identity = NativeDomIdentity::default();
@@ -7148,19 +7201,43 @@ mod host {
             ] {
                 assert!(!DOM_EXACT_CLICK_JS.contains(forbidden));
             }
+            let url = "https://example.test/";
+            let positive = serde_json::json!({"result":{"type":"object","value":{
+                "dispatched":true,"targetHref":"https://example.test/clicked"
+            }}});
             assert_eq!(
-                parse_dom_activation_response(r#"{"result":{"type":"boolean","value":true}}"#),
-                Ok(true)
+                parse_dom_activation_response(&positive.to_string(), url),
+                Ok((
+                    true,
+                    Some(format!(
+                        "{:x}",
+                        Sha256::digest(b"https://example.test/clicked")
+                    ))
+                )),
             );
+            let stale = serde_json::json!({"result":{"type":"object","value":{
+                "dispatched":false,"targetHref":null
+            }}});
             assert_eq!(
-                parse_dom_activation_response(r#"{"result":{"type":"boolean","value":false}}"#),
-                Ok(false)
+                parse_dom_activation_response(&stale.to_string(), url),
+                Ok((false, None))
             );
-            assert!(parse_dom_activation_response(r#"{"exceptionDetails":{"text":"private"},"result":{"type":"boolean","value":true}}"#).is_err());
-            assert!(
-                parse_dom_activation_response(r#"{"result":{"type":"object","value":true}}"#)
-                    .is_err()
-            );
+            for bad in [
+                "https://example.test/",
+                "https://other.example/clicked",
+                "javascript:alert(1)",
+                "https://example.test/clicked?secret=1",
+            ] {
+                let mut forged = positive.clone();
+                forged["result"]["value"]["targetHref"] = json!(bad);
+                assert!(parse_dom_activation_response(&forged.to_string(), url).is_err());
+            }
+            assert!(parse_dom_activation_response(r#"{"exceptionDetails":{"text":"private"},"result":{"type":"boolean","value":true}}"#, url).is_err());
+            assert!(parse_dom_activation_response(
+                r#"{"result":{"type":"object","value":true}}"#,
+                url
+            )
+            .is_err());
         }
 
         #[test]

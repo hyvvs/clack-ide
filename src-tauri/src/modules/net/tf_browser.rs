@@ -940,6 +940,7 @@ pub struct NativeEffectEvidence {
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 struct PendingNativeClickEffect {
     source_url: String,
+    target_url_sha256: String,
     source_generation: u64,
     approved_role: SemanticRole,
     deadline: Instant,
@@ -957,10 +958,15 @@ struct PendingNativeClickEffect {
 fn native_link_navigation_observed(
     receipt: &BrokerResourceReceipt,
     source_url: &str,
+    target_url_sha256: &str,
     source_generation: u64,
     approved_role: &SemanticRole,
 ) -> bool {
-    if *approved_role != SemanticRole::Link
+    if target_url_sha256.len() != 64
+        || !target_url_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || *approved_role != SemanticRole::Link
         || !receipt.native_com_completed
         || receipt.terminal != "completed"
         || receipt.page_generation <= source_generation
@@ -1012,15 +1018,24 @@ fn native_link_navigation_observed(
         && requested_url.origin() == initial.origin()
         && final_url != initial
         && requested_url != initial
+        && requested_url == final_url
+        && format!("{:x}", Sha256::digest(final_url.as_str().as_bytes())) == target_url_sha256
 }
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 fn native_link_navigation_evidence(
     receipt: &BrokerResourceReceipt,
     source_url: &str,
+    target_url_sha256: &str,
     source_generation: u64,
     approved_role: &SemanticRole,
 ) -> Option<NativeEffectEvidence> {
-    if !native_link_navigation_observed(receipt, source_url, source_generation, approved_role) {
+    if !native_link_navigation_observed(
+        receipt,
+        source_url,
+        target_url_sha256,
+        source_generation,
+        approved_role,
+    ) {
         return None;
     }
     let tf3 = receipt.tf3.as_ref()?;
@@ -2093,6 +2108,7 @@ async fn execute_confined_native(
                                 native_link_navigation_evidence(
                                     &result,
                                     &waiting.source_url,
+                                    &waiting.target_url_sha256,
                                     waiting.source_generation,
                                     &waiting.approved_role,
                                 )
@@ -2192,9 +2208,9 @@ async fn execute_confined_native(
                                                 source_url,
                                             )) => {
                                                 if approved_browser_id != browser_id {
-                                                    Ok(NativeEffectReceipt::classify(
+                                                    Ok((NativeEffectReceipt::classify(
                                                         NativeEffectTerminal::FailedBeforeDispatch,
-                                                    ))
+                                                    ), None))
                                                 } else if active
                                                     .native_click_phase
                                                     .as_ref()
@@ -2209,9 +2225,9 @@ async fn execute_confined_native(
                                                             .is_err()
                                                     })
                                                 {
-                                                    Ok(NativeEffectReceipt::classify(
+                                                    Ok((NativeEffectReceipt::classify(
                                                         NativeEffectTerminal::CancelledBeforeDispatch,
-                                                    ))
+                                                    ), None))
                                                 } else {
                                                     clicked_source =
                                                         Some((approved_role, source_url));
@@ -2220,8 +2236,11 @@ async fn execute_confined_native(
                                                         .await
                                                 }
                                             }
-                                            Err(reason) => Ok(NativeEffectReceipt::classify(
-                                                native_pre_dispatch_terminal(&reason),
+                                            Err(reason) => Ok((
+                                                NativeEffectReceipt::classify(
+                                                    native_pre_dispatch_terminal(&reason),
+                                                ),
+                                                None,
                                             )),
                                         };
                                         if let Ok(mut latest) = published_snapshot.lock() {
@@ -2229,14 +2248,23 @@ async fn execute_confined_native(
                                         }
                                         if matches!(
                                             &attempted,
-                                            Ok(effect) if effect.terminal == NativeEffectTerminal::Dispatched
+                                            Ok((effect, _)) if effect.terminal == NativeEffectTerminal::Dispatched
                                         ) {
-                                            if let Some((approved_role, source_url)) =
-                                                clicked_source
-                                                    .filter(|(role, _)| *role == SemanticRole::Link)
-                                            {
+                                            if let (
+                                                Some((approved_role, source_url)),
+                                                Some(target_url_sha256),
+                                            ) = (
+                                                clicked_source.filter(|(role, _)| {
+                                                    *role == SemanticRole::Link
+                                                }),
+                                                attempted
+                                                    .as_ref()
+                                                    .ok()
+                                                    .and_then(|(_, digest)| digest.clone()),
+                                            ) {
                                                 pending_click = Some(PendingNativeClickEffect {
                                                     source_url,
+                                                    target_url_sha256,
                                                     source_generation: target.page_generation,
                                                     approved_role,
                                                     // One further bounded TF3 idle interval may
@@ -2249,16 +2277,14 @@ async fn execute_confined_native(
                                                         .expect("native click owns lease"),
                                                 });
                                             } else {
-                                                let _ =
-                                                    reply.send(attempted.map(
-                                                        NativeClickCompletion::without_evidence,
-                                                    ));
+                                                let _ = reply.send(attempted.map(|(effect, _)| {
+                                                    NativeClickCompletion::without_evidence(effect)
+                                                }));
                                             }
                                         } else {
-                                            let _ = reply.send(
-                                                attempted
-                                                    .map(NativeClickCompletion::without_evidence),
-                                            );
+                                            let _ = reply.send(attempted.map(|(effect, _)| {
+                                                NativeClickCompletion::without_evidence(effect)
+                                            }));
                                         }
                                     }
                                 }
@@ -3442,6 +3468,29 @@ mod tests {
     fn native_click_confirmation_requires_independent_next_document_receipt() {
         let source = "https://example.org/";
         let target = "https://example.org/clicked";
+        // The closed original retained link binds this exact destination
+        // digest. A same-origin document elsewhere is NOT click evidence.
+        let target_digest = format!("{:x}", Sha256::digest(target.as_bytes()));
+        fn native_link_navigation_observed(
+            receipt: &BrokerResourceReceipt,
+            source: &str,
+            generation: u64,
+            role: &SemanticRole,
+        ) -> bool {
+            let approved_link = "https://example.org/clicked";
+            let digest = format!("{:x}", Sha256::digest(approved_link.as_bytes()));
+            super::native_link_navigation_observed(receipt, source, &digest, generation, role)
+        }
+        fn native_link_navigation_evidence(
+            receipt: &BrokerResourceReceipt,
+            source: &str,
+            generation: u64,
+            role: &SemanticRole,
+        ) -> Option<NativeEffectEvidence> {
+            let approved_link = "https://example.org/clicked";
+            let digest = format!("{:x}", Sha256::digest(approved_link.as_bytes()));
+            super::native_link_navigation_evidence(receipt, source, &digest, generation, role)
+        }
         let make_receipt = || BrokerResourceReceipt {
             request_id: 2,
             page_generation: 2,
@@ -3487,6 +3536,20 @@ mod tests {
         assert!(native_link_navigation_observed(
             &good,
             source,
+            1,
+            &SemanticRole::Link
+        ));
+        assert!(!super::native_link_navigation_observed(
+            &good,
+            source,
+            &"0".repeat(64),
+            1,
+            &SemanticRole::Link
+        ));
+        assert!(super::native_link_navigation_observed(
+            &good,
+            source,
+            &target_digest,
             1,
             &SemanticRole::Link
         ));

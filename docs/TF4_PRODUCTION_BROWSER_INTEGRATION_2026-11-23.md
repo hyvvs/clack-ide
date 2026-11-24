@@ -637,3 +637,72 @@ popup/storage, 13-case lifecycle matrix, extended network-class isolation,
 17-step production E2E, optimized current release/package/install acceptance,
 or model-facing native capability admission. PR #46 must remain **Draft**;
 do not merge or start TF5.
+
+### Continuation 8 — November 24: strict native click effect attribution and controlled form oracle
+
+These are additive, **not a completed installed-human-consent acceptance**.
+
+- Source `7b00be6` corrected the Windows-feature-only native session field
+  access for non-Windows Rust compilation, and required verified TF3 TLS,
+  no redirect and no credential authority before independent navigation can
+  contribute to `SUCCESS`. The focused native receipt test, default and
+  feature Cargo checks and formatting passed.
+- Source `219b439` adds a separate opt-in HTTPS form document with bounded
+  real HTTP/1.1 `POST /submitted`, a one-accepted-submission oracle and 409
+  duplicate denial. Actual Windows ephemeral pinned-certificate TLS run
+  `03e3803d327a44a5989a3767e27710bc`: `GET /` 200, first POST 200,
+  replay POST 409, `FORM_POST_ATTEMPTS=2`, `FORM_POST_ACCEPTED=1`,
+  `FORM_POST_REPLAY_DENIED=1`. Exact-run stop succeeded and the certificate,
+  active marker, stop signal and port-443 listener were independently absent.
+  Earlier `92e2a1896da44ea8a461f9d9135ff7e7` encountered stop-marker
+  cleanup failure despite the correct 200/200/409 statuses; its failed
+  outcome remains immutable. **Neither run exercised WebView2, TF3 POST,
+  central approval or installed Clack form submission.**
+- Source `01cd237` moves the pinned native host into the separate
+  `tf4-native-host/clack-browser-host.exe` bundled resource to prevent the
+  root executable basename collision. The optimized Windows app + NSIS
+  package build completed exit 0: staged host SHA-256
+  `7805865fc9bc534862e21d0f6af5bb95872a932bdbdce8a9208db223a92ec803`;
+  installer `Clack_0.8.0_x64-setup.exe` SHA-256
+  `498b8a05aff0a9867e19870f8c03dd7eca8a16c14ec827e24eb57cdd8f6fe897`.
+  **Installed namespaced resource attestation remains unverified** pending
+  fresh human-operated Windows installation; the older installed root host
+  did not match the pinned staged host. Compilation is not installed proof.
+- Source `25823ec` added `pageId: None` and `pageGeneration: None` in Rust
+  acceptance-example request construction after GitHub CI `45305413674`
+  exposed Rust `E0063`. The example's scoped Cargo check passed. Other CI
+  failure classifications remain separate; Mac LM11 `E0601` is not a TF4
+  production browser effect verification result.
+- Subsequent host/runtime/owner hardening now binds the exact
+  retained **link** Node's normalized HTTPS destination digest at native
+  dispatch; the authenticated child action reply carries only the 64-hex
+  SHA-256, not a raw page URL. The parent can promote dispatch to a canonical
+  observed `SUCCESS` only if a later independently completed same-origin
+  TF3 HTML navigation matches that digest, source generation, TLS and COM
+  completion. A different same-origin URL, missing digest, non-link target,
+  invalid/malicious destination, redirect, changed node or unknown response
+  stays non-successful and is never retried. Native host fixed script accepts
+  only retained visible/enabled anchor nodes in this initial click slice;
+  buttons/forms are reserved for separately approved action classes. This
+  is a correlation constraint, **not an assertion that the gesture or effect
+  has been physically observed through genuine OS consent**.
+  Feature-enabled `cargo check --tests --lib --bin clack-browser-host` PASS;
+  focused native receipt PASS 1/1; native owner PASS 20/20; native runtime
+  PASS 12/12 active (11 physical ignored); native host PASS 50/50;
+  scoped rustfmt and `git diff --check` PASS. These results validate current
+  source, not a rebuilt/installed optimized package containing this later
+  hardening.
+
+**Unaccepted critical boundary:** Real installed Clack OS approval, one
+consumed native effect proof with independent observed matching destination,
+cross-origin and pre-dispatch cancellation race physical cases, real
+WebView2-mediated POST/form state, screenshot, credentials, TF2 upload/download,
+popup/storage, the complete 13-case lifecycle matrix and 17-step integrated
+production E2E. TF3 Public correctly denies the ephemeral 127.0.0.1 test
+fixture. The production-positive controlled public HTTPS origin and genuine
+human action consent have not yet been established. Do not equate a test-only
+loopback fixture, a binary build, or an SDK test with production acceptance.
+Model-native action registration remains disabled. PR #46 stays Draft, with
+TF4 Slice 4 distinct from canonical TF14 and later P15 desktop computer
+control. Product-wide UI/UX Polish & Acceptance remains the mandatory final
+product release gate.
