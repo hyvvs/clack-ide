@@ -543,7 +543,7 @@ struct ParentElementAction<'a> {
     payload_sha256: Option<&'a str>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NativeFormIntent {
     pub target: crate::modules::net::tf_browser_contract::ActionTarget,
     pub observation_id: u64,
@@ -554,7 +554,19 @@ pub(crate) struct NativeFormIntent {
     pub body_sha256: String,
 }
 
-#[derive(Debug)]
+// Original successful FORM controls can contain CSRF tokens and other secrets.
+// Even internal error/diagnostic formatting must never serialize their values,
+// URL, original node reference, or opaque per-session identities.
+impl std::fmt::Debug for NativeFormIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFormIntent")
+            .field("form_index", &self.original_form_index)
+            .field("submitter_index", &self.original_submitter_index)
+            .field("body_byte_count", &self.body.len())
+            .finish_non_exhaustive()
+    }
+}
+
 pub(crate) struct NativeScreenshotCapture {
     pub browser_session_id: String,
     pub page_id: String,
@@ -570,6 +582,20 @@ pub(crate) struct NativeScreenshotCapture {
     pub png: Vec<u8>,
 }
 
+// PNG pixels can contain passwords, account details and any currently visible
+// sensitive information. Do not allow a Result/Debug log to dump raw bytes,
+// page URLs, evidence hashes or opaque session identity by accident.
+impl std::fmt::Debug for NativeScreenshotCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeScreenshotCapture")
+            .field("page_generation", &self.page_generation)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("png_byte_count", &self.png.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ParentScreenshotCapture<'a> {
@@ -582,7 +608,7 @@ struct ParentScreenshotCapture<'a> {
     source_id: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChildScreenshotCapture {
     version: u8,
@@ -599,6 +625,19 @@ struct ChildScreenshotCapture {
     captured_at_ms: u64,
     sha256: Option<String>,
     bytes_base64: Option<String>,
+}
+
+// Sealed child wire data carries base64 pixels until the parent has verified
+// their shape. Prevent accidental diagnostics from disclosing that data.
+impl std::fmt::Debug for ChildScreenshotCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildScreenshotCapture")
+            .field("state", &self.state)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("image_payload_present", &self.bytes_base64.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -4123,6 +4162,88 @@ mod tests {
 
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[test]
+    fn native_form_and_screenshot_debug_never_expose_original_values_or_image_pixels() {
+        let form_secret = "private-control-token-9f5a-NEVER-LOG";
+        let page_secret = "private-page-path-a312-NEVER-LOG";
+        let pixel_secret = "sensitive-pixel-bytes-c7d2-NEVER-LOG";
+        let form = NativeFormIntent {
+            target: crate::modules::net::tf_browser_contract::ActionTarget {
+                browser_session_id: "s".repeat(48),
+                page_id: "p".repeat(48),
+                page_generation: 1,
+                snapshot_id: "n".repeat(48),
+                element_ref: "e".repeat(48),
+            },
+            observation_id: 1,
+            original_form_index: 2,
+            original_submitter_index: 3,
+            destination: reqwest::Url::parse(&format!("https://example.org/{page_secret}"))
+                .unwrap(),
+            body: form_secret.as_bytes().to_vec(),
+            body_sha256: format!("{:x}", Sha256::digest(form_secret.as_bytes())),
+        };
+        let form_debug = format!("{form:?}");
+        assert!(form_debug.contains("body_byte_count"));
+        for forbidden in [
+            form_secret,
+            page_secret,
+            &form.body_sha256,
+            &form.target.element_ref,
+        ] {
+            assert!(!form_debug.contains(forbidden));
+        }
+        let capture = NativeScreenshotCapture {
+            browser_session_id: "b".repeat(48),
+            page_id: "q".repeat(48),
+            page_generation: 1,
+            snapshot_id: "z".repeat(48),
+            url: format!("https://example.org/{page_secret}"),
+            width: 800,
+            height: 600,
+            captured_at_ms: 1,
+            sha256: "a".repeat(64),
+            png: pixel_secret.as_bytes().to_vec(),
+        };
+        let capture_debug = format!("{capture:?}");
+        assert!(capture_debug.contains("png_byte_count"));
+        for forbidden in [
+            pixel_secret,
+            page_secret,
+            &capture.sha256,
+            &capture.browser_session_id,
+        ] {
+            assert!(!capture_debug.contains(forbidden));
+        }
+        let sealed = ChildScreenshotCapture {
+            version: 2,
+            kind: "screenshot-capture".into(),
+            session: "session-secret-not-for-debug".into(),
+            check_sequence: 1,
+            observation_id: 2,
+            page_generation: 1,
+            source_id: "source-secret-not-for-debug".into(),
+            state: "CAPTURED".into(),
+            format: "png".into(),
+            width: 800,
+            height: 600,
+            captured_at_ms: 1,
+            sha256: Some("digest-secret-not-for-debug".into()),
+            bytes_base64: Some(pixel_secret.into()),
+        };
+        let sealed_debug = format!("{sealed:?}");
+        assert!(sealed_debug.contains("image_payload_present"));
+        for forbidden in [
+            pixel_secret,
+            "session-secret-not-for-debug",
+            "source-secret-not-for-debug",
+            "digest-secret-not-for-debug",
+        ] {
+            assert!(!sealed_debug.contains(forbidden));
+        }
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
     fn native_screenshot_sealed_image_requires_exact_page_snapshot_crc_digest_and_bounds() {
         const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
         let png = BASE64.decode(PNG).unwrap();
@@ -5428,7 +5549,9 @@ mod tests {
                         resource.terminal != "denied"
                             || resource.bytes != 0
                             || tf3.terminal != "denied"
-                            || tf3.reason_code != "redirect-limit-denied"
+                            || tf3.reason_code != "browser-resource-redirect-denied"
+                            || tf3.retry != "NEVER_REPLAY"
+                            || tf3.effect_state != "Unknown"
                     } else {
                         resource.terminal != "completed"
                             || tf3.terminal != "completed"
@@ -5481,6 +5604,183 @@ mod tests {
             observed.is_ok(),
             "real read-only control turn: {observed:?}"
         );
+    }
+
+    /// A test-only physical capture of real WebView2 viewport pixels from a
+    /// single minimal, controlled HTTPS document. There is no model/Tauri
+    /// screenshot API and no substituted screenshot consent here: production
+    /// TF4 must separately consume application approval and send the verified
+    /// image through TF2's existing evidence authority. Only a run-scoped
+    /// loopback fixture and its public ephemeral TLS certificate are trusted.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[tokio::test]
+    #[ignore = "opt-in real WebView2 screenshot COM callback on one owned minimal HTTPS page; no installed-app approval or evidence write"]
+    async fn physical_production_owned_https_screenshot_original_page_and_one_use() {
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_SCREENSHOT_CAPTURE").as_deref(),
+            Ok("1"),
+            "real WebView2 screenshot opt-in required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let certificate = std::fs::canonicalize(evidence.join("server.cer"))
+            .expect("live owned HTTPS fixture public certificate");
+        let supplied = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("explicit exact test certificate");
+        assert_eq!(
+            std::fs::canonicalize(supplied).unwrap(),
+            certificate,
+            "the fixture must own the exact TLS trust anchor"
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&certificate).unwrap())
+            .expect("owned public DER certificate");
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact pinned production-capable browser host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact owned host"))
+        );
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_SHA256").as_deref(),
+            Ok(digest.as_str()),
+            "separately checked exact host SHA256 required"
+        );
+        let private = tempfile::Builder::new()
+            .prefix("tf4-physical-screenshot-")
+            .tempdir_in(manifest.join("target"))
+            .expect("isolated private browser directory");
+        let workspace = manifest.parent().expect("workspace root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize test workspace only");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-screenshot".into(),
+                session_id: "tf4-physical-screenshot-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                private_parent: private.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("launch real zero-network-capability production host");
+        let outcome = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready_for_control_turns())
+                .await
+                .map_err(|_| "physical-screenshot-ready-deadline".to_owned())??;
+            let resource = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-document-deadline".to_owned())??;
+            let tf3 = resource.tf3.as_ref().ok_or("physical-screenshot-no-tf3-receipt")?;
+            if resource.request_id != 1
+                || resource.terminal != "completed"
+                || !resource.native_com_completed
+                || tf3.terminal != "completed"
+                || tf3.reason_code != "ok"
+                || tf3.status_code != Some(200)
+                || tf3.tls_state != "https_transport_observed"
+                || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+            {
+                return Err("physical-screenshot-original-https-not-proven".into());
+            }
+            // The fixture's -MinimalRecheckDocument has no remote scripts,
+            // image, CSS, font, iframe, or credential controls.
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let requester = browser.control_turn_requester().ok_or("screenshot-no-control-turns")?;
+            requester.request();
+            let observation_turn = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-observation-offer-deadline".to_owned())??;
+            if observation_turn.terminal != "idle"
+                || observation_turn.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("physical-screenshot-observation-host-turn-missing".into());
+            }
+            let original = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-original-dom-deadline".to_owned())??;
+            if original.truncated
+                || original.elements.is_empty()
+                || original.page_generation != 1
+                || original.url != "https://127.0.0.1/"
+                || !original.title.is_empty()
+                || !original.visible_text.is_empty()
+                || browser.has_control_turn()
+            {
+                return Err("physical-screenshot-source-observation-not-safe".into());
+            }
+            // A screenshot requires a SECOND, independently offered native
+            // turn. An observation's consumed lease is never reused.
+            requester.request();
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-host-offer-deadline".to_owned())??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("physical-screenshot-original-host-turn-missing".into());
+            }
+            let captured = tokio::time::timeout(
+                Duration::from_secs(12),
+                browser.capture_screenshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-webview2-cdp-deadline".to_owned())??;
+            if captured.browser_session_id != original.browser_session_id
+                || captured.page_id != original.page_id
+                || captured.snapshot_id != original.snapshot_id
+                || captured.page_generation != original.page_generation
+                || captured.url != original.url
+                || captured.width == 0
+                || captured.width > 1024
+                || captured.height == 0
+                || captured.height > 768
+                || captured.png.len() < 64
+                || captured.png.len() > 64 * 1024
+                || captured.sha256 != format!("{:x}", Sha256::digest(&captured.png))
+                || !captured.png.starts_with(b"\x89PNG\r\n\x1a\n")
+                || browser.has_control_turn()
+                || browser.capture_screenshot_in_control_turn().await.is_ok()
+            {
+                return Err("physical-screenshot-original-identity-image-or-one-use-invalid".into());
+            }
+            eprintln!(
+                "PRODUCTION_NATIVE_SCREENSHOT=PASS original_page_generation={} bounded_png_bytes={} dimensions={}x{} actual_webview2_cdp=true one_use=true; CONSENT_AND_TF2_INSTALLED=NOT_PROVEN",
+                captured.page_generation,
+                captured.png.len(),
+                captured.width,
+                captured.height
+            );
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original host Job/UDF cleanup: {cleanup:?}"
+        );
+        assert!(outcome.is_ok(), "real native screenshot: {outcome:?}");
     }
 
     #[cfg(windows)]
@@ -5575,7 +5875,9 @@ mod tests {
                         || !resource.native_com_completed
                         || resource.bytes != 0
                         || tf3.terminal != "denied"
-                        || tf3.reason_code != "redirect-limit-denied"
+                        || tf3.reason_code != "browser-resource-redirect-denied"
+                        || tf3.retry != "NEVER_REPLAY"
+                        || tf3.effect_state != "Unknown"
                         || !tf3.redirect_chain.is_empty()
                         || tf3.dns_evidence.len() != 1
                         || tf3

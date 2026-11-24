@@ -1656,3 +1656,128 @@ effect, server oracle, exact one-write reconciliation, full grouped 11-case or
 mandatory integrated seventeen-step E2E has been claimed. All thirteen gates
 remain **0 PASS / 5 PARTIAL / 8 BLOCKED**, and native browser tools stay
 disabled until independently accepted.
+
+### 25 November: f949607 exact-source Windows build, physical screenshot and secret-free diagnostics
+
+The previous `1357124` image is **obsolete** for the latest native-source
+scope. The branch advanced through `f9496078e1885ac7b0655c73b4aca0332fc69954`
+(`fix(tf4): feature-gate screenshot runtime and prove session isolation`).
+A single optimized source-matched Windows NSIS build finished; the build
+process terminated, and local/remote Git HEAD, unchanged tracked source and
+artifact hashes were independently verified before the subsequent work:
+
+| Exact f9496078 artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Pinned `target/tf4-native-stage/clack-browser-host.exe` | 3,907,072 | `2c89f0107d74b8770b191c1d3bfc9661ce41e89d6d2e0173f035b64d4389cba7` |
+| Optimized `target/release/clack.exe` | 20,319,232 | `7e37ddcf3bcf9805cf649ffffbbc1dea17e710ac40336d569061f4cf7449c709` |
+| Optimized `target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | 12,296,068 | `3c5b1b3f9efd742e299f34f975901ce993281ae06410f37e22cc7b65c93d81c3` |
+
+Human-only exact SHA-256-gated installation request **`ur_kmajlzd74a2b`**
+was recorded and remained **OPEN** at the last check. The assistant did
+not run the installer. Installed app/host SHA, the known three-byte NSIS
+Tauri bundle marker, user approval and actual installed effects have not
+been independently checked. The new test/security source changes below
+were authored **after** these f9496078 binaries and therefore **are not
+compiled into that installer**. Do not transfer their proof to it.
+
+GitHub Actions `45507053113` on the exact f9496078 commit completed
+**FAILURE**: Ubuntu T3a WASI adversarial **PASS**, Windows/macOS WASI,
+Windows/macOS rust-test/nextest, Rust Clippy and frontend **FAIL**, coverage
+skipped. This confirms the prior TF4 cross-platform `cargo check`-blocking
+E0425 issues no longer failed at that exact compile stage; it does **not**
+make broad CI green or establish unrelated job root causes.
+
+With the exact pinned f9496078 **production-capable host**, separately
+launched native opt-in tests (not installed-Clack UI tests) physically
+exercised original Win32 AppContainer, WebView2 COM, Job/UDF and TF3:
+
+- Pre-navigation original host readiness/owned Job cleanup **PASS**.
+- Two **simultaneous** original WebView2 sessions: independent UDF roots,
+  close first while second remains independently alive and serves a
+  TF3-denied COM request, then close second and clean both UDFs **PASS**.
+- Owned TCPv4 listener positive control (1 connection) versus zero
+  restricted browser connections **PASS**; owned IPv6 loopback positive (1)
+  versus zero restricted connections, COM/Job/UDF cleanup **PASS**.
+- Real native structural terminal following TF3-denied local HTTPS
+  navigation **PASS as a negative** (zero elements, not a positive page).
+- Read-only public static `https://example.org/` TF3 HTTPS document and
+  WebView2 DOM original COM **PASS**. This documentation origin is not a
+  user-owned write oracle.
+- Ephemeral owned `127.0.0.1:443` HTTPS fixture, restricted to the
+  **test binary only**, with separately scoped public DER trust: real
+  original HTML, zero-follow-up CSS 302 denial, PNG resource, one-use
+  exclusive COM control-turn and closed structural observation **PASS**.
+  Resource traces observed HTML 1263 bytes, CSS `denied`/zero bytes
+  (exact `browser-resource-redirect-denied`, no second `/style.css` GET)
+  and image 68 bytes. A separate original DOM observation had 15 visited,
+  12 closed-role elements and two omitted sensitive fields. Original
+  snapshot and exact retained-reference readback **PASS**.
+
+The original owned-loopback physical tests initially failed in two
+separately preserved attempts: once with the fixture's default direct CSS
+when the test expected its explicitly configured `-CssRedirect` variant,
+then because the test asserted the obsolete generic
+`redirect-limit-denied` reason while the production TF3 executor already
+returned the stronger `browser-resource-redirect-denied`. The physical
+tests were corrected **without changing production network policy**, and
+the two real WebView2 physical tests then individually **PASS**. The
+corrected checks also assert the TF3 terminal retains remote
+`Unknown` and `NEVER_REPLAY`, no second redirect write.
+
+**New native screenshot physical integration, not just a synthetic PNG
+parser:** Added a separately opt-in `physical_production_owned_https_screenshot_original_page_and_one_use`
+test to the existing Windows native runtime suite. It uses only the exact
+pinned production-capable host, independently asserted staged-host SHA,
+one test-owned `-MinimalRecheckDocument` HTTPS fixture with no page
+JavaScript/subresources/credential controls, and separately offered first
+original DOM observation and second native screenshot control-turn leases.
+The first attempt correctly failed with `browser-control-turn-required`
+when it incorrectly tried to observe outside the original native lease;
+after fixing **only the physical test**, the real WebView2
+`Page.captureScreenshot` CDP callback physically **PASS**:
+`800x600`, `21,421` real PNG bytes, original
+session/page/snapshot/generation and source URL equal to the independently
+retained DOM observation, bounded PNG CRC/structure/time and SHA-256
+validation, and second use of the consumed screenshot turn denied. Owned
+Job/UDF cleanup passed. Pixels stayed entirely in trusted local test memory;
+none entered semantic observations/model receipts or a public endpoint.
+This does **not** exercise installed genuine OS consent or TF2 atomic
+workspace evidence, so screenshot exit gate remains blocked.
+
+**Actual source security fix:** `NativeFormIntent`,
+`NativeScreenshotCapture` and the sealed
+`ChildScreenshotCapture` previously derived `Debug`, potentially
+printing original hidden-control body bytes, pixel PNG or base64 image
+bytes and opaque page/origin information if errors were formatted. They
+now implement only deliberately sanitized internal `Debug` output;
+there is no raw FORM body, screenshot byte payload, page URL, original
+opaque identities or digest. New adversarial source test uses synthetic
+secrets in each of those fields and verifies none appear in formatted
+diagnostics. This is real production-source confidentiality hardening,
+not an isolated alternative credential store or screenshot transport.
+The physical screenshot test itself is gated by both Windows and
+`tf-browser-native-runtime` so default Windows all-target builds do
+not require the native-only method.
+
+Source checks: default and `tf-browser-native-runtime` Windows
+`cargo check --locked --all-targets` **PASS**, focused native runtime
+**19 active PASS, 13 opt-in physical tests ignored by default**, scoped
+`rustfmt --check` **PASS**. Distinct native physical runs above
+were executed explicitly against the older pinned host, not counted as
+default suite passes. Both local HTTPS fixtures were explicitly stopped,
+with non-exportable temporary certificate and owned listener cleanup.
+This no-public-deployment physical fixture cannot substitute for the
+separately controlled *public* two-origin CA-trusted TLS443 read-only
+independent server oracle.
+
+Release status remains **0 PASS / 5 PARTIAL / 8 BLOCKED** in the one
+canonical thirteen-gate tracker. Original native external-link action
+causality still cannot be positively authenticated from arbitrary
+WebView2 resource request timing or same URL and must remain `Unknown`;
+installed FORM submitter exact write/credential/screenshot/TF2 transfers,
+independent exactly-once server oracle, full eleven grouped lifecycle
+matrix (nine physically documented, two canonical cases unspecified),
+mandatory seventeen-step installed E2E, and final Product-wide UI/UX
+Polish & Acceptance remain unmet. Model-native browser actions remain
+disabled, PR #46 Draft/unmerged, protected main and both stashes untouched;
+no TF5/MCP or P15 desktop work was introduced.
