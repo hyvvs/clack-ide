@@ -1091,3 +1091,26 @@ the form role was needed for native form observation but does **not** expose
 a Submit action or relax human consent. This frontend compatibility patch
 postdates the source `6c04781` package, which therefore cannot be labeled
 source-identical to the next commit until the optimized bundle is rebuilt.
+
+### 2026-11-24 source-matched frontend compatibility rebuild
+
+The `form` role allowlist correction and focused regression test were committed
+and pushed as source `e1735b6081644619e56b809a8b0f40668c7d2167`.
+The existing `scripts/Build-Tf4NativeBundle.ps1 -Bundles nsis` ran against
+that source with adequate disk space and without a competing Cargo build.
+Optimized native host, production TypeScript/Vite, optimized application,
+and NSIS packaging all completed, final exit **0**. The build emitted its
+explicit `TF4_INTERACTIVE_ACCEPTANCE=NOT_PROVEN; NO_INSTALL_OR_DEPLOYMENT_PERFORMED`.
+
+| Source `e1735b6` staged artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `src-tauri/target/tf4-native-stage/clack-browser-host.exe` | 3,849,216 | `C5211AF75F6BD544F8C702208BEE2BD2083A373F584E0DBD47ED435C5755940A` |
+| `src-tauri/target/release/clack.exe` | 20,184,576 | `27BF9E1B957F315B148D10A9A5291F6EBC9A1C322790F655858F7445D89F2D53` |
+| `src-tauri/target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe` | 12,220,530 | `8DE17E487B73A4A77A2B38B830515ED6842DFFB4759D00A1BFF26925496C92FC` |
+
+At this post-build check the installed namespaced host and installed app
+continued to match **older** `4D92180F...` and `351F7E...` binaries,
+respectively. Human-run installer task `ur_kfrzln9j637l` remained **OPEN**;
+its expected installer path now refers to the newly generated `e1735b6`
+package. Do not imply installed acceptance; compare actual installed host
+and Tauri NSIS-patched application bytes after the person completes it.
