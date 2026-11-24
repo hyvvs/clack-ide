@@ -165,6 +165,7 @@ export function closedNativePage(
         "textbox",
         "combobox",
         "option",
+        "form",
         "heading",
         "main",
         "paragraph",

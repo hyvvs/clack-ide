@@ -41,6 +41,24 @@ describe("manual native TF4 app approval presentation", () => {
       pageGeneration: 2,
       elements: [{ elementRef: "d".repeat(48), role: "link" }],
     });
+    expect(
+      closedNativePage(
+        {
+          ...page,
+          elements: [
+            { elementRef: "d".repeat(48), role: "form" },
+            { elementRef: "e".repeat(48), role: "button" },
+          ],
+        },
+        session,
+      ),
+    ).toMatchObject({
+      elements: [
+        { elementRef: "d".repeat(48), role: "form" },
+        { elementRef: "e".repeat(48), role: "button" },
+      ],
+    });
+    expect(nativeOperatorRoleAllowed("click", "form")).toBe(false);
     for (const altered of [
       { ...page, browserSessionId: "e".repeat(48) },
       { ...page, snapshotId: "not-an-opaque-ref" },

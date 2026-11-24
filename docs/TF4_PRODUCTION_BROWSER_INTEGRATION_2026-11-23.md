@@ -1078,3 +1078,16 @@ adversarial/staging tests; the Windows WASI logs include multiple
 `WorkspaceChanged` failures. These failures are not evidence that the TF4
 focused tests failed, nor are they automatically proven to be unrelated
 baseline errors. Release CI remains red pending specific causal triage.
+
+Further scoped CI diagnosis: the `rust` cargo-check job stops with E0601
+(`main` missing) in `examples/lm11_b03_native_restart_acceptance.rs`, rather
+than a TF4 source compiler error. The `frontend` job reports 23 FAILED,
+4735 PASSED, and 13 SKIPPED tests, including absent historical LM11,
+real-Qwen and remote-control acceptance artifacts and compaction/schema
+failures. This establishes concrete non-TF4 failing sites, not blanket
+baseline exemption or a green result. The TF4 focused frontend suite after
+adding `form` to the closed semantic snapshot allowlist passed **14/14**;
+the form role was needed for native form observation but does **not** expose
+a Submit action or relax human consent. This frontend compatibility patch
+postdates the source `6c04781` package, which therefore cannot be labeled
+source-identical to the next commit until the optimized bundle is rebuilt.
