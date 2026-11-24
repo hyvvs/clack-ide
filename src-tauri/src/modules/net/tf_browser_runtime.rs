@@ -2647,6 +2647,14 @@ mod windows_owner {
             self.control_turns_enabled && self.pending_control_turn.is_some()
         }
 
+        /// The sealed host's last authenticated resource sequence, sampled
+        /// only by the sole owner immediately after an approved gesture. A
+        /// later navigation cannot confirm that gesture by recycling an old
+        /// completed resource receipt with the right URL and page generation.
+        pub(crate) fn last_resource_request_id(&self) -> u64 {
+            self.last_request_id
+        }
+
         /// Obtain a queue-safe *scheduling* request handle after the attested
         /// host enabled exclusive turns. Calling `request()` does not confer
         /// consent; it only asks the sole pipe owner to retain its NEXT host

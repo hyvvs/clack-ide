@@ -954,10 +954,15 @@ async fn network_fetch(
         receipt.requested_url = Some(url.to_string());
     }
     receipt.normalized_target = Some(url.to_string());
-    // GET/HEAD are protocol-idempotent, but remote access logs may still be
-    // affected. Brave search can consume provider quota and needs consent to
-    // retry even on an observed HTTP response.
-    receipt.retry = if search {
+    // A browser-controlled GET is NOT proof of a side-effect-free remote
+    // operation: a guest may request a GET endpoint that changes server state.
+    // Never offer the browser owner a "SAFE_RETRY" receipt after that attempt,
+    // even when HTTP returned 2xx or the native COM deferral completed.
+    // Ordinary TF3 standalone GET/HEAD retain their existing contract.
+    let browser_resource = browser_bytes.is_some();
+    receipt.retry = if browser_resource {
+        "NEVER_REPLAY"
+    } else if search {
         "CONDITIONAL_RETRY"
     } else {
         "SAFE_RETRY"
@@ -1083,6 +1088,12 @@ async fn network_fetch(
         // Distinguish a network attempt from proof of remote delivery.
         receipt.uncertainty = "socket-peer-ip-not-observed";
         *attempted = true;
+        if browser_resource {
+            // A transport acknowledgment is never an independently observed
+            // application effect; only a separate owned-server oracle can
+            // reconcile effectful browser requests.
+            receipt.effect_state = "Unknown";
+        }
         if search {
             // Provider quota/billing effects are not observable from a
             // successful HTTP response or successful result JSON parsing.
@@ -1166,6 +1177,13 @@ async fn network_fetch(
             .to_ascii_lowercase();
         receipt.content_type = (!kind.is_empty()).then_some(kind.clone());
         if response.status().is_redirection() && response.status().as_u16() != 304 {
+            // WebView2 is awaiting the response for its ORIGINAL intercepted
+            // URI. No redirect, even to the same approved HTTPS origin, grants
+            // a second browser GET: that URL could mutate server state or
+            // substitute bytes under the first resource's identity.
+            if browser_resource {
+                return Err(Failure("browser-resource-redirect-denied"));
+            }
             if search {
                 return Err(Failure("provider-redirect-denied"));
             }
@@ -1307,6 +1325,7 @@ async fn execute_policy_with_output_scoped(
     let (p, mut rx) = consume_policy(token, registry, state, policy)?;
     let mut receipt = receipt_for(&p);
     let mut attempted = false;
+    let browser_resource = browser_bytes.is_some();
     let result = network_fetch(
         &p,
         &mut receipt,
@@ -1330,7 +1349,11 @@ async fn execute_policy_with_output_scoped(
             "denied"
         };
         if attempted {
-            receipt.retry = "UNKNOWN";
+            receipt.retry = if browser_resource {
+                "NEVER_REPLAY"
+            } else {
+                "UNKNOWN"
+            };
             receipt.uncertainty = "request-may-have-reached-remote-peer";
         } else {
             receipt.retry = if p.request.operation == TfWebOperation::WebSearch {
@@ -2110,6 +2133,9 @@ mod tests {
         assert_eq!(receipt.bytes_retained, image.len());
         assert_eq!(receipt.content_type.as_deref(), Some("image/png"));
         assert_eq!(bytes, image);
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert!(!receipt.auto_retry);
         assert_eq!(
             receipt.content_sha256,
             Some(format!("{:x}", Sha256::digest(image)))
@@ -2140,6 +2166,9 @@ mod tests {
         assert_eq!(receipt.terminal, "denied");
         assert_eq!(receipt.reason_code, "browser-response-limit-exceeded");
         assert!(receipt.truncated);
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert!(!receipt.auto_retry);
         assert!(
             partial.is_empty(),
             "never return a successful truncated script"
@@ -2201,9 +2230,54 @@ mod tests {
         .await
         .unwrap();
         server.join().unwrap();
-        assert_eq!(receipt.reason_code, "fixture-redirect-origin-denied");
-        assert_eq!(receipt.redirect_chain.len(), 1);
+        assert_eq!(receipt.reason_code, "browser-resource-redirect-denied");
+        assert!(receipt.redirect_chain.is_empty());
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert_eq!(receipt.effect_state, "Unknown");
         assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn browser_resource_redirect_is_denied_even_with_requested_same_origin_hop() {
+        let (dir, registry, state) = setup();
+        let (url, server) = serve(
+            b"HTTP/1.1 302 Found\r\nLocation: /potential-write\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            Duration::ZERO,
+        );
+        let mut req = fixture(dir.path(), url);
+        req.max_redirects = Some(1);
+        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback)
+            .unwrap()
+            .token;
+        let mut bytes = Vec::new();
+        let receipt = execute_policy_with_output(
+            &token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback,
+            Some(&mut bytes),
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.reason_code, "browser-resource-redirect-denied");
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert_eq!(receipt.dns_evidence.len(), 1);
+        assert!(receipt.redirect_chain.is_empty());
+        assert!(bytes.is_empty());
+        assert!(!receipt.auto_retry);
+        assert!(execute_policy(
+            &token,
+            &registry,
+            &state,
+            None,
+            NetworkPolicy::FixtureLoopback
+        )
+        .await
+        .is_err());
     }
     #[tokio::test]
     async fn redirect_to_metadata_is_denied_without_second_connection() {

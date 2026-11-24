@@ -44,6 +44,20 @@ name = "clack-browser-host"
 path = "src/bin/clack-browser-host.rs"
 required-features = ["tf-browser-native-runtime"]
 
+# This Windows-only, operator-invoked LM11 acceptance example has a crate-wide
+# cfg(windows); without an opt-in target gate Cargo --all-targets tries to
+# build an empty Linux/macOS crate and emits E0601 (missing main). Keep it out
+# of normal CI/production and preserve explicit feature-gated acceptance.
+[[example]]
+name = "lm11_b03_native_restart_acceptance"
+path = "examples/lm11_b03_native_restart_acceptance.rs"
+required-features = ["lm11-b03-acceptance-harness"]
+
+[[example]]
+name = "lm11_authenticated_webview_acceptance"
+path = "examples/lm11_authenticated_webview_acceptance.rs"
+required-features = ["lm11-authenticated-webview-acceptance"]
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"

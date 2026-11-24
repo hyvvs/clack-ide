@@ -968,6 +968,7 @@ struct PendingNativeClickEffect {
     source_url: String,
     target_url_sha256: String,
     source_generation: u64,
+    resource_request_floor: u64,
     approved_role: SemanticRole,
     deadline: Instant,
     reply: oneshot::Sender<Result<NativeClickCompletion, String>>,
@@ -986,6 +987,7 @@ fn native_link_navigation_observed(
     source_url: &str,
     target_url_sha256: &str,
     source_generation: u64,
+    resource_request_floor: u64,
     approved_role: &SemanticRole,
 ) -> bool {
     if target_url_sha256.len() != 64
@@ -995,6 +997,7 @@ fn native_link_navigation_observed(
         || *approved_role != SemanticRole::Link
         || !receipt.native_com_completed
         || receipt.terminal != "completed"
+        || receipt.request_id <= resource_request_floor
         || receipt.page_generation <= source_generation
         || receipt.bytes == 0
     {
@@ -1053,6 +1056,7 @@ fn native_link_navigation_evidence(
     source_url: &str,
     target_url_sha256: &str,
     source_generation: u64,
+    resource_request_floor: u64,
     approved_role: &SemanticRole,
 ) -> Option<NativeEffectEvidence> {
     if !native_link_navigation_observed(
@@ -1060,6 +1064,7 @@ fn native_link_navigation_evidence(
         source_url,
         target_url_sha256,
         source_generation,
+        resource_request_floor,
         approved_role,
     ) {
         return None;
@@ -2255,6 +2260,7 @@ async fn execute_confined_native(
                                     &waiting.source_url,
                                     &waiting.target_url_sha256,
                                     waiting.source_generation,
+                                    waiting.resource_request_floor,
                                     &waiting.approved_role,
                                 )
                             })
@@ -2421,6 +2427,8 @@ async fn execute_confined_native(
                                                     source_url,
                                                     target_url_sha256,
                                                     source_generation: target.page_generation,
+                                                    resource_request_floor: browser
+                                                        .last_resource_request_id(),
                                                     approved_role,
                                                     // One further bounded TF3 idle interval may
                                                     // complete after the initial click dispatch.
@@ -3676,7 +3684,7 @@ mod tests {
         ) -> bool {
             let approved_link = "https://example.org/clicked";
             let digest = format!("{:x}", Sha256::digest(approved_link.as_bytes()));
-            super::native_link_navigation_observed(receipt, source, &digest, generation, role)
+            super::native_link_navigation_observed(receipt, source, &digest, generation, 1, role)
         }
         fn native_link_navigation_evidence(
             receipt: &BrokerResourceReceipt,
@@ -3686,7 +3694,7 @@ mod tests {
         ) -> Option<NativeEffectEvidence> {
             let approved_link = "https://example.org/clicked";
             let digest = format!("{:x}", Sha256::digest(approved_link.as_bytes()));
-            super::native_link_navigation_evidence(receipt, source, &digest, generation, role)
+            super::native_link_navigation_evidence(receipt, source, &digest, generation, 1, role)
         }
         let make_receipt = || BrokerResourceReceipt {
             request_id: 2,
@@ -3741,6 +3749,7 @@ mod tests {
             source,
             &"0".repeat(64),
             1,
+            1,
             &SemanticRole::Link
         ));
         assert!(super::native_link_navigation_observed(
@@ -3748,6 +3757,26 @@ mod tests {
             source,
             &target_digest,
             1,
+            1,
+            &SemanticRole::Link
+        ));
+        assert!(
+            !super::native_link_navigation_observed(
+                &good,
+                source,
+                &target_digest,
+                1,
+                2,
+                &SemanticRole::Link
+            ),
+            "a pre-dispatch or replayed broker receipt cannot confirm a new click"
+        );
+        assert!(!super::native_link_navigation_observed(
+            &good,
+            source,
+            &target_digest,
+            1,
+            u64::MAX,
             &SemanticRole::Link
         ));
         let evidence = native_link_navigation_evidence(&good, source, 1, &SemanticRole::Link)

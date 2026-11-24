@@ -1114,3 +1114,140 @@ respectively. Human-run installer task `ur_kfrzln9j637l` remained **OPEN**;
 its expected installer path now refers to the newly generated `e1735b6`
 package. Do not imply installed acceptance; compare actual installed host
 and Tauri NSIS-patched application bytes after the person completes it.
+
+### 2026-11-24 thirteen authoritative TF4 exit gates — explicit governing contract
+
+The user supplied the previously missing **authoritative thirteen gate names**.
+The [existing engineering-state tracker](AGENT_ENGINEERING_STATE.md#canonical-tf4-thirteen-gate-release-tracker-authoritative-names-24-november-2026)
+now persists all thirteen numbered predicates, present honest states and
+evidence boundaries. This is a correction to the earlier statement that their
+names were source-undefined; it does **not** retroactively promote focused tests
+to passing release gates.
+
+| # | Gate | State | Evidence actually in hand / missing production predicate |
+| --- | --- | --- | --- |
+| 1 | Genuine approval/action E2E | **BLOCKED** | Central one-use actor source tests; actual installed OS approval → controlled server effect → replay receipt missing. |
+| 2 | Stable actions | **PARTIAL** | Six host action implementations and focused tests; physical independent DOM/effect and stale/replay matrix missing. |
+| 3 | Form submission | **BLOCKED** | Original FORM/submitter binding and deny-only host validation; TF3 one-write grant/physical POST missing. |
+| 4 | Credential authority | **BLOCKED** | Origin-scoped references, revocation and physical no-leak proof missing. |
+| 5 | Screenshots | **BLOCKED** | Bounded page-bound screenshot evidence/persistence missing. |
+| 6 | Downloads | **BLOCKED** | TF3 network plus TF2 verified file-commit and adversarial run missing. |
+| 7 | Uploads | **BLOCKED** | TF2 original file reference plus TF3 authorized single upload and effect proof missing. |
+| 8 | Popups/tabs/storage | **PARTIAL** | Host callback veto source; full tab/storage/browser-lifecycle physical isolation missing. |
+| 9 | Lifecycle/race matrix | **PARTIAL** | Nine implemented physical grouped tests; two mandatory cases and full gesture cancellation/restart matrix missing. |
+| 10 | Extended network isolation | **PARTIAL** | TF3 GET/redirect protection; ungoverned same-origin GET side effects and write classes unresolved. |
+| 11 | Model-facing exposure | **BLOCKED** | Correctly disabled until per-operation production acceptance; CapabilityIndex gating not accepted. |
+| 12 | Production E2E | **BLOCKED** | Integrated seventeen-step-style installed real-app run and receipts missing. |
+| 13 | Release/package validation | **PARTIAL** | Source-matched NSIS build PASS; installed identity, CI, package acceptance and product-wide UX gate missing. |
+
+**Infrastructure requirement for gates 1/3/7/10/12:** an operator-authorized,
+publicly DNS-resolvable, publicly routable **owned HTTPS origin on TCP 443**
+with normal trusted TLS (no private, loopback, tunnel or policy exception), a
+deterministic nonce-scoped GET navigation/effect oracle, exactly-one POST/write
+counter and replay-denying endpoint, and operator-side read-only receipts that
+independently bind request ID, method, target, body digest, server result and
+time. The fixture must permit deliberate cancellation, stale original-node,
+redirect, cross-origin, DNS/IP and credential-denial cases without making the
+AppContainer a general network client. No such production fixture or human
+deployment authorization is recorded. Never reuse arbitrary third-party
+httpbin outcomes or opt-in localhost test certificates as acceptance.
+
+**Fresh installer reconciliation (24 November):** Human step
+`ur_kfrzln9j637l` reported `OPEN`. The exact staged NSIS SHA-256 remained
+`8DE17E487B73A4A77A2B38B830515ED6842DFFB4759D00A1BFF26925496C92FC`;
+installed host/app remained older by executable size. No new installed app
+was launched or attributed to source `e1735b6`, and no physical positive
+approval/effect/replay was performed. Current PR stays Draft; CI remains red.
+
+### 2026-11-24 resumed source hardening, verification and CI boundary
+
+The pending Windows `cargo check --all-targets --locked --features
+tf-browser-native-runtime` completed **PASS** after explicit opt-in
+`required-features` Cargo entries for the two Windows-only LM11 examples.
+This preserves the example executables and their existing Windows feature
+gates while eliminating the Linux/macOS `E0601` empty-crate entrypoints.
+The current patch also tightens native link-effect reconciliation: a completed
+TF3 HTML document request must have an authenticated broker request ID
+**strictly greater than** the host resource sequence sampled after native
+dispatch. A previously completed same-URL receipt cannot confirm another
+one-use original-node click. This is only an anti-recycled-receipt property,
+not an independent proof of a server-side business effect.
+
+TF3's *existing* browser resource executor now treats all brokered browser
+GETs as potentially effectful: after a network attempt, transport completion
+or failure leaves `effect_state=Unknown`, `retry=NEVER_REPLAY` and
+`auto_retry=false`. This applies without changing ordinary TF3 standalone
+GET/HEAD or introducing another network owner; a page-generated GET can
+still cause an unauthorized remote effect, so gate 10 remains **PARTIAL**.
+The original FORM/submitter host `Submit` action remains **deny-only**.
+No body/method-bound TF3 POST permit, public HTTPS:443 controlled service,
+owned-server independent effect oracle, installation, or real app approval
+was created. Gates 1, 3 and 12 remain **BLOCKED**.
+
+New focused Windows tests after scoped `rustfmt --check`:
+`browser_binary_get_reuses_tf3_token_scope_and_never_promotes_truncation`
+**1/1 PASS**, asserting browser transport `Unknown`/`NEVER_REPLAY` on
+observed 2xx and truncated failures; and
+`native_click_confirmation_requires_independent_next_document_receipt`
+**1/1 PASS**, including equal/stale broker sequence rejection. These
+are source tests, not installed production acceptance. Global
+`cargo fmt --all -- --check` failed solely because it would reformat
+unrelated historical example files; it made no changes.
+
+Comparison of protected-main workflow `44994093010` at `dddab1b9` and
+Draft PR branch workflow `45355106767` at `9fd07d9`: both report
+seven failed CI categories with coverage skipped. Main Ubuntu WASI failed
+`wasi_infinite_guest_times_out_and_revocation_interrupts_without_result`
+(109 passed/1 failed); PR Ubuntu WASI failed
+`pure_loop_is_fuel_bounded_and_wall_clock_cancellable`
+(28 passed/1 failed), so **the category is inherited, not the identical
+test failure**. Main `rust` had `E0601` at LM11 B03; branch `rust`
+at LM11 authenticated WebView, both addressed by the scoped manifest
+target requirements but not proven fixed in a fresh remote CI run.
+Other frontend, Windows/macOS Rust and WASI root causes remain subject to
+per-job CI triage; a category-level main failure is not proof of identical
+branch causality.
+
+Installation request `ur_kfrzln9j637l` is still **OPEN**. The previously
+built optimized installer identity remains pinned to source `e1735b6`,
+not these newer Rust sources. Do not attribute the older installed executable,
+an installer build, or a GET 2xx receipt to source-matched installed browser
+approval/effect/replay acceptance; no release gate has been promoted.
+
+**Additional owner-scoped network fix and validation:** The TF3 browser-resource
+executor now rejects **every browser-resource 3xx** before following even an
+otherwise same-origin redirect, regardless of a prepared token's requested
+redirect budget. Ordinary standalone TF3 GET redirects remain governed by
+their existing public per-hop checks. A deterministic owned loopback source
+test requested one allowed redirect to `/potential-write` and proved it was
+stopped after the first 302 (one DNS receipt, no redirect chain, no second
+request, `Unknown` effect and `NEVER_REPLAY`). This fixture is a
+source/transport negative test, **not** positive installed browser network-write
+authorization.
+
+Serial Windows native validation on the changed sources: TF3 network policy
+**23/23 PASS**, TF4 owner **21/21 PASS**, native runtime **15/15 active PASS**
+with **11 separate opt-in physical tests ignored**, native host broker
+contract **60/60 PASS**, and focused frontend
+`NativeBrowserOperatorPanel`/`browserRuntimeStatus`/
+`ChatToolsControl.browser` **14/14 PASS** across three files. Scoped
+`rustfmt --check` and `git diff --check` passed. These outcomes do not
+promote any production release gate.
+
+Seven-job protected-main versus PR-head CI classification for runs
+`44994093010`/`45355106767`:
+
+| Failing check | Protected main versus PR head | Classification at this patch |
+| --- | --- | --- |
+| `rust` | Main LM11 B03 `E0601`; branch LM11 authenticated `E0601` | Inherited Windows-only example target gating; both now opt-in and local all-targets check passed; new remote CI unverified |
+| `rust-test (macos-latest)` | Main LM11 authenticated `E0601`; branch LM11 B03 `E0601` | Same inherited example-gating cause in opposite build order; new CI unverified |
+| `rust-test (windows-latest)` | Both `E0425` calls to LM11 feature-gated acceptance helpers `acceptance_is_owned_webview_root`, `acceptance_bind_synthetic_child` and related symbols | Inherited default compilation of opt-in LM11 examples; Cargo target gate preserves explicit Windows acceptance and prevents default inclusion |
+| `T3a WASI adversarial (ubuntu-22.04)` | Main `wasi_infinite_guest_times_out_and_revocation_interrupts_without_result` failed (109 pass/1 fail); branch `pure_loop_is_fuel_bounded_and_wall_clock_cancellable` failed (28 pass/1 fail) | Both red, **different failing cases**, cause unresolved |
+| `T3a WASI adversarial (windows-latest)` | Both repeated `WorkspaceChanged` (7 pass / 21 fail) | Inherited failing class; environment/concurrency versus source cause not resolved |
+| `T3a WASI adversarial (macos-latest)` | Both 101 pass / 9 fail in custom-tools/WASI | Inherited category, full per-test root-cause equivalence unproven |
+| `frontend` | Both red; branch has compaction schema failures, missing historical acceptance artifacts and T01/T15 inventory | Inherited red category; exact per-test inventory across both commits not fully matched, and failed fixtures remain failed |
+
+`coverage` was skipped on both because its upstream `rust` dependency
+failed; it is not an eighth independently failed suite. None of these
+baseline diagnoses excuses release CI. A fresh branch run after push is
+required before claiming that the manifest gates fixed any remote job.
