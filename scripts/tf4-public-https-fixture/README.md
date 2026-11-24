@@ -30,6 +30,42 @@ non-privileged service account and persistent private state volume with
 limited quotas/firewall rules; the operator—not this repository—owns DNS, TLS,
 server access, costs, secrets and service lifecycle.
 
+**One consolidated operator-facing request (not automatic deployment):**
+Authorize two FQDNs the operator owns: primary
+tf4-acceptance.<operator-domain> routed publicly on IPv4/IPv6 TCP **443**
+with a publicly trusted, correctly named TLS certificate; and a distinct
+tf4-negative.<operator-other-controlled-domain> or genuinely separately
+owned origin solely to validate cross-origin denials. Both must resolve
+outside private, loopback, link-local, metadata and internal-only networks.
+No developer-machine tunnel, port-forward, insecure TLS trust flag or policy
+exception is allowed. Provide private durable storage for the append-only
+event ledger and one-use claims; run Node as a dedicated nonprivileged service
+with limited filesystem privileges, restricted TLS key access and restart
+without losing claims. Protect the read-only oracle with its separately
+rotated bearer token and operator-only firewall/VPN access. The app, browser,
+model and screenshots must NEVER see that observer token.
+
+A starting resource budget of **1 vCPU, 1 GiB RAM and 1 GiB persistent disk**
+is sufficient for planning this bounded test fixture; confirm with the
+operator's hosting environment. Existing owned infrastructure may incur no
+incremental charge; renting new compute, DNS, bandwidth, certificate or
+storage may have provider-specific costs **not estimated or authorized here**.
+Explicit operator approval is needed for DNS, TLS/private keys, external
+network exposure, provider charges, service identity and retention policy.
+
+**Operator deployment/teardown:** Authorize and configure both FQDNs and
+public TLS443 reachability; create dedicated non-login service identity and
+private persistent state directory (POSIX mode 0700 or equivalent Windows
+ACL); install only pinned fixture source; supply deployment environment via
+operator-controlled secrets; launch the service once; validate DNS/TLS and
+read-only oracle separately from an observer machine; privately record
+deployed commit, certificate fingerprint and nonce. To tear down, stop/reap
+the service, remove inbound firewall allowances and owned test DNS routes,
+revoke fixture synthetic credential/oracle secrets, archive or erase the
+ledger and one-use claims per the authorized retention plan, release any
+charged resources, and independently verify zero remaining listeners or
+service-owned resources. No automatic provisioning/deployment is authorized.
+
 On that separately authorized host, supply all environment variables:
 
 ```text

@@ -433,6 +433,20 @@ impl BrowserPageContract {
         &self.live
     }
 
+    /// Internal immutable source identity for an already authenticated native
+    /// observation. A screenshot cannot use an expired/revoked DOM snapshot,
+    /// or manufacture a new page ID from a renderer-supplied URL.
+    pub(crate) fn current_snapshot_for_evidence(&self) -> Option<&PageSnapshot> {
+        self.snapshot.as_ref().filter(|snapshot| {
+            !self.closed
+                && self
+                    .snapshot_created
+                    .is_some_and(|when| when.elapsed() <= MAX_SNAPSHOT_LIFETIME)
+                && snapshot.page_id == self.live.page_id
+                && snapshot.page_generation == self.live.page_generation
+        })
+    }
+
     /// Call at navigation/reload/major DOM replacement or popup transition,
     /// BEFORE dispatching any new page operation.
     pub(crate) fn invalidate_page(&mut self, next_url: &str) -> Result<(), &'static str> {

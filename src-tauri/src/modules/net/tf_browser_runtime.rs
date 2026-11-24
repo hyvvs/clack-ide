@@ -12,6 +12,8 @@ use super::tf_browser_contract::{
 };
 use super::tf_web::{self, TfWebOperation, TfWebReceipt, TfWebRequest, TfWebState};
 use crate::modules::workspace::WorkspaceRegistry;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -301,6 +303,9 @@ impl NativeConsumedExactClickApproval {
     pub(super) fn action_id(&self) -> &str {
         &self.approval_id
     }
+    pub(super) fn tf3_identity(&self) -> (&str, &str, &Path) {
+        (&self.actor, &self.session_id, &self.workspace_root)
+    }
     /// This witness originates from the existing atomic TF4 consent owner.
     /// Binding it to an exact form/submitter consumes the witness by value at
     /// the TF3 entrypoint; a 48-hex string cannot stand in for consent.
@@ -534,6 +539,320 @@ struct ParentElementAction<'a> {
     delta_y: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     payload_sha256: Option<&'a str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NativeFormIntent {
+    pub target: crate::modules::net::tf_browser_contract::ActionTarget,
+    pub observation_id: u64,
+    pub original_form_index: u32,
+    pub original_submitter_index: u32,
+    pub destination: reqwest::Url,
+    pub body: Vec<u8>,
+    pub body_sha256: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct NativeScreenshotCapture {
+    pub browser_session_id: String,
+    pub page_id: String,
+    pub page_generation: u64,
+    pub snapshot_id: String,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+    pub captured_at_ms: u64,
+    pub sha256: String,
+    /// Only the trusted native parent and existing TF2 evidence authority may
+    /// access these bytes; never place them in a Tauri/model/browser receipt.
+    pub png: Vec<u8>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentScreenshotCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildScreenshotCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    state: String,
+    format: String,
+    width: u32,
+    height: u32,
+    captured_at_ms: u64,
+    sha256: Option<String>,
+    bytes_base64: Option<String>,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn native_png_crc(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = !0;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 == 1 { 0xedb8_8320 } else { 0 };
+        }
+    }
+    !crc
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn independently_verify_native_png(png: &[u8]) -> Result<(u32, u32), &'static str> {
+    if png.len() < 57
+        || png.len() > 64 * 1024
+        || !png.starts_with(b"\x89PNG\r\n\x1a\n")
+        || &png[12..16] != b"IHDR"
+        || u32::from_be_bytes(png[8..12].try_into().unwrap()) != 13
+    {
+        return Err("parent-native-screenshot-png-structure-invalid");
+    }
+    let w = u32::from_be_bytes(png[16..20].try_into().unwrap());
+    let h = u32::from_be_bytes(png[20..24].try_into().unwrap());
+    if w == 0
+        || w > 1024
+        || h == 0
+        || h > 768
+        || png[24] != 8
+        || !matches!(png[25], 2 | 6)
+        || png[26..29] != [0, 0, 0]
+    {
+        return Err("parent-native-screenshot-png-dimensions-invalid");
+    }
+    let mut at = 8usize;
+    let mut count = 0usize;
+    let mut has_idat = false;
+    let mut has_iend = false;
+    while at < png.len() {
+        if png.len() - at < 12 || count >= 128 {
+            return Err("parent-native-screenshot-png-chunks-invalid");
+        }
+        let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+        let end = at
+            .checked_add(len + 12)
+            .filter(|v| *v <= png.len())
+            .ok_or("parent-native-screenshot-png-chunk-bounds")?;
+        let tag = &png[at + 4..at + 8];
+        if (count == 0 && tag != b"IHDR")
+            || (tag != b"IHDR" && tag != b"IDAT" && tag != b"IEND")
+            || (tag == b"IHDR" && (count != 0 || len != 13))
+            || (tag == b"IDAT" && len == 0)
+            || (tag == b"IEND" && (len != 0 || !has_idat || end != png.len()))
+            || native_png_crc(&png[at + 4..end - 4])
+                != u32::from_be_bytes(png[end - 4..end].try_into().unwrap())
+        {
+            return Err("parent-native-screenshot-png-corrupt-or-unsupported");
+        }
+        has_idat |= tag == b"IDAT";
+        has_iend |= tag == b"IEND";
+        at = end;
+        count += 1;
+    }
+    if !has_idat || !has_iend {
+        return Err("parent-native-screenshot-png-incomplete");
+    }
+    Ok((w, h))
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn validate_native_screenshot_capture(
+    frame: &[u8],
+    request: &ParentScreenshotCapture<'_>,
+    page: &PageSnapshot,
+) -> Result<NativeScreenshotCapture, &'static str> {
+    if frame.is_empty() || frame.len() > 96 * 1024 {
+        return Err("native-screenshot-reply-bounds");
+    }
+    let captured: ChildScreenshotCapture =
+        serde_json::from_slice(frame).map_err(|_| "native-screenshot-reply-invalid")?;
+    if captured.version != 2
+        || captured.kind != "screenshot-capture"
+        || captured.session != request.session
+        || captured.check_sequence != request.check_sequence
+        || captured.observation_id != request.observation_id
+        || captured.page_generation != request.page_generation
+        || captured.page_generation != page.page_generation
+        || captured.source_id != request.source_id
+        || captured.state != "CAPTURED"
+        || captured.format != "png"
+        || captured.width == 0
+        || captured.width > 1024
+        || captured.height == 0
+        || captured.height > 768
+        || captured.captured_at_ms == 0
+    {
+        return Err("native-screenshot-identity-or-viewport-denied");
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64;
+    if captured.captured_at_ms > now.saturating_add(2_000)
+        || now.saturating_sub(captured.captured_at_ms) > 10_000
+    {
+        return Err("native-screenshot-capture-clock-outside-bounded-turn");
+    }
+    let encoded = captured
+        .bytes_base64
+        .as_deref()
+        .ok_or("native-screenshot-bytes-absent")?;
+    if encoded.len() > 90 * 1024 {
+        return Err("native-screenshot-bytes-oversize");
+    }
+    let png = BASE64
+        .decode(encoded.as_bytes())
+        .map_err(|_| "native-screenshot-base64-denied")?;
+    if independently_verify_native_png(&png) != Ok((captured.width, captured.height)) {
+        return Err("native-screenshot-png-invalid");
+    }
+    let digest = format!("{:x}", Sha256::digest(&png));
+    if captured.sha256.as_deref() != Some(digest.as_str()) {
+        return Err("native-screenshot-sha-mismatch");
+    }
+    Ok(NativeScreenshotCapture {
+        browser_session_id: page.browser_session_id.clone(),
+        page_id: page.page_id.clone(),
+        page_generation: page.page_generation,
+        snapshot_id: page.snapshot_id.clone(),
+        url: page.url.clone(),
+        width: captured.width,
+        height: captured.height,
+        captured_at_ms: captured.captured_at_ms,
+        sha256: digest,
+        png,
+    })
+}
+
+/// Both observations must name the ORIGINAL native node pair, source epoch,
+/// verbatim destination and exact successful-control bytes. A self-consistent
+/// replacement digest is not consent; only equality to the preconsent
+/// captured values allows moving the original one-use TF4 grant to TF3.
+pub(super) fn original_form_intent_unchanged(
+    approved: &NativeFormIntent,
+    current: &NativeFormIntent,
+) -> bool {
+    approved == current
+        && approved.original_form_index != approved.original_submitter_index
+        && approved.body_sha256 == format!("{:x}", Sha256::digest(&approved.body))
+        && approved.destination.as_str() == current.destination.as_str()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentFormCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+    form_index: u32,
+    form_ordinal: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildFormCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    form_index: u32,
+    form_ordinal: u32,
+    state: String,
+    method: Option<String>,
+    encoding: Option<String>,
+    destination: Option<String>,
+    body: Option<String>,
+}
+
+fn validate_form_capture(
+    frame: &[u8],
+    request: &ParentFormCapture<'_>,
+    target: &crate::modules::net::tf_browser_contract::ActionTarget,
+    original_origin: &reqwest::Url,
+) -> Result<NativeFormIntent, &'static str> {
+    if frame.is_empty() || frame.len() > 8192 {
+        return Err("native-form-capture-frame-bounds");
+    }
+    let captured: ChildFormCapture =
+        serde_json::from_slice(frame).map_err(|_| "native-form-capture-frame-invalid")?;
+    if captured.version != 2
+        || captured.kind != "form-capture"
+        || captured.session != request.session
+        || captured.check_sequence != request.check_sequence
+        || captured.observation_id != request.observation_id
+        || captured.page_generation != request.page_generation
+        || captured.source_id != request.source_id
+        || captured.index != request.index
+        || captured.ordinal != request.ordinal
+        || captured.form_index != request.form_index
+        || captured.form_ordinal != request.form_ordinal
+        || captured.state != "CAPTURED"
+        || captured.method.as_deref() != Some("POST")
+        || captured.encoding.as_deref() != Some("application/x-www-form-urlencoded")
+    {
+        return Err("native-form-capture-original-binding-denied");
+    }
+    let destination = captured
+        .destination
+        .as_deref()
+        .ok_or("native-form-capture-destination-missing")?;
+    let body = captured
+        .body
+        .as_deref()
+        .ok_or("native-form-capture-body-missing")?;
+    let url = reqwest::Url::parse(destination).map_err(|_| "native-form-capture-url-invalid")?;
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.origin() != original_origin.origin()
+        || url.as_str() != destination
+        || url == *original_origin
+        || body.is_empty()
+        || body.len() > 2048
+        || !body.is_ascii()
+        || body.bytes().any(|v| v.is_ascii_control())
+        || !body.bytes().all(|v| {
+            v.is_ascii_alphanumeric()
+                || matches!(v, b'%' | b'+' | b'&' | b'=' | b'-' | b'.' | b'_' | b'*')
+        })
+    {
+        return Err("native-form-capture-url-or-bytes-denied");
+    }
+    Ok(NativeFormIntent {
+        target: target.clone(),
+        observation_id: request.observation_id,
+        original_form_index: request.form_index,
+        original_submitter_index: request.index,
+        destination: url,
+        body_sha256: format!("{:x}", Sha256::digest(body.as_bytes())),
+        body: body.as_bytes().to_vec(),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -2352,6 +2671,160 @@ mod windows_owner {
             }
         }
 
+        /// Read-only original-node form capture on the existing exclusive
+        /// sealed control turn. Called before the human consent dialog and
+        /// again immediately before the single TF3 dispatch. It does not
+        /// create a grant, submit the page form, or make an HTTP request.
+        pub(crate) async fn capture_form_in_control_turn(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+        ) -> Result<NativeFormIntent, String> {
+            if !matches!(action, super::NativeRetainedAction::Submit(_)) {
+                return Err("native-form-capture-submit-only".into());
+            }
+            let scope = self.exact_retained_scope_for_central(target, action)?;
+            let (form_index, form_ordinal) = scope
+                .selected_native_form
+                .ok_or("native-form-original-form-missing")?;
+            let sequence = scope.check_sequence;
+            let observation = scope.observation_id;
+            let generation = scope.target.page_generation;
+            let index = scope.index;
+            let ordinal = scope.ordinal;
+            let source = scope.source_id.clone();
+            let original_origin = reqwest::Url::parse(&self.initial_url)
+                .map_err(|_| "native-form-capture-source-invalid")?;
+            let nonce = self.nonce.clone();
+            let request = ParentFormCapture {
+                version: 2,
+                kind: "capture-form",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id: observation,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal,
+                form_index,
+                form_ordinal,
+            };
+            let frame =
+                serde_json::to_vec(&request).map_err(|_| "native-form-capture-serialization")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-form-capture-request-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "native-form-capture-reader-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-form-capture-worker-failed")??;
+                validate_form_capture(&bytes, &request, target, &original_origin)
+                    .map_err(str::to_owned)
+            }
+            .await;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            result
+        }
+
+        /// Native WebView2 viewport screenshot over the ORIGINAL authenticated
+        /// host control pipe. Only the parent receives bounded PNG bytes.
+        /// Consent and TF2 evidence persistence are the TF4/TF2 central owners'
+        /// responsibility; no standalone screenshot IPC/model operation exists.
+        pub(crate) async fn capture_screenshot_in_control_turn(
+            &mut self,
+        ) -> Result<NativeScreenshotCapture, String> {
+            if !self.has_control_turn()
+                || !self.ready
+                || self.stopped
+                || self.poisoned
+                || self.last_request_id == 0
+            {
+                return Err("native-screenshot-exclusive-turn-required".into());
+            }
+            let page = self
+                .page_contract
+                .current_snapshot_for_evidence()
+                .ok_or("native-screenshot-original-page-not-observed")?
+                .clone();
+            let (observation_id, generation, _) = self
+                .last_recheck_observation
+                .as_ref()
+                .ok_or("native-screenshot-original-observation-missing")?;
+            if *observation_id == 0
+                || *generation != page.page_generation
+                || self.last_page_generation != page.page_generation
+                || self.initial_url != page.url
+            {
+                return Err("native-screenshot-page-generation-or-origin-stale".into());
+            }
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("native-screenshot-original-renderer-unattested".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|v| *v <= 256)
+                .ok_or("native-screenshot-control-budget-exhausted")?;
+            let nonce = self.nonce.clone();
+            let source = format!("{:x}", Sha256::digest(page.url.as_bytes()));
+            let request = ParentScreenshotCapture {
+                version: 2,
+                kind: "capture-screenshot",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id: *observation_id,
+                page_generation: page.page_generation,
+                source_id: &source,
+            };
+            let frame = serde_json::to_vec(&request)
+                .map_err(|_| "native-screenshot-request-serialization")?;
+            if frame.len() > 1024 {
+                return Err("native-screenshot-request-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let captured = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "native-screenshot-response-pipe-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-screenshot-reader-failed")??;
+                validate_native_screenshot_capture(&bytes, &request, &page).map_err(str::to_owned)
+            }
+            .await;
+            if captured.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            captured
+        }
+
         #[cfg(test)]
         pub(crate) fn verify_closed_reference_without_execution_for_test(
             &self,
@@ -3482,6 +3955,109 @@ mod tests {
     }
 
     #[test]
+    fn sealed_original_form_capture_requires_exact_control_bytes_destination_and_native_identity() {
+        let nonce = "a".repeat(48);
+        let source = "b".repeat(64);
+        let target = ActionTarget {
+            browser_session_id: "native-browser-1".into(),
+            page_id: "page-1".into(),
+            page_generation: 7,
+            snapshot_id: "opaque-snapshot".into(),
+            element_ref: "opaque-original-submitter".into(),
+        };
+        let request = ParentFormCapture {
+            version: 2,
+            kind: "capture-form",
+            session: &nonce,
+            check_sequence: 3,
+            observation_id: 5,
+            page_generation: 7,
+            source_id: &source,
+            index: 4,
+            ordinal: 2,
+            form_index: 2,
+            form_ordinal: 1,
+        };
+        let origin = reqwest::Url::parse("https://example.org/").unwrap();
+        let response = serde_json::json!({
+            "version":2,"kind":"form-capture","session":nonce,
+            "checkSequence":3,"observationId":5,"pageGeneration":7,
+            "sourceId":source,"index":4,"ordinal":2,"formIndex":2,
+            "formOrdinal":1,"state":"CAPTURED","method":"POST",
+            "encoding":"application/x-www-form-urlencoded",
+            "destination":"https://example.org/form",
+            "body":"nonce=one&commit=once"
+        });
+        let result =
+            validate_form_capture(response.to_string().as_bytes(), &request, &target, &origin)
+                .unwrap();
+        assert_eq!(result.original_submitter_index, 4);
+        assert_eq!(result.original_form_index, 2);
+        assert_eq!(result.target, target);
+        assert_eq!(
+            result.body_sha256,
+            format!("{:x}", Sha256::digest(&result.body))
+        );
+        for (field, value) in [
+            ("session", serde_json::json!("forged")),
+            ("checkSequence", serde_json::json!(4)),
+            ("observationId", serde_json::json!(4)),
+            ("pageGeneration", serde_json::json!(8)),
+            ("index", serde_json::json!(2)),
+            ("formIndex", serde_json::json!(4)),
+            ("method", serde_json::json!("GET")),
+            ("encoding", serde_json::json!("multipart/form-data")),
+            (
+                "destination",
+                serde_json::json!("https://foreign.example/form"),
+            ),
+            (
+                "destination",
+                serde_json::json!("https://example.org/form?inject=1"),
+            ),
+            ("body", serde_json::json!("x".repeat(2049))),
+            ("state", serde_json::json!("STALE")),
+        ] {
+            let mut forged = response.clone();
+            forged[field] = value;
+            assert!(
+                validate_form_capture(forged.to_string().as_bytes(), &request, &target, &origin)
+                    .is_err(),
+                "forged {field} must not be accepted"
+            );
+        }
+        let mut unexpected = response;
+        unexpected["other"] = serde_json::json!("secret");
+        assert!(validate_form_capture(
+            unexpected.to_string().as_bytes(),
+            &request,
+            &target,
+            &origin
+        )
+        .is_err());
+        assert!(original_form_intent_unchanged(&result, &result));
+        let mut changed = result.clone();
+        changed.body = b"nonce=other&commit=once".to_vec();
+        changed.body_sha256 = format!("{:x}", Sha256::digest(&changed.body));
+        assert!(
+            !original_form_intent_unchanged(&result, &changed),
+            "a self-consistent new digest is NOT what the human approved"
+        );
+        changed = result.clone();
+        changed.destination = reqwest::Url::parse("https://example.org/other").unwrap();
+        assert!(!original_form_intent_unchanged(&result, &changed));
+        changed = result.clone();
+        changed.original_form_index += 1;
+        assert!(!original_form_intent_unchanged(&result, &changed));
+        changed = result.clone();
+        changed.observation_id += 1;
+        assert!(!original_form_intent_unchanged(&result, &changed));
+        changed = result.clone();
+        changed.target.page_generation += 1;
+        assert!(!original_form_intent_unchanged(&result, &changed));
+    }
+
+    #[test]
     fn retained_action_payloads_are_canonical_bounded_and_not_click_authority() {
         use NativeRetainedAction as A;
         let cases = [
@@ -3538,6 +4114,86 @@ mod tests {
         assert!(
             native_action_payload_bytes(&A::Submit("form".into()), None, Some((8, 49))).is_err()
         );
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_screenshot_sealed_image_requires_exact_page_snapshot_crc_digest_and_bounds() {
+        const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        let png = BASE64.decode(PNG).unwrap();
+        assert_eq!(independently_verify_native_png(&png), Ok((1, 1)));
+        let digest = format!("{:x}", Sha256::digest(&png));
+        let captured_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let nonce = "a".repeat(48);
+        let source = format!("{:x}", Sha256::digest(b"https://example.org/"));
+        let request = ParentScreenshotCapture {
+            version: 2,
+            kind: "capture-screenshot",
+            session: &nonce,
+            check_sequence: 8,
+            observation_id: 4,
+            page_generation: 2,
+            source_id: &source,
+        };
+        let page = PageSnapshot {
+            browser_session_id: "b".repeat(48),
+            page_id: "c".repeat(48),
+            page_generation: 2,
+            snapshot_id: "d".repeat(48),
+            url: "https://example.org/".into(),
+            origin: "https://example.org".into(),
+            title: "Owned Test".into(),
+            observed_at_ms: 123,
+            visible_text: "redacted".into(),
+            truncated: false,
+            elements: vec![],
+        };
+        let reply = serde_json::json!({
+            "version":2,"kind":"screenshot-capture","session":nonce,
+            "checkSequence":8,"observationId":4,"pageGeneration":2,
+            "sourceId":source,"state":"CAPTURED","format":"png",
+            "width":1,"height":1,"capturedAtMs":captured_now,
+            "sha256":digest,"bytesBase64":PNG,
+        });
+        let capture =
+            validate_native_screenshot_capture(reply.to_string().as_bytes(), &request, &page)
+                .unwrap();
+        assert_eq!(capture.png, png);
+        assert_eq!(capture.sha256, digest);
+        assert_eq!(capture.snapshot_id, page.snapshot_id);
+        assert_eq!(capture.browser_session_id, page.browser_session_id);
+        assert_eq!((capture.width, capture.height), (1, 1));
+        let debug = format!("{capture:?}");
+        assert!(!debug.contains("password"));
+        for (field, value) in [
+            ("session", serde_json::json!("wrong")),
+            ("checkSequence", serde_json::json!(9)),
+            ("observationId", serde_json::json!(5)),
+            ("pageGeneration", serde_json::json!(1)),
+            ("sourceId", serde_json::json!("a".repeat(64))),
+            ("state", serde_json::json!("UNKNOWN")),
+            ("format", serde_json::json!("jpeg")),
+            ("capturedAtMs", serde_json::json!(captured_now - 100_000)),
+            ("width", serde_json::json!(2048)),
+            ("width", serde_json::json!(2)),
+            ("sha256", serde_json::json!("0".repeat(64))),
+            ("bytesBase64", serde_json::json!("not-base64")),
+            ("bytesBase64", serde_json::json!("A".repeat(96 * 1024))),
+        ] {
+            let mut forged = reply.clone();
+            forged[field] = value;
+            assert!(
+                validate_native_screenshot_capture(forged.to_string().as_bytes(), &request, &page)
+                    .is_err(),
+                "forged screenshot {field} should fail"
+            );
+        }
+        let mut tampered = png;
+        tampered[50] ^= 1; // same size, corrupted independent chunk CRC
+        assert!(independently_verify_native_png(&tampered).is_err());
     }
 
     #[test]

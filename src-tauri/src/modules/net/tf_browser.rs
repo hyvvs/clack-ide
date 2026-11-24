@@ -13,9 +13,14 @@
 //! only; actor/session labels are scoped, not OS-authenticated principals.
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use super::tf_browser_runtime::{
-    BrokerResourceReceipt, BrowserRuntimeSession, BrowserRuntimeStart,
+    BrokerResourceReceipt, BrowserRuntimeSession, BrowserRuntimeStart, NativeFormIntent,
+    NativeScreenshotCapture,
 };
 use super::tf_web::{self, TfWebDnsEvidence, TfWebOperation, TfWebRequest, TfWebState};
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use crate::modules::secrets::{self, SecretsState};
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use crate::modules::tf_operations::{self, Tf4ScreenshotEvidence};
 use crate::modules::workspace::WorkspaceRegistry;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -116,6 +121,9 @@ pub enum TfBrowserOperation {
     Scroll,
     Submit,
     Screenshot,
+    /// Native-only trusted-broker GET with one origin-scoped opaque keyring
+    /// reference. Never registered as a model browser tool before acceptance.
+    CredentialGet,
 }
 impl TfBrowserOperation {
     fn network(self) -> bool {
@@ -136,6 +144,7 @@ impl TfBrowserOperation {
                 | Self::Scroll
                 | Self::Submit
                 | Self::Screenshot
+                | Self::CredentialGet
         )
     }
     fn native_action(self) -> bool {
@@ -554,13 +563,47 @@ fn consume<'a>(
         if session.native.is_some()
             && !matches!(
                 p.request.operation,
-                TfBrowserOperation::CloseConfined | TfBrowserOperation::ObserveConfined
+                TfBrowserOperation::CloseConfined
+                    | TfBrowserOperation::ObserveConfined
+                    | TfBrowserOperation::CredentialGet
             )
         {
             return Err("confined-native-action-observation-not-accepted".into());
         }
         if session.busy {
             return Err("browser-session-busy".into());
+        }
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        if p.request.operation == TfBrowserOperation::CredentialGet {
+            let c = p
+                .credential_scope
+                .as_ref()
+                .ok_or("native-origin-credential-consent-scope-missing")?;
+            let owner = session
+                .native
+                .as_ref()
+                .ok_or("native-origin-credential-isolated-owner-required")?;
+            if !owner.owner_alive.load(Ordering::Acquire) {
+                return Err("native-origin-credential-owner-closed".into());
+            }
+            let page = owner
+                .snapshot
+                .lock()
+                .map_err(|_| "native-origin-credential-observation-unavailable")?
+                .clone()
+                .ok_or("native-origin-credential-live-page-required")?;
+            if page.truncated
+                || c.page.browser_session_id != page.browser_session_id
+                || c.page.page_id != page.page_id
+                || c.page.page_generation != page.page_generation
+                || c.page.snapshot_id != page.snapshot_id
+                || c.page.url != page.url
+                || c.page.url != session.snapshot.url
+                || c.origin.origin() != c.destination.origin()
+                || p.url.as_deref() != Some(c.page.url.as_str())
+            {
+                return Err("native-origin-credential-current-original-page-stale".into());
+            }
         }
         if p.request.operation == TfBrowserOperation::ClickLink {
             if p.request.snapshot_id.as_deref() != Some(&session.snapshot.id)
@@ -805,6 +848,15 @@ pub struct TfBrowserReceipt {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_effect_evidence: Option<NativeEffectEvidence>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_form_transport: Option<NativeFormTransportProof>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_screenshot_evidence: Option<Tf4ScreenshotEvidence>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_credential_transport: Option<NativeOriginCredentialTransport>,
     pub effect_state: &'static str,
     pub reason_code: String,
     pub policy_decision: &'static str,
@@ -921,6 +973,17 @@ enum NativeCommand {
     Observe {
         reply: oneshot::Sender<Result<PageSnapshot, String>>,
     },
+    CaptureForm {
+        target: ActionTarget,
+        action: NativeRetainedAction,
+        reply: oneshot::Sender<Result<NativeFormIntent, String>>,
+    },
+    Screenshot {
+        token: String,
+        browser_id: String,
+        active: Arc<Active>,
+        reply: oneshot::Sender<Result<Tf4ScreenshotEvidence, String>>,
+    },
     Click {
         token: String,
         browser_id: String,
@@ -934,6 +997,7 @@ enum NativeCommand {
 struct NativeClickCompletion {
     effect: NativeEffectReceipt,
     evidence: Option<NativeEffectEvidence>,
+    form_transport: Option<NativeFormTransportProof>,
 }
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 impl NativeClickCompletion {
@@ -941,6 +1005,7 @@ impl NativeClickCompletion {
         Self {
             effect,
             evidence: None,
+            form_transport: None,
         }
     }
 }
@@ -958,6 +1023,290 @@ pub struct NativeEffectEvidence {
     pub status_code: u16,
     pub observed_at_ms: u64,
     pub native_com_completed: bool,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeFormTransportProof {
+    pub method: &'static str,
+    pub destination_sha256: String,
+    pub body_sha256: String,
+    pub body_bytes: usize,
+    pub tf3_request_id: String,
+    pub status_code: Option<u16>,
+    pub effect_state: &'static str,
+    pub retry: &'static str,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOriginCredentialTransport {
+    pub request_method: &'static str,
+    pub origin: String,
+    pub destination_sha256: String,
+    pub reference_sha256: String,
+    pub tf3_request_id: String,
+    pub credential_sent_to_approved_origin: bool,
+    pub status_code: Option<u16>,
+    pub effect_state: &'static str,
+    pub retry: &'static str,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeScreenshotScope {
+    browser_session_id: String,
+    page_id: String,
+    page_generation: u64,
+    snapshot_id: String,
+    url: String,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+const TF4_BROWSER_SECRET_SERVICE: &str = "clack-tf4-origin-browser";
+
+/// A credential is a reference in the EXISTING OS secret authority, scoped
+/// to exactly one already observed native page's HTTPS origin, one GET
+/// destination and the page generation. No secret value crosses this scope.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NativeCredentialScope {
+    page: NativeScreenshotScope,
+    origin: Url,
+    destination: Url,
+    reference: String,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Debug)]
+pub(crate) struct NativeCredentialConsent {
+    actor: String,
+    session_id: String,
+    workspace_root: PathBuf,
+    scope: NativeCredentialScope,
+    approval_id: String,
+    expires: Instant,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl NativeCredentialConsent {
+    fn from_consumed(p: &Pending, approval_id: &str) -> Result<Self, String> {
+        let scope = p
+            .credential_scope
+            .as_ref()
+            .ok_or("native-credential-original-scope-missing")?
+            .clone();
+        if p.request.operation != TfBrowserOperation::CredentialGet
+            || !p.approved
+            || p.approving
+            || p.expires <= Instant::now()
+            || p.request.page_id.as_deref() != Some(scope.page.page_id.as_str())
+            || p.request.page_generation != Some(scope.page.page_generation)
+            || p.request.snapshot_id.as_deref() != Some(scope.page.snapshot_id.as_str())
+            || p.url.as_deref() != Some(scope.page.url.as_str())
+            || p.request.url.as_deref() != Some(scope.destination.as_str())
+            || p.request.text.as_deref() != Some(scope.reference.as_str())
+            || approval_id.len() != 48
+            || !approval_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err("native-credential-expired-or-original-consent-changed".into());
+        }
+        Ok(Self {
+            actor: p.request.actor.clone(),
+            session_id: p.request.session_id.clone(),
+            workspace_root: p.root.clone(),
+            scope,
+            approval_id: approval_id.to_owned(),
+            expires: p.expires,
+        })
+    }
+    pub(crate) fn tf3_identity(&self) -> (&str, &str, &Path) {
+        (&self.actor, &self.session_id, &self.workspace_root)
+    }
+    pub(super) fn matches_credential(&self, query: &tf_web::TfBrowserOriginCredentialGet) -> bool {
+        self.expires > Instant::now()
+            && !self.actor.is_empty()
+            && !self.session_id.is_empty()
+            && self.scope.destination == query.destination
+            && self.scope.origin == query.approved_origin
+            && self.scope.reference == query.reference
+            && self.scope.page.page_generation == query.source_page_generation
+            && self.approval_id == query.consumed_approval_id
+    }
+    fn credential_account(&self) -> String {
+        // Do not persist hostname, path or credential reference in a model
+        // transcript or network receipt. The existing keyring owner receives
+        // only this stable per-origin synthetic account identity.
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(self.scope.origin.origin().ascii_serialization().as_bytes())
+        );
+        format!("v1-{}-{}", &digest[..32], self.scope.reference)
+    }
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeKeyringCredential {
+    token: String,
+    expires_at_ms: u64,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn parse_native_keyring_credential(raw: &str, at_ms: u64) -> Result<String, String> {
+    if raw.len() > 4096 || raw.len() < 36 {
+        return Err("origin-credential-keyring-envelope-invalid".into());
+    }
+    let credential: NativeKeyringCredential =
+        serde_json::from_str(raw).map_err(|_| "origin-credential-keyring-envelope-invalid")?;
+    if credential.expires_at_ms <= at_ms
+        || credential.expires_at_ms.saturating_sub(at_ms) > 90 * 24 * 3600 * 1000
+        || credential.token.len() < 24
+        || credential.token.len() > 2048
+        || !credential
+            .token
+            .bytes()
+            .all(|v| v.is_ascii_graphic() && v != b'"' && v != b'\\')
+    {
+        return Err("origin-credential-keyring-expired-or-unsafe".into());
+    }
+    Ok(credential.token)
+}
+
+/// Non-forgeable native-only evidence authorization: constructed solely by
+/// consuming the original TF4 pending operation after genuine app consent.
+/// TF2 accepts this moved type, not a caller-supplied filename or token text.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) struct NativeScreenshotConsent {
+    token: String,
+    actor: String,
+    session_id: String,
+    workspace_root: PathBuf,
+    page: NativeScreenshotScope,
+    expires: Instant,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl NativeScreenshotConsent {
+    fn from_consumed(p: Pending, token: &str) -> Result<Self, String> {
+        let page = p
+            .screenshot_scope
+            .ok_or("screenshot-original-page-not-approved")?;
+        if p.request.operation != TfBrowserOperation::Screenshot
+            || !p.approved
+            || p.approving
+            || p.expires <= Instant::now()
+            || p.url.as_deref() != Some(page.url.as_str())
+            || p.request.page_id.as_deref() != Some(page.page_id.as_str())
+            || p.request.page_generation != Some(page.page_generation)
+            || p.request.snapshot_id.as_deref() != Some(page.snapshot_id.as_str())
+            || token.len() != 48
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err("screenshot-consumed-central-consent-scope-denied".into());
+        }
+        Ok(Self {
+            token: token.to_owned(),
+            actor: p.request.actor,
+            session_id: p.request.session_id,
+            workspace_root: p.root,
+            page,
+            expires: p.expires,
+        })
+    }
+
+    pub(crate) fn evidence_file_name(&self) -> String {
+        let hash = format!("{:x}", Sha256::digest(self.token.as_bytes()));
+        format!("tf4-browser-screenshot-{}.png", &hash[..24])
+    }
+
+    pub(crate) fn approved_workspace(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    pub(crate) fn matches_capture(&self, capture: &NativeScreenshotCapture) -> bool {
+        self.expires > Instant::now()
+            && !self.actor.is_empty()
+            && !self.session_id.is_empty()
+            && self.page.browser_session_id == capture.browser_session_id
+            && self.page.page_id == capture.page_id
+            && self.page.page_generation == capture.page_generation
+            && self.page.snapshot_id == capture.snapshot_id
+            && self.page.url == capture.url
+            && capture.sha256 == format!("{:x}", Sha256::digest(&capture.png))
+    }
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn consume_native_screenshot_approval(
+    token: &str,
+    browser_id: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+) -> Result<NativeScreenshotConsent, String> {
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "browser-state-unavailable")?;
+    let p = entries
+        .pending
+        .remove(token)
+        .ok_or("unknown-or-consumed-browser-token")?;
+    if p.expires <= Instant::now()
+        || !p.approved
+        || p.approving
+        || p.browser_id.as_deref() != Some(browser_id)
+        || p.request.operation != TfBrowserOperation::Screenshot
+        || scope(
+            &p.request.actor,
+            &p.request.session_id,
+            &p.request.workspace_root,
+            registry,
+        )? != p.root
+    {
+        return Err("native-screenshot-consent-expired-or-scope-denied".into());
+    }
+    let session = entries
+        .sessions
+        .get_mut(browser_id)
+        .ok_or("native-screenshot-session-expired")?;
+    let original = p
+        .screenshot_scope
+        .as_ref()
+        .ok_or("native-screenshot-original-observation-missing")?;
+    let page = session
+        .native
+        .as_ref()
+        .ok_or("native-screenshot-real-WebView2-session-required")?
+        .snapshot
+        .lock()
+        .map_err(|_| "native-screenshot-snapshot-unavailable")?
+        .clone()
+        .ok_or("native-screenshot-snapshot-lost")?;
+    if !session.busy
+        || session.native_reserved_action.as_deref() != Some(token)
+        || !matches_scope(session, &p.request, &p.root)
+        || p.revision != Some(session.revision)
+        || original.browser_session_id != page.browser_session_id
+        || original.page_id != page.page_id
+        || original.page_generation != page.page_generation
+        || original.snapshot_id != page.snapshot_id
+        || original.url != page.url
+        || page.truncated
+    {
+        return Err("native-screenshot-consumed-original-page-changed".into());
+    }
+    session.revision = session
+        .revision
+        .checked_add(1)
+        .ok_or("native-screenshot-revision-exhausted")?;
+    NativeScreenshotConsent::from_consumed(p, token)
 }
 /// One consumed central click remains owned by the SAME browser/TF3 actor
 /// until a separately completed native document request establishes an effect
@@ -1218,6 +1567,14 @@ struct Pending {
     native_role: Option<SemanticRole>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     native_action: Option<NativeRetainedAction>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    /// Exact *browser-captured* form body, action URL and original Node pair.
+    /// Populated before the genuine consent UI; never serialized/model-visible.
+    form_intent: Option<NativeFormIntent>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    screenshot_scope: Option<NativeScreenshotScope>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    credential_scope: Option<NativeCredentialScope>,
 }
 struct Active {
     cancelled: AtomicBool,
@@ -1485,6 +1842,51 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                 return Err("browser-operation-parameters-denied".into());
             }
         }
+        TfBrowserOperation::Screenshot => {
+            if req.url.is_some()
+                || req.element_id.is_some()
+                || req.selector.is_some()
+                || req.text.is_some()
+                || (req.page_id.is_some() != req.page_generation.is_some())
+                || (req.page_id.is_some() != req.snapshot_id.is_some())
+                || req.page_id.as_deref().is_some_and(|v| !valid_id(v))
+                || req.page_generation == Some(0)
+                || req.snapshot_id.as_deref().is_some_and(|v| !valid_id(v))
+            {
+                return Err("native-screenshot-exact-page-scope-required".into());
+            }
+        }
+        TfBrowserOperation::CredentialGet => {
+            let url = req
+                .url
+                .as_deref()
+                .ok_or("native-origin-credential-exact-destination-required")?;
+            let destination =
+                Url::parse(url).map_err(|_| "native-origin-credential-destination-invalid")?;
+            let reference = req
+                .text
+                .as_deref()
+                .ok_or("native-origin-credential-opaque-reference-required")?;
+            if req.selector.is_some()
+                || req.element_id.is_some()
+                || req.page_id.as_deref().is_none_or(|v| !valid_id(v))
+                || req.page_generation.is_none_or(|g| g == 0)
+                || req.snapshot_id.as_deref().is_none_or(|v| !valid_id(v))
+                || destination.scheme() != "https"
+                || destination.port().is_some()
+                || destination.query().is_some()
+                || destination.fragment().is_some()
+                || !destination.username().is_empty()
+                || destination.password().is_some()
+                || destination.as_str() != url
+                || reference.len() != 48
+                || !reference
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err("native-origin-credential-exact-scope-denied".into());
+            }
+        }
         operation if operation.native_action() => {
             if req.url.is_some()
                 || req.selector.is_some()
@@ -1555,6 +1957,10 @@ pub fn prepare(
     let mut native_role: Option<SemanticRole> = None;
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     let mut native_action: Option<NativeRetainedAction> = None;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut screenshot_scope: Option<NativeScreenshotScope> = None;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let mut credential_scope: Option<NativeCredentialScope> = None;
     let (browser_id, revision, url) = if matches!(
         req.operation,
         TfBrowserOperation::Open | TfBrowserOperation::OpenConfined
@@ -1585,7 +1991,10 @@ pub fn prepare(
             }
             if !matches!(
                 req.operation,
-                TfBrowserOperation::CloseConfined | TfBrowserOperation::ObserveConfined
+                TfBrowserOperation::CloseConfined
+                    | TfBrowserOperation::ObserveConfined
+                    | TfBrowserOperation::Screenshot
+                    | TfBrowserOperation::CredentialGet
             ) && !req.operation.native_action()
             {
                 return Err("confined-native-operation-not-yet-accepted".into());
@@ -1643,6 +2052,70 @@ pub fn prepare(
                 // before one single-use dispatch, never a model CSS selector.
                 native_effect = Some(BrowserEffect::Unknown);
                 native_action = Some(action);
+            } else if req.operation == TfBrowserOperation::Screenshot {
+                let page = native
+                    .snapshot
+                    .lock()
+                    .map_err(|_| "native-screenshot-snapshot-lock-unavailable")?
+                    .clone()
+                    .ok_or("native-screenshot-original-snapshot-required")?;
+                if page.truncated
+                    || req.page_id.as_deref() != Some(page.page_id.as_str())
+                    || req.page_generation != Some(page.page_generation)
+                    || req.snapshot_id.as_deref() != Some(page.snapshot_id.as_str())
+                    || page.url != session.snapshot.url
+                {
+                    return Err("native-screenshot-page-not-retained-or-sensitive".into());
+                }
+                screenshot_scope = Some(NativeScreenshotScope {
+                    browser_session_id: page.browser_session_id,
+                    page_id: page.page_id,
+                    page_generation: page.page_generation,
+                    snapshot_id: page.snapshot_id,
+                    url: page.url,
+                });
+            } else if req.operation == TfBrowserOperation::CredentialGet {
+                let page = native
+                    .snapshot
+                    .lock()
+                    .map_err(|_| "native-credential-original-snapshot-unavailable")?
+                    .clone()
+                    .ok_or("native-credential-original-page-required")?;
+                let destination = Url::parse(
+                    req.url
+                        .as_deref()
+                        .ok_or("native-credential-destination-missing")?,
+                )
+                .map_err(|_| "native-credential-destination-invalid")?;
+                let source = Url::parse(&page.url)
+                    .map_err(|_| "native-credential-original-origin-invalid")?;
+                if page.truncated
+                    || destination.origin() != source.origin()
+                    || source.scheme() != "https"
+                    || source.port().is_some()
+                    || page.url != session.snapshot.url
+                    || req.page_id.as_deref() != Some(page.page_id.as_str())
+                    || req.page_generation != Some(page.page_generation)
+                    || req.snapshot_id.as_deref() != Some(page.snapshot_id.as_str())
+                {
+                    return Err("native-credential-page-or-origin-not-original".into());
+                }
+                credential_scope = Some(NativeCredentialScope {
+                    page: NativeScreenshotScope {
+                        browser_session_id: page.browser_session_id,
+                        page_id: page.page_id,
+                        page_generation: page.page_generation,
+                        snapshot_id: page.snapshot_id,
+                        url: page.url,
+                    },
+                    origin: Url::parse(session.snapshot.url.as_str())
+                        .map_err(|_| "native-credential-source-invalid")?,
+                    destination,
+                    reference: req
+                        .text
+                        .clone()
+                        .ok_or("native-credential-reference-required")?,
+                });
             }
         } else if matches!(
             req.operation,
@@ -1719,7 +2192,11 @@ pub fn prepare(
             }
             operation
                 if operation == TfBrowserOperation::ObserveConfined
-                    || operation.native_action() =>
+                    || operation.native_action()
+                    || matches!(
+                        operation,
+                        TfBrowserOperation::Screenshot | TfBrowserOperation::CredentialGet
+                    ) =>
             {
                 // Bind the original approved origin in the existing immutable
                 // pending transaction. Do not show untrusted URL path/query in
@@ -1732,11 +2209,25 @@ pub fn prepare(
     };
     let request_id = nonce()?;
     let token = nonce()?;
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let screenshot_requires_approval = screenshot_scope.is_some();
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let credential_requires_approval = credential_scope.is_some();
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if req.operation == TfBrowserOperation::CredentialGet && credential_scope.is_none() {
+        return Err("native-origin-credential-WebView2-owner-required".into());
+    }
+    #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+    let credential_requires_approval = false;
+    #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+    let screenshot_requires_approval = false;
     let prepared = TfBrowserPrepared {
         token: token.clone(),
         request_id: request_id.clone(),
         operation: req.operation,
-        requires_approval: req.operation.approval_required(),
+        requires_approval: req.operation.approval_required()
+            || screenshot_requires_approval
+            || credential_requires_approval,
         workspace_root: root.to_string_lossy().into_owned(),
         browser_session_id: browser_id.clone(),
         engine: if matches!(
@@ -1751,6 +2242,8 @@ pub fn prepare(
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
                 | TfBrowserOperation::Submit
+                | TfBrowserOperation::Screenshot
+                | TfBrowserOperation::CredentialGet
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -1769,6 +2262,8 @@ pub fn prepare(
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
                 | TfBrowserOperation::Submit
+                | TfBrowserOperation::Screenshot
+                | TfBrowserOperation::CredentialGet
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -1796,6 +2291,12 @@ pub fn prepare(
             native_role,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             native_action,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            form_intent: None,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            screenshot_scope,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            credential_scope,
         },
     );
     Ok(prepared)
@@ -1911,6 +2412,12 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
         canonical_terminal: None,
         #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
         native_effect_evidence: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_form_transport: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_screenshot_evidence: None,
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        native_credential_transport: None,
         effect_state: "NoEffect",
         reason_code: "not-executed".into(),
         policy_decision: "denied",
@@ -1928,6 +2435,8 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
                 | TfBrowserOperation::Submit
+                | TfBrowserOperation::Screenshot
+                | TfBrowserOperation::CredentialGet
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ENGINE
@@ -1946,6 +2455,8 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
                 | TfBrowserOperation::Uncheck
                 | TfBrowserOperation::Scroll
                 | TfBrowserOperation::Submit
+                | TfBrowserOperation::Screenshot
+                | TfBrowserOperation::CredentialGet
                 | TfBrowserOperation::CloseConfined
         ) {
             CONFINED_ISOLATION
@@ -2000,6 +2511,7 @@ fn consume_native_action_approval(
         String,
         SemanticRole,
         String,
+        Option<NativeFormIntent>,
     ),
     String,
 > {
@@ -2077,6 +2589,25 @@ fn consume_native_action_approval(
     {
         return Err("confined-native-central-page-or-element-changed".into());
     }
+    if matches!(native.action, NativeRetainedAction::Submit(_)) {
+        let intent = p
+            .form_intent
+            .as_ref()
+            .ok_or("native-form-preconsent-capture-required")?;
+        if intent.target != *native.target
+            || intent.observation_id != native.observation_id
+            || intent.original_submitter_index != native.index
+            || native.selected_native_form.map(|(index, _)| index)
+                != Some(intent.original_form_index)
+            || intent.destination.query().is_some()
+            || intent.destination.fragment().is_some()
+            || intent.body_sha256 != format!("{:x}", Sha256::digest(&intent.body))
+        {
+            return Err("native-form-approved-body-or-original-node-changed".into());
+        }
+    } else if p.form_intent.is_some() {
+        return Err("native-form-grant-reused-for-another-action".into());
+    }
     let witness = NativeConsumedExactClickApproval::from_consumed_central_token(
         token.to_owned(),
         native,
@@ -2095,6 +2626,7 @@ fn consume_native_action_approval(
         id.clone(),
         p.native_role.ok_or("native-click-approved-role-missing")?,
         p.url.ok_or("native-click-approved-source-missing")?,
+        p.form_intent,
     ))
 }
 
@@ -2288,6 +2820,7 @@ async fn execute_confined_native(
                                 let _ = waiting.reply.send(Ok(NativeClickCompletion {
                                     effect: NativeEffectReceipt::classify(terminal),
                                     evidence,
+                                    form_transport: None,
                                 }));
                                 // The original busy lease is released once.
                             }
@@ -2329,6 +2862,88 @@ async fn execute_confined_native(
                                         }
                                     }
                                 }
+                                NativeCommand::CaptureForm {
+                                    target,
+                                    action,
+                                    reply,
+                                } => {
+                                    if !reply.is_closed() {
+                                        let captured = browser
+                                            .capture_form_in_control_turn(&target, action)
+                                            .await;
+                                        let failed = captured.is_err();
+                                        let _ = reply.send(captured);
+                                        if failed {
+                                            terminal = Err(
+                                                "confined-native-form-capture-uncertain".into(),
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                NativeCommand::Screenshot {
+                                    token,
+                                    browser_id,
+                                    active,
+                                    reply,
+                                } => {
+                                    let _lease = NativeActionBusyGuard {
+                                        app: service_app.clone(),
+                                        browser_id: browser_id.clone(),
+                                        token: token.clone(),
+                                    };
+                                    if reply.is_closed() {
+                                        continue;
+                                    }
+                                    let consent = consume_native_screenshot_approval(
+                                        &token,
+                                        &browser_id,
+                                        &registry,
+                                        &service_app.state::<TfBrowserState>(),
+                                    );
+                                    let result = match consent {
+                                        Ok(grant)
+                                            if !active.cancelled.load(Ordering::Acquire)
+                                                && active
+                                                    .native_click_phase
+                                                    .as_ref()
+                                                    .is_some_and(|phase| {
+                                                        phase
+                                                            .compare_exchange(
+                                                                NATIVE_CLICK_QUEUED,
+                                                                NATIVE_CLICK_DISPATCH_COMMITTED,
+                                                                Ordering::AcqRel,
+                                                                Ordering::Acquire,
+                                                            )
+                                                            .is_ok()
+                                                    }) =>
+                                        {
+                                            match browser.capture_screenshot_in_control_turn().await
+                                            {
+                                                Ok(captured) => {
+                                                    tf_operations::commit_native_screenshot_evidence(
+                                                        grant, captured, &registry,
+                                                    )
+                                                }
+                                                Err(reason) => Err(reason),
+                                            }
+                                        }
+                                        Ok(_) => {
+                                            Err("native-screenshot-cancelled-before-capture".into())
+                                        }
+                                        Err(reason) => Err(reason),
+                                    };
+                                    let failed = result.is_err();
+                                    let _ = reply.send(result);
+                                    if failed {
+                                        // Never retry an uncertain native capture or partial
+                                        // TF2 write. Shut down the owned WebView2 Job.
+                                        terminal = Err(
+                                            "native-screenshot-evidence-outcome-unknown".into(),
+                                        );
+                                        break;
+                                    }
+                                }
                                 NativeCommand::Click {
                                     token,
                                     browser_id,
@@ -2364,17 +2979,145 @@ async fn execute_confined_native(
                                             )
                                         })();
                                         let mut clicked_source = None;
+                                        let mut form_transport: Option<NativeFormTransportProof> =
+                                            None;
                                         let attempted = match approved {
                                             Ok((
                                                 grant,
                                                 approved_browser_id,
                                                 approved_role,
                                                 source_url,
+                                                approved_form,
                                             )) => {
                                                 if approved_browser_id != browser_id {
                                                     Ok((NativeEffectReceipt::classify(
                                                         NativeEffectTerminal::FailedBeforeDispatch,
                                                     ), None))
+                                                } else if matches!(
+                                                    action,
+                                                    NativeRetainedAction::Submit(_)
+                                                ) {
+                                                    // Original FORM+submitter capture was sealed
+                                                    // BEFORE consent. Re-read those SAME retained
+                                                    // nodes on a new exclusive COM turn. No
+                                                    // selector lookup, body substitution or page
+                                                    // requestSubmit()/fetch() is ever allowed.
+                                                    let recaptured = browser
+                                                        .capture_form_in_control_turn(
+                                                            &target,
+                                                            action.clone(),
+                                                        )
+                                                        .await;
+                                                    if !matches!(
+                                                        (approved_form.as_ref(), recaptured.as_ref()),
+                                                        (Some(approved), Ok(current)) if
+                                                            super::tf_browser_runtime::original_form_intent_unchanged(approved, current)
+                                                    ) {
+                                                        Ok((
+                                                            NativeEffectReceipt::classify(
+                                                                NativeEffectTerminal::Stale,
+                                                            ),
+                                                            None,
+                                                        ))
+                                                    } else if active
+                                                        .native_click_phase
+                                                        .as_ref()
+                                                        .is_none_or(|phase| {
+                                                            phase
+                                                                .compare_exchange(
+                                                                    NATIVE_CLICK_QUEUED,
+                                                                    NATIVE_CLICK_DISPATCH_COMMITTED,
+                                                                    Ordering::AcqRel,
+                                                                    Ordering::Acquire,
+                                                                )
+                                                                .is_err()
+                                                        })
+                                                    {
+                                                        Ok((NativeEffectReceipt::classify(
+                                                            NativeEffectTerminal::CancelledBeforeDispatch,
+                                                        ), None))
+                                                    } else {
+                                                        let form = recaptured.expect(
+                                                            "matched preconsent captured form",
+                                                        );
+                                                        let origin = Url::parse(&source_url)
+                                                            .map_err(|_| {
+                                                                "native-form-source-origin-invalid"
+                                                                    .to_owned()
+                                                            })?;
+                                                        let post = tf_web::TfBrowserBoundPost {
+                                                            destination: form.destination,
+                                                            approved_origin: origin.clone(),
+                                                            body: form.body,
+                                                            body_sha256: form.body_sha256,
+                                                            content_type:
+                                                                "application/x-www-form-urlencoded",
+                                                            source_page_generation: target
+                                                                .page_generation,
+                                                            original_form_index: form
+                                                                .original_form_index,
+                                                            original_submitter_index: form
+                                                                .original_submitter_index,
+                                                            consumed_approval_id: grant
+                                                                .action_id()
+                                                                .to_owned(),
+                                                        };
+                                                        let (
+                                                            approved_actor,
+                                                            approved_session,
+                                                            approved_root,
+                                                        ) = grant.tf3_identity();
+                                                        let approved_actor =
+                                                            approved_actor.to_owned();
+                                                        let approved_session =
+                                                            approved_session.to_owned();
+                                                        let approved_root = approved_root
+                                                            .to_string_lossy()
+                                                            .into_owned();
+                                                        let prepared =
+                                                            tf_web::prepare_browser_bound_post(
+                                                                grant,
+                                                                &approved_actor,
+                                                                &approved_session,
+                                                                &approved_root,
+                                                                post,
+                                                                &registry,
+                                                                &web,
+                                                            );
+                                                        match prepared {
+                                                            Ok(prepared) => {
+                                                                if let Ok(mut inner) = active.tf_web_token.lock() {
+                                                                    *inner = Some(prepared.token.clone());
+                                                                }
+                                                                match tf_web::execute_browser_bound_post(
+                                                                    &prepared.token, &registry, &web, &origin,
+                                                                ).await {
+                                                                    Ok(transport) => {
+                                                                        form_transport = Some(NativeFormTransportProof {
+                                                                            method: "POST",
+                                                                            destination_sha256: transport.destination_sha256,
+                                                                            body_sha256: transport.request_body_sha256,
+                                                                            body_bytes: transport.request_body_bytes,
+                                                                            tf3_request_id: transport.receipt.request_id,
+                                                                            status_code: transport.receipt.status_code,
+                                                                            effect_state: transport.receipt.effect_state,
+                                                                            retry: transport.receipt.retry,
+                                                                        });
+                                                                    }
+                                                                    Err(_) => {
+                                                                        // Network attempt may have escaped; never
+                                                                        // convert missing receipt to no effect.
+                                                                    }
+                                                                }
+                                                                Ok((NativeEffectReceipt::classify(
+                                                                    NativeEffectTerminal::Dispatched,
+                                                                ), None))
+                                                            }
+                                                            Err(_) => Ok((NativeEffectReceipt::classify(
+                                                                NativeEffectTerminal::FailedBeforeDispatch,
+                                                            ), None)),
+                                                        }
+                                                    }
                                                 } else if active
                                                     .native_click_phase
                                                     .as_ref()
@@ -2460,12 +3203,20 @@ async fn execute_confined_native(
                                                 });
                                             } else {
                                                 let _ = reply.send(attempted.map(|(effect, _)| {
-                                                    NativeClickCompletion::without_evidence(effect)
+                                                    NativeClickCompletion {
+                                                        effect,
+                                                        evidence: None,
+                                                        form_transport: form_transport.clone(),
+                                                    }
                                                 }));
                                             }
                                         } else {
                                             let _ = reply.send(attempted.map(|(effect, _)| {
-                                                NativeClickCompletion::without_evidence(effect)
+                                                NativeClickCompletion {
+                                                    effect,
+                                                    evidence: None,
+                                                    form_transport: form_transport.clone(),
+                                                }
                                             }));
                                         }
                                     }
@@ -2683,6 +3434,277 @@ async fn execute_confined_observation(
     Ok(receipt)
 }
 
+/// Screenshot is a distinct, genuine one-use native application consent.
+/// The existing sealed actor owns WebView2 and the existing TF2 authority
+/// atomically commits only the approved bounded PNG. No screenshot bytes,
+/// base64, cookies, page text, or unapproved destination reach this receipt.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+async fn execute_confined_screenshot(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+) -> Result<TfBrowserReceipt, String> {
+    let (p, sender, requester, active) = {
+        let mut entries = state
+            .entries
+            .lock()
+            .map_err(|_| "browser-state-unavailable")?;
+        reap(&mut entries);
+        let p = entries
+            .pending
+            .get(token)
+            .ok_or("unknown-or-consumed-browser-token")?
+            .clone();
+        if p.request.operation != TfBrowserOperation::Screenshot
+            || !p.approved
+            || p.approving
+            || p.expires <= Instant::now()
+            || p.screenshot_scope.is_none()
+            || scope(
+                &p.request.actor,
+                &p.request.session_id,
+                &p.request.workspace_root,
+                registry,
+            )? != p.root
+        {
+            return Err("native-screenshot-original-approval-required".into());
+        }
+        let id = p
+            .browser_id
+            .as_deref()
+            .ok_or("browser-session-id-required")?;
+        let session = entries
+            .sessions
+            .get_mut(id)
+            .ok_or("browser-session-expired")?;
+        if !matches_scope(session, &p.request, &p.root)
+            || p.revision != Some(session.revision)
+            || session.busy
+            || p.url.as_deref() != Some(session.snapshot.url.as_str())
+        {
+            return Err("native-screenshot-approval-session-revision-changed".into());
+        }
+        let owner = session
+            .native
+            .as_ref()
+            .ok_or("native-screenshot-WebView2-only")?;
+        if !owner.owner_alive.load(Ordering::Acquire) {
+            return Err("native-screenshot-owner-not-live".into());
+        }
+        let sender = owner.command_tx.clone();
+        let requester = owner.turn_requester.clone();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        session.busy = true;
+        session.native_reserved_action = Some(token.to_owned());
+        entries.active.insert(token.to_owned(), active.clone());
+        (p, sender, requester, active)
+    };
+    let id = p
+        .browser_id
+        .as_deref()
+        .ok_or("native-screenshot-browser-id-missing")?;
+    let _queue = NativeActionQueueGuard {
+        state,
+        browser_id: id.to_owned(),
+        token: token.to_owned(),
+    };
+    let mut receipt = initial_receipt(&p);
+    receipt.policy_decision = "allowed";
+    receipt.retry = "NEVER_REPLAY";
+    receipt.uncertainty = "native-screenshot-TF2-evidence-unverified";
+    let (reply, received) = oneshot::channel();
+    let send = tokio::time::timeout(
+        Duration::from_secs(3),
+        sender.send(NativeCommand::Screenshot {
+            token: token.to_owned(),
+            browser_id: id.to_owned(),
+            active,
+            reply,
+        }),
+    )
+    .await;
+    let result = match send {
+        Ok(Ok(())) => {
+            requester.request();
+            tokio::time::timeout(Duration::from_secs(25), received).await
+        }
+        _ => {
+            receipt.terminal = "unknown";
+            receipt.reason_code = "native-screenshot-command-delivery-uncertain".into();
+            receipt.effect_state = "Unknown";
+            receipt.ended_at = millis();
+            return Ok(receipt);
+        }
+    };
+    match result {
+        Ok(Ok(Ok(evidence))) => {
+            receipt.terminal = "completed";
+            receipt.reason_code = "native-screenshot-TF2-file-readback-verified".into();
+            receipt.effect_state = "Observed";
+            receipt.uncertainty =
+                "native-TF2-workspace-file-effect-verified-not-production-accepted";
+            receipt.snapshot_id = Some(evidence.snapshot_id.clone());
+            receipt.content_sha256 = Some(evidence.content_sha256.clone());
+            receipt.bytes_received = Some(evidence.bytes_verified as u64);
+            receipt.native_screenshot_evidence = Some(evidence);
+            receipt.unsupported.retain(|v| *v != "screenshots");
+        }
+        _ => {
+            receipt.terminal = "unknown";
+            receipt.reason_code = "native-screenshot-or-TF2-commit-outcome-uncertain".into();
+            receipt.effect_state = "Unknown";
+            receipt.retry = "NEVER_REPLAY";
+        }
+    }
+    receipt.ended_at = millis();
+    Ok(receipt)
+}
+
+/// The sole native origin-scoped credential use path. The existing TF4
+/// application approval token is atomically consumed, the existing OS
+/// keyring re-read (revocation/expiry at dispatch), and the existing TF3
+/// public DNS/IP/TLS/one-use network owner sends one GET. No raw secret or
+/// response body may enter WebView2, Tauri/model receipts or screenshots.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+async fn execute_confined_credential_get(
+    token: &str,
+    app: &tauri::AppHandle,
+    registry: &WorkspaceRegistry,
+    state: &TfBrowserState,
+    web: &TfWebState,
+) -> Result<TfBrowserReceipt, String> {
+    let (p, active, _central_lease) = consume(token, registry, state)?;
+    let mut receipt = initial_receipt(&p);
+    receipt.retry = "NEVER_REPLAY";
+    receipt.policy_decision = "allowed";
+    receipt.uncertainty = "credential-not-yet-delivered-to-approved-origin";
+    let grant = NativeCredentialConsent::from_consumed(&p, token)?;
+    let origin = grant.scope.origin.clone();
+    let request = tf_web::TfBrowserOriginCredentialGet {
+        destination: grant.scope.destination.clone(),
+        approved_origin: origin.clone(),
+        reference: grant.scope.reference.clone(),
+        source_page_generation: grant.scope.page.page_generation,
+        consumed_approval_id: token.to_owned(),
+    };
+    // The credential's account is a hash of the APPROVED origin plus an
+    // opaque ref, not a page/model-selected keyring service or arbitrary name.
+    let account = grant.credential_account();
+    let secret = match secrets::read_secret(
+        app,
+        &app.state::<SecretsState>(),
+        TF4_BROWSER_SECRET_SERVICE,
+        &account,
+    ) {
+        Ok(Some(envelope)) => parse_native_keyring_credential(&envelope, millis()).ok(),
+        _ => None,
+    };
+    let Some(secret) = secret else {
+        receipt.terminal = "denied";
+        receipt.reason_code = "native-credential-revoked-expired-or-invalid".into();
+        receipt.effect_state = "NoEffect";
+        receipt.policy_decision = "denied";
+        receipt.ended_at = millis();
+        return Ok(receipt);
+    };
+    if active.cancelled.load(Ordering::Acquire) {
+        receipt.terminal = "cancelled";
+        receipt.reason_code = "native-credential-cancelled-before-network".into();
+        receipt.effect_state = "NoEffect";
+        receipt.ended_at = millis();
+        return Ok(receipt);
+    }
+    let prepared =
+        match tf_web::prepare_browser_origin_credential_get(grant, request, registry, web) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                receipt.terminal = "denied";
+                receipt.reason_code = "native-credential-tf3-origin-or-grant-denied".into();
+                receipt.effect_state = "NoEffect";
+                receipt.policy_decision = "denied";
+                receipt.ended_at = millis();
+                return Ok(receipt);
+            }
+        };
+    {
+        let mut inner = active
+            .tf_web_token
+            .lock()
+            .map_err(|_| "native-credential-active-tf3-token-lock-unavailable")?;
+        *inner = Some(prepared.token.clone());
+    }
+    // If cancelled after prepare but before send, the exact TF3 token is
+    // burned and no request is made. After send an uncertain result is NEVER
+    // replayed by this or any alternate network path.
+    if active.cancelled.load(Ordering::Acquire) {
+        let _ = tf_web::cancel(&prepared.token, web);
+        receipt.terminal = "cancelled";
+        receipt.reason_code = "native-credential-cancelled-before-tf3-dispatch".into();
+        receipt.effect_state = "NoEffect";
+        receipt.ended_at = millis();
+        return Ok(receipt);
+    }
+    match tf_web::execute_browser_origin_credential_get(
+        &prepared.token,
+        registry,
+        web,
+        &origin,
+        secret,
+    )
+    .await
+    {
+        Ok(result) => {
+            receipt.terminal = if result.terminal == "completed" {
+                "completed"
+            } else {
+                "unknown"
+            };
+            receipt.effect_state = if result.credential_used {
+                "Unknown"
+            } else {
+                result.effect_state
+            };
+            receipt.reason_code = if result.credential_used {
+                "credential-delivered-to-exact-approved-origin-transport-only".into()
+            } else {
+                "native-credential-tf3-denied-or-not-attempted".into()
+            };
+            receipt.retry = "NEVER_REPLAY";
+            receipt.status_code = result.status_code;
+            receipt.dns_evidence = result.dns_evidence;
+            receipt.native_credential_transport = Some(NativeOriginCredentialTransport {
+                request_method: "GET",
+                origin: origin.origin().ascii_serialization(),
+                destination_sha256: format!(
+                    "{:x}",
+                    Sha256::digest(p.request.url.as_deref().unwrap_or("").as_bytes())
+                ),
+                reference_sha256: format!(
+                    "{:x}",
+                    Sha256::digest(p.request.text.as_deref().unwrap_or("").as_bytes())
+                ),
+                tf3_request_id: result.request_id,
+                credential_sent_to_approved_origin: result.credential_used,
+                status_code: result.status_code,
+                effect_state: receipt.effect_state,
+                retry: "NEVER_REPLAY",
+            });
+            receipt.uncertainty = "credential-transport-only-not-browser-business-effect-proof";
+        }
+        Err(_) => {
+            receipt.terminal = "unknown";
+            receipt.effect_state = "Unknown";
+            receipt.reason_code = "native-credential-tf3-transport-outcome-unknown".into();
+            receipt.retry = "NEVER_REPLAY";
+        }
+    }
+    receipt.ended_at = millis();
+    Ok(receipt)
+}
+
 /// The original TF4 pending entry, UI approval and approved exact snapshot
 /// remain authoritative until the native actor reaches an exclusive host turn.
 /// This function cannot fabricate a grant or dispatch directly through IPC.
@@ -2805,6 +3827,7 @@ async fn execute_confined_retained_action(
     };
     let effect = completion.effect;
     receipt.native_effect_evidence = completion.evidence;
+    receipt.native_form_transport = completion.form_transport;
     receipt.native_terminal = Some(effect.terminal);
     receipt.canonical_terminal = Some(effect.canonical_terminal);
     receipt.terminal = match effect.canonical_terminal {
@@ -3202,7 +4225,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         .clone()
         .try_acquire_owned()
         .map_err(|_| "browser-native-dialog-capacity-exceeded".to_owned())?;
-    let pending = {
+    let mut pending = {
         let state = app.state::<TfBrowserState>();
         let mut entries = state
             .entries
@@ -3213,12 +4236,107 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             .pending
             .get_mut(&token)
             .ok_or("unknown-or-consumed-browser-token")?;
-        if !p.request.operation.approval_required() || p.approved || p.approving {
+        if !(p.request.operation.approval_required() || {
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            {
+                p.screenshot_scope.is_some() || p.credential_scope.is_some()
+            }
+            #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+            {
+                false
+            }
+        }) || p.approved
+            || p.approving
+        {
             return Err("browser-approval-not-applicable".into());
         }
         p.approving = true;
         p.clone()
     };
+    // SUBMIT is the only native effect requiring sensitive successful-control
+    // bytes. Fetch the ORIGINAL retained FORM+submitter over the existing
+    // serialized host pipe *before* showing the genuine consent dialog.
+    // Nothing comes from request.text, a selector, or model-supplied bytes.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if pending.request.operation == TfBrowserOperation::Submit {
+        let (sender, requester, target, action) = {
+            let authority = app.state::<TfBrowserState>();
+            let entries = authority
+                .entries
+                .lock()
+                .map_err(|_| "browser-state-unavailable")?;
+            let current = entries
+                .pending
+                .get(&token)
+                .ok_or("browser-form-pending-consent-lost")?;
+            let id = current
+                .browser_id
+                .as_deref()
+                .ok_or("browser-form-session-missing")?;
+            let owner = entries
+                .sessions
+                .get(id)
+                .and_then(|session| session.native.as_ref())
+                .ok_or("browser-form-native-owner-unavailable")?;
+            if !current.approving || current.approved || !owner.owner_alive.load(Ordering::Acquire)
+            {
+                return Err("browser-form-consent-state-stale".into());
+            }
+            (
+                owner.command_tx.clone(),
+                owner.turn_requester.clone(),
+                current
+                    .native_target
+                    .clone()
+                    .ok_or("browser-form-original-submitter-missing")?,
+                current
+                    .native_action
+                    .clone()
+                    .ok_or("browser-form-original-form-missing")?,
+            )
+        };
+        let (reply, received) = oneshot::channel();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            sender.send(NativeCommand::CaptureForm {
+                target: target.clone(),
+                action,
+                reply,
+            }),
+        )
+        .await
+        .map_err(|_| "browser-form-capture-queue-timeout")?
+        .map_err(|_| "browser-form-capture-queue-closed")?;
+        requester.request();
+        let intent = tokio::time::timeout(Duration::from_secs(18), received)
+            .await
+            .map_err(|_| "browser-form-capture-timeout")?
+            .map_err(|_| "browser-form-capture-owner-stopped")??;
+        if intent.target != target || intent.original_form_index == intent.original_submitter_index
+        {
+            return Err("browser-form-capture-target-changed".into());
+        }
+        let authority = app.state::<TfBrowserState>();
+        let mut entries = authority
+            .entries
+            .lock()
+            .map_err(|_| "browser-state-unavailable")?;
+        let current = entries
+            .pending
+            .get_mut(&token)
+            .ok_or("browser-form-pending-consent-lost")?;
+        if !current.approving
+            || current.approved
+            || current.request_id != pending.request_id
+            || current.revision != pending.revision
+            || current.native_target != pending.native_target
+            || current.form_intent.is_some()
+        {
+            return Err("browser-form-capture-consent-scope-changed".into());
+        }
+        current.form_intent = Some(intent.clone());
+        pending.form_intent = Some(intent);
+    }
     // Explicitly do NOT display an arbitrary query string: it might contain
     // untrusted credentials, even though TF3 later rejects sensitive keys.
     let target = pending.url.as_deref().and_then(|v| Url::parse(v).ok());
@@ -3229,7 +4347,17 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
     let native_confined = matches!(
         pending.request.operation,
         TfBrowserOperation::OpenConfined | TfBrowserOperation::ObserveConfined
-    ) || pending.request.operation.native_action();
+    ) || pending.request.operation.native_action()
+        || {
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            {
+                pending.screenshot_scope.is_some() || pending.credential_scope.is_some()
+            }
+            #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+            {
+                false
+            }
+        };
     let native_purpose = match pending.request.operation {
         TfBrowserOperation::OpenConfined =>
             "Start one isolated AppContainer/WebView2 HTTPS session. No native page gesture is authorized by this approval.",
@@ -3250,11 +4378,36 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         TfBrowserOperation::Scroll =>
             "Scroll ONE exact retained node by 120 pixels in the approved direction. Scroll handlers may have external effects; no automatic replay.",
         TfBrowserOperation::Submit =>
-            "Approve ONE original retained submitter bound to a SECOND original retained FORM. No TF3 write authority is granted: actual form submission remains blocked until independently authorized and verifiable. Never retry an uncertain submission.",
+            "Approve exactly ONE native original-FORM/submitter POST with its private pre-captured method, destination, encoding, successful controls and body digest. The parent TF3 broker sends one write without activating page JavaScript; HTTP success alone is UNKNOWN and NEVER_REPLAY.",
+        TfBrowserOperation::Screenshot =>
+            "Approve ONE bounded 1024x768 native PNG viewport screenshot of this exact retained WebView2 page, saved once through TF2 in the selected authorized workspace. Screenshots can expose private on-screen content to anyone authorized to read that workspace. No pixels may enter model context, semantic snapshots or receipts; a source-matched installed native effect remains independently unaccepted.",
+        TfBrowserOperation::CredentialGet =>
+            "Approve ONE trusted parent TF3 HTTPS GET to exactly the displayed same-origin destination using ONE opaque reference from the EXISTING OS secret store. Authentication is sent only in the network Authorization header to that approved origin, NEVER to the browser DOM, model, screenshot, logs or receipts. The origin, credential expiration and revocation are rechecked immediately before dispatch. No redirects, cookies, implicit propagation or replay.",
         _ => "Only TF3 pinned HTTP(S) text retrieval is supported; redirects and targets require per-hop policy.",
     };
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-    let native_target_details = if pending.request.operation.native_action() {
+    let native_target_details = if pending.request.operation == TfBrowserOperation::Screenshot
+        && pending.screenshot_scope.is_some()
+    {
+        let scope = pending.screenshot_scope.as_ref().unwrap();
+        let file_key = format!("{:x}", Sha256::digest(token.as_bytes()));
+        format!(
+            "\nExact authenticated page: {} / generation {}\nSnapshot identity: {}\nSource HTTPS origin: {}\nSelected TF2 workspace evidence destination: tf4-browser-screenshot-{}.png\nImage evidence may contain sensitive on-screen content. Authorize only if this workspace is trusted. The model/browser is not granted read access by this approval.\n",
+            scope.page_id, scope.page_generation, scope.snapshot_id,
+            target_origin_for_approval(Some(&scope.url))?, &file_key[..24],
+        )
+    } else if pending.request.operation == TfBrowserOperation::CredentialGet
+        && pending.credential_scope.is_some()
+    {
+        let scope = pending.credential_scope.as_ref().unwrap();
+        let opaque_sha = format!("{:x}", Sha256::digest(scope.reference.as_bytes()));
+        format!(
+            "\nOriginal retained page: {} / generation {}\nSnapshot identity: {}\nTrust origin: {}\nExactly ONE GET destination: {}\nOpaque keyring reference SHA-256: {}\nKeyring service: {}\nNative approval expires within 60s; the separately stored credential envelope must expire within 90 days. No renderer/model secret access, cookie or redirect is authorized.\n",
+            scope.page.page_id, scope.page.page_generation, scope.page.snapshot_id,
+            scope.origin.origin().ascii_serialization(),
+            scope.destination, opaque_sha, TF4_BROWSER_SECRET_SERVICE,
+        )
+    } else if pending.request.operation.native_action() {
         let target = pending
             .native_target
             .as_ref()
@@ -3288,7 +4441,15 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
                 format!("EXACT vertical scroll delta: {delta} native CSS pixels")
             }
             NativeRetainedAction::Submit(form_ref) => {
-                format!("EXACT original retained FORM reference: {form_ref}; submission remains blocked")
+                let intent = pending
+                    .form_intent
+                    .as_ref()
+                    .ok_or("native-submit-original-form-capture-required")?;
+                format!(
+                    "EXACT original retained FORM: {form_ref}\nMETHOD: POST\nENCODING: application/x-www-form-urlencoded\nExact destination: {}\nOriginal successful-control body: {} UTF-8 bytes, SHA-256 {}\nOriginal submitter visit index: {}, FORM visit index: {}\nNo additional page writes authorized.",
+                    intent.destination, intent.body.len(), intent.body_sha256,
+                    intent.original_submitter_index, intent.original_form_index,
+                )
             }
         };
         format!(
@@ -3360,9 +4521,30 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         || live.url != pending.url
         || live.browser_id != pending.browser_id
         || live.revision != pending.revision
+        || {
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            {
+                live.form_intent != pending.form_intent
+                    || live.screenshot_scope != pending.screenshot_scope
+                    || live.credential_scope != pending.credential_scope
+            }
+            #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+            {
+                false
+            }
+        }
         || live.approved
         || !live.approving
-        || !live.request.operation.approval_required()
+        || !(live.request.operation.approval_required() || {
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            {
+                live.screenshot_scope.is_some() || live.credential_scope.is_some()
+            }
+            #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+            {
+                false
+            }
+        })
     {
         return Err("browser-native-approval-scope-changed".into());
     }
@@ -3393,6 +4575,24 @@ pub async fn tf_browser_execute(
             }
             Some(TfBrowserOperation::ObserveConfined) => {
                 return execute_confined_observation(&token, &registry, &state).await;
+            }
+            Some(TfBrowserOperation::Screenshot) => {
+                let native = state
+                    .entries
+                    .lock()
+                    .map_err(|_| "browser-state-unavailable")?
+                    .pending
+                    .get(&token)
+                    .is_some_and(|p| p.screenshot_scope.is_some());
+                if native {
+                    return execute_confined_screenshot(&token, &registry, &state).await;
+                }
+            }
+            Some(TfBrowserOperation::CredentialGet) => {
+                return execute_confined_credential_get(
+                    &token, &app, &registry, &state, &web_state,
+                )
+                .await;
             }
             Some(operation) if operation.native_action() => {
                 return execute_confined_retained_action(&token, &registry, &state, &web_state)
@@ -3450,6 +4650,176 @@ mod tests {
             TfBrowserState::default(),
             TfWebState::default(),
         )
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn screenshot_uses_original_consumed_consent_and_actual_tf2_atomic_workspace_commit() {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        let (dir, registry, _, _) = setup();
+        let raw = BASE64.decode(PNG).unwrap();
+        let source = NativeScreenshotScope {
+            browser_session_id: "a".repeat(48),
+            page_id: "b".repeat(48),
+            page_generation: 3,
+            snapshot_id: "c".repeat(48),
+            url: "https://example.org/".into(),
+        };
+        let grant = || NativeScreenshotConsent {
+            token: "d".repeat(48),
+            actor: "fixture-actor".into(),
+            session_id: "session-1".into(),
+            workspace_root: std::fs::canonicalize(dir.path()).unwrap(),
+            page: source.clone(),
+            expires: Instant::now() + Duration::from_secs(30),
+        };
+        let capture = || NativeScreenshotCapture {
+            browser_session_id: source.browser_session_id.clone(),
+            page_id: source.page_id.clone(),
+            page_generation: source.page_generation,
+            snapshot_id: source.snapshot_id.clone(),
+            url: source.url.clone(),
+            width: 1,
+            height: 1,
+            captured_at_ms: 123456789,
+            sha256: format!("{:x}", Sha256::digest(&raw)),
+            png: raw.clone(),
+        };
+        let mut wrong_page = capture();
+        wrong_page.page_id = "e".repeat(48);
+        assert!(!grant().matches_capture(&wrong_page));
+        assert!(
+            tf_operations::commit_native_screenshot_evidence(grant(), wrong_page, &registry,)
+                .is_err(),
+            "a changed page cannot commit any screenshot evidence"
+        );
+        let mut wrong_digest = capture();
+        wrong_digest.sha256 = "0".repeat(64);
+        assert!(
+            tf_operations::commit_native_screenshot_evidence(grant(), wrong_digest, &registry,)
+                .is_err(),
+            "a replaced image with a new hash cannot be consent"
+        );
+        let result =
+            tf_operations::commit_native_screenshot_evidence(grant(), capture(), &registry)
+                .unwrap();
+        let committed = dir.path().join(&result.workspace_relative_file);
+        assert_eq!(std::fs::read(&committed).unwrap(), raw);
+        assert_eq!(result.effect_state, "Observed");
+        assert_eq!(result.retry, "NEVER_REPLAY");
+        assert_eq!(result.content_sha256, format!("{:x}", Sha256::digest(&raw)));
+        assert_eq!(result.bytes_verified, raw.len());
+        assert!(result
+            .workspace_relative_file
+            .starts_with("tf4-browser-screenshot-"));
+        assert!(result.workspace_relative_file.ends_with(".png"));
+        let output = serde_json::to_string(&result).unwrap();
+        assert!(!output.contains(PNG) && !output.contains("example.org"));
+        assert!(
+            tf_operations::commit_native_screenshot_evidence(grant(), capture(), &registry,)
+                .is_err(),
+            "same exact approved file must never be overwritten/replayed"
+        );
+        assert_eq!(std::fs::read(&committed).unwrap(), raw);
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_origin_credential_reference_binds_exact_grant_revocation_and_expiration() {
+        const SYNTHETIC: &str = "synthetic-fixture-credential-not-real";
+        let origin = Url::parse("https://fixture.example/").unwrap();
+        let ref_id = "a".repeat(48);
+        let page = NativeScreenshotScope {
+            browser_session_id: "b".repeat(48),
+            page_id: "c".repeat(48),
+            page_generation: 7,
+            snapshot_id: "d".repeat(48),
+            url: origin.to_string(),
+        };
+        let scope = NativeCredentialScope {
+            page: page.clone(),
+            origin: origin.clone(),
+            destination: Url::parse("https://fixture.example/case/nonce/credential").unwrap(),
+            reference: ref_id.clone(),
+        };
+        let grant = NativeCredentialConsent {
+            actor: "test-actor".into(),
+            session_id: "test-session".into(),
+            workspace_root: PathBuf::from("C:/test-scope"),
+            scope: scope.clone(),
+            approval_id: "f".repeat(48),
+            expires: Instant::now() + Duration::from_secs(30),
+        };
+        let make_query = || tf_web::TfBrowserOriginCredentialGet {
+            destination: scope.destination.clone(),
+            approved_origin: scope.origin.clone(),
+            reference: scope.reference.clone(),
+            source_page_generation: scope.page.page_generation,
+            consumed_approval_id: "f".repeat(48),
+        };
+        assert!(grant.matches_credential(&make_query()));
+        assert_eq!(grant.tf3_identity().0, "test-actor");
+        let other_origin = NativeCredentialConsent {
+            scope: NativeCredentialScope {
+                origin: Url::parse("https://other.example/").unwrap(),
+                ..scope.clone()
+            },
+            ..NativeCredentialConsent {
+                actor: grant.actor.clone(),
+                session_id: grant.session_id.clone(),
+                workspace_root: grant.workspace_root.clone(),
+                scope: scope.clone(),
+                approval_id: grant.approval_id.clone(),
+                expires: grant.expires,
+            }
+        };
+        assert_ne!(
+            grant.credential_account(),
+            other_origin.credential_account()
+        );
+        let mut forged = make_query();
+        forged.destination = Url::parse("https://fixture.example/other").unwrap();
+        assert!(!grant.matches_credential(&forged));
+        forged = make_query();
+        forged.approved_origin = Url::parse("https://other.example/").unwrap();
+        assert!(!grant.matches_credential(&forged));
+        forged = make_query();
+        forged.reference = "0".repeat(48);
+        assert!(!grant.matches_credential(&forged));
+        forged = make_query();
+        forged.source_page_generation += 1;
+        assert!(!grant.matches_credential(&forged));
+        forged = make_query();
+        forged.consumed_approval_id = "0".repeat(48);
+        assert!(!grant.matches_credential(&forged));
+        let now = millis();
+        let envelope = serde_json::json!({
+            "token":SYNTHETIC,
+            "expiresAtMs":now+20_000
+        })
+        .to_string();
+        assert_eq!(
+            parse_native_keyring_credential(&envelope, now).unwrap(),
+            SYNTHETIC
+        );
+        assert!(
+            parse_native_keyring_credential(&envelope, now + 25_000).is_err(),
+            "keyring entry expiry must be checked immediately before dispatch"
+        );
+        let injected = serde_json::json!({"token":SYNTHETIC,
+            "expiresAtMs":now+20_000,"redirectOrigin":"other"})
+        .to_string();
+        assert!(parse_native_keyring_credential(&injected, now).is_err());
+        let stale = serde_json::json!({"token":SYNTHETIC,
+            "expiresAtMs":now+100*24*3600*1000})
+        .to_string();
+        assert!(parse_native_keyring_credential(&stale, now).is_err());
+        assert!(parse_native_keyring_credential("", now).is_err());
+        let output = format!("{grant:?}");
+        // Scope never contains raw credential bytes; keyring values are
+        // fetched only by the existing SecretsState at execution.
+        assert!(!output.contains(SYNTHETIC));
     }
     fn req(root: &Path, operation: TfBrowserOperation) -> TfBrowserRequest {
         TfBrowserRequest {

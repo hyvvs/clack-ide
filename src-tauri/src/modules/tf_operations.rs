@@ -193,6 +193,27 @@ pub struct TfOperationReceipt {
     pub isolation: &'static str,
 }
 
+/// A private native browser evidence result. The PNG bytes never appear in
+/// this receipt; only its independent TF2-verified workspace file identity.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tf4ScreenshotEvidence {
+    pub format: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub captured_at_ms: u64,
+    pub page_id: String,
+    pub page_generation: u64,
+    pub snapshot_id: String,
+    pub url_sha256: String,
+    pub content_sha256: String,
+    pub bytes_verified: usize,
+    pub workspace_relative_file: String,
+    pub effect_state: &'static str,
+    pub retry: &'static str,
+}
+
 #[derive(Clone)]
 struct Pending {
     request_id: String,
@@ -1022,6 +1043,90 @@ mod windows {
         }
         // Best effort persistence on Windows; NamedTempFile is in destination directory.
         Ok(())
+    }
+
+    /// The native TF4 Screenshot caller must move its genuine, consumed
+    /// application-approval witness into this existing TF2 path/lease/write
+    /// authority. No separate filesystem policy, caller-supplied destination,
+    /// browser process file handle or unapproved raw model download exists.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    pub(crate) fn commit_native_screenshot_evidence(
+        grant: crate::modules::net::tf_browser::NativeScreenshotConsent,
+        capture: crate::modules::net::tf_browser_runtime::NativeScreenshotCapture,
+        registry: &WorkspaceRegistry,
+    ) -> Result<Tf4ScreenshotEvidence, String> {
+        if !grant.matches_capture(&capture)
+            || capture.png.len() < 45
+            || capture.png.len() > 64 * 1024
+            || !capture.png.starts_with(b"\x89PNG\r\n\x1a\n")
+            || !capture.png.ends_with(b"\x00\x00\x00\x00IEND\xaeB\x60\x82")
+            || !matches!(capture.width, 1..=1024)
+            || !matches!(capture.height, 1..=768)
+        {
+            return Err("TF2 native screenshot: consumed consent or PNG scope denied".into());
+        }
+        // Rust's Windows canonicalize may return a \\?\C:\... result.
+        // The existing TF2 public lexical boundary intentionally refuses
+        // device/verbatim user input. Translate ONLY this authenticated,
+        // already-canonical internal path to its plain DOS spelling, then
+        // let the identical TF2 scope()/reparse checks independently resolve
+        // it and require exact equality with the consumed grant's path.
+        let raw_root = grant.approved_workspace().to_string_lossy();
+        let scoped_root = if let Some(plain) = raw_root.strip_prefix(r"\\?\") {
+            if plain.as_bytes().get(1) != Some(&b':')
+                || plain.as_bytes().get(2) != Some(&b'\\')
+                || !plain.as_bytes()[0].is_ascii_alphabetic()
+            {
+                return Err("TF2 native screenshot canonical path is not a local disk".into());
+            }
+            plain.to_owned()
+        } else {
+            raw_root.into_owned()
+        };
+        let (root, cwd) = scope(registry, &scoped_root, &scoped_root)?;
+        if root != grant.approved_workspace() || cwd != root {
+            return Err("TF2 screenshot selected workspace identity changed".into());
+        }
+        let filename = grant.evidence_file_name();
+        let path = target(&filename, &root, &cwd, true, false)?;
+        if path.exists() {
+            return Err("TF2 screenshot evidence already exists; never replay".into());
+        }
+        let _leases = lease_write_parents(&root, std::slice::from_ref(&path))?;
+        inspect_components(&path)?;
+        if path.exists() {
+            return Err("TF2 screenshot evidence appeared before write".into());
+        }
+        let digest = sha(&capture.png);
+        if digest != capture.sha256 {
+            return Err("TF2 screenshot changed before write".into());
+        }
+        // After this point even an error may mean an external file effect.
+        // No retry-to-PASS, overwrite or second destination is ever issued.
+        same_dir_write(&path, &capture.png, false)?;
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 screenshot final path identity changed; effect unknown".into());
+        }
+        let independently_read = read_small(&path)?;
+        if independently_read.len() != capture.png.len() || sha(&independently_read) != digest {
+            return Err("TF2 screenshot independent final digest mismatch; effect unknown".into());
+        }
+        Ok(Tf4ScreenshotEvidence {
+            format: "png",
+            width: capture.width,
+            height: capture.height,
+            captured_at_ms: capture.captured_at_ms,
+            page_id: capture.page_id,
+            page_generation: capture.page_generation,
+            snapshot_id: capture.snapshot_id,
+            url_sha256: sha(capture.url.as_bytes()),
+            content_sha256: digest,
+            bytes_verified: independently_read.len(),
+            workspace_relative_file: filename,
+            effect_state: "Observed",
+            retry: "NEVER_REPLAY",
+        })
     }
     fn checked_file_mutation(
         p: &Pending,
@@ -2280,6 +2385,8 @@ mod windows {
     }
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) use windows::commit_native_screenshot_evidence;
 #[cfg(windows)]
 pub use windows::{approve, execute, prepare};
 

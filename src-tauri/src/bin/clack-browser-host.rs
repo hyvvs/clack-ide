@@ -96,6 +96,10 @@ mod host {
     const PRODUCTION_DOM_MAX_REQUESTS: u64 = 16;
     const PRODUCTION_DOM_MAX_CHECKS: u64 = 256;
     const PRODUCTION_DOM_DEADLINE: Duration = Duration::from_secs(3);
+    // A full-page unbounded image or CDP data URL must NEVER cross the pipe.
+    // This is a small native viewport PNG evidence capture, not a PDF/export.
+    const PRODUCTION_SCREENSHOT_BYTES_LIMIT: usize = 64 * 1024;
+    const PRODUCTION_SCREENSHOT_CDP_LIMIT: usize = 96 * 1024;
     // A control turn is a scheduling lease, NOT an action approval. The broker
     // worker alone holds both pipe handles and never forwards a GET while a
     // host-issued turn is outstanding.
@@ -388,12 +392,50 @@ mod host {
             || node.scrollHeight <= node.clientHeight) return {dispatched:false};
         const before = node.scrollTop;
         this.state.changed = true;
+        this.state.scrollBefore = before;
+        this.state.scrollSlot = slot;
         node.scrollBy(0, deltaY);
         return {dispatched:true, observed:node.isConnected &&
           node.ownerDocument === document &&
           (deltaY > 0 ? node.scrollTop > before : node.scrollTop < before)};
       }
       return {dispatched:false};
+    }"#;
+    // A SECOND WebView2 COM Runtime.callFunctionOn, after the first native
+    // mutation callback, observes the SAME original retained Node and exact
+    // approved parameters. It cannot select a replacement or return values.
+    // This proves only local DOM postcondition, not any remote business effect.
+    const DOM_EXACT_CONTROL_POSTCONDITION_JS: &str = r#"function(slot, action, text, optionSlot, deltaY) {
+      if (!this.state.changed || this.observer.takeRecords().length) return false;
+      const node = this.nodes[slot];
+      if (!node || !node.isConnected || node.ownerDocument !== document ||
+          node.isContentEditable || node.matches(':disabled')) return false;
+      if (action === 'type' || action === 'clear') {
+        if (node.readOnly || !(node.tagName === 'TEXTAREA' ||
+            (node.tagName === 'INPUT' &&
+             (node.type === 'text' || node.type === 'email' ||
+              node.type === 'tel' || node.type === 'search')))) return false;
+        return node.value === (action === 'clear' ? '' : text);
+      }
+      if (action === 'select') {
+        if (node.tagName !== 'SELECT' || !Number.isInteger(optionSlot)) return false;
+        const option = this.nodes[optionSlot];
+        return !!option && option.isConnected && option.ownerDocument === document &&
+          option.parentElement === node && !option.disabled &&
+          option.selected && node.value === option.value;
+      }
+      if (action === 'check' || action === 'uncheck') {
+        return node.tagName === 'INPUT' && node.type === 'checkbox' &&
+          node.checked === (action === 'check');
+      }
+      if (action === 'scroll') {
+        return (deltaY === -120 || deltaY === 120) &&
+          this.state.scrollSlot === slot &&
+          Number.isFinite(this.state.scrollBefore) &&
+          (deltaY > 0 ? node.scrollTop > this.state.scrollBefore :
+            node.scrollTop < this.state.scrollBefore);
+      }
+      return false;
     }"#;
     // Submit is deliberately VALIDATION-ONLY pending a separate, independently
     // approved brokered form/body/GET-write policy and physical server oracle.
@@ -442,6 +484,55 @@ mod host {
       // A future effectful implementation requires new approved network-body
       // authority and independent post-action evidence, not this probe ACK.
       return {dispatched:false};
+    }"#;
+    // Private read-only preview for the ORIGINAL retained FORM and submitter.
+    // Deliberately supports only a narrow, deterministic POST encoding: at
+    // most eight ordinary hidden successful controls and ONE unnamed native
+    // submitter. Any text, password, file, checkbox, select, duplicate
+    // submitter, disabled or custom form control FAILS CLOSED. Form bytes
+    // travel only over the sealed native host pipe to the existing TF4 consent
+    // owner; never into a semantic/model snapshot or a screenshot.
+    const DOM_EXACT_FORM_CAPTURE_JS: &str = r#"function(slot, formSlot) {
+      if (this.observer.takeRecords().length) this.state.changed = true;
+      if (this.state.changed) return null;
+      const node = this.nodes[slot], form = this.nodes[formSlot];
+      if (!node || !form || node === form ||
+          !node.isConnected || !form.isConnected ||
+          node.ownerDocument !== document || form.ownerDocument !== document ||
+          form.tagName !== 'FORM' || node.form !== form || !form.contains(node) ||
+          node.isContentEditable || form.isContentEditable ||
+          !node.getClientRects().length || node.matches(':disabled') ||
+          !((node.tagName === 'BUTTON' || node.tagName === 'INPUT') && node.type === 'submit') ||
+          node.name !== '' || node.hasAttribute('formaction') ||
+          node.hasAttribute('formmethod') || node.hasAttribute('formenctype') ||
+          node.hasAttribute('formtarget') || node.hasAttribute('formnovalidate') ||
+          form.hasAttribute('novalidate') || !form.hasAttribute('action') ||
+          form.method !== 'post' || form.enctype !== 'application/x-www-form-urlencoded' ||
+          form.target.toLowerCase() !== '_self' ||
+          form.elements.length < 2 || form.elements.length > 9) return null;
+      const targetHref = form.action;
+      if (!targetHref || targetHref.length > 2048 || targetHref.includes('?') ||
+          targetHref.includes('#')) return null;
+      const destination = new URL(targetHref), source = new URL(document.location.href);
+      if (source.protocol !== 'https:' || destination.protocol !== 'https:' ||
+          destination.origin !== source.origin || destination.port !== '' ||
+          source.port !== '' || destination.username !== '' || destination.password !== '' ||
+          destination.href === source.href) return null;
+      const params = new URLSearchParams();
+      let seenSubmitter = false;
+      for (const control of form.elements) {
+        if (control === node) { if (seenSubmitter) return null; seenSubmitter = true; continue; }
+        if (control.tagName !== 'INPUT' || control.type !== 'hidden' ||
+            control.disabled || control.form !== form || !form.contains(control) ||
+            control.ownerDocument !== document || control.isContentEditable ||
+            !control.name || control.name.length > 64 || control.value.length > 256 ||
+            /[\u0000-\u001f\u007f]/.test(control.name + control.value)) return null;
+        params.append(control.name, control.value);
+      }
+      const body = params.toString();
+      if (!seenSubmitter || !body || body.length > 2048) return null;
+      return {method:'POST', encoding:'application/x-www-form-urlencoded',
+        destination:destination.href, body};
     }"#;
     // Debug-build-only *fixed* physical acceptance probe for the specifically
     // owned, one-document 127.0.0.1 HTTPS fixture. It never accepts code,
@@ -1704,6 +1795,77 @@ mod host {
         payload_sha256: Option<String>,
     }
 
+    /// Read-only, short-lived original-node capture, issued by the same
+    /// attested parent/host exclusive turn as native actions. There is no
+    /// selector, URL, body or script argument from the caller.
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentDomFormCaptureRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: String,
+        index: u32,
+        ordinal: u32,
+        form_index: u32,
+        form_ordinal: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentDomScreenshotRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildDomScreenshotReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: &'a str,
+        state: &'static str,
+        format: &'static str,
+        width: u32,
+        height: u32,
+        captured_at_ms: u64,
+        sha256: Option<String>,
+        bytes_base64: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildDomFormCaptureReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: &'a str,
+        index: u32,
+        ordinal: u32,
+        form_index: u32,
+        form_ordinal: u32,
+        state: &'static str,
+        method: Option<&'static str>,
+        encoding: Option<&'static str>,
+        destination: Option<String>,
+        body: Option<String>,
+    }
+
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct ChildDomActionReply<'a> {
@@ -1815,6 +1977,7 @@ mod host {
         observation_id: u64,
         page_generation: u64,
         root_object_id: Option<String>,
+        screenshot_safe: bool,
         indices: Vec<u32>,
         click_allowed: Vec<bool>,
         action_allowed: Vec<NativeDomActionPermissions>,
@@ -1829,6 +1992,7 @@ mod host {
             self.observation_id = observation_id;
             self.page_generation = page_generation;
             self.root_object_id = None;
+            self.screenshot_safe = false;
             self.indices.clear();
             self.click_allowed.clear();
             self.action_allowed.clear();
@@ -1889,6 +2053,11 @@ mod host {
                 })
                 .collect();
             self.root_object_id = Some(captured.root_object_id.clone());
+            // Sensitive/unsupported controls suppressed by the fixed
+            // structural probe make whole-viewport capture ineligible.
+            // An independent human consent is still required even when true.
+            self.screenshot_safe =
+                !captured.snapshot.truncated && captured.snapshot.omitted_fields == 0;
             Ok(())
         }
 
@@ -2489,6 +2658,81 @@ mod host {
             return Ok(true);
         }
         Err("action-postcondition-unconfirmed")
+    }
+
+    fn parse_dom_control_postcondition_response(raw: &str) -> Result<bool, &'static str> {
+        if raw.is_empty() || raw.len() > 512 {
+            return Err("action-second-com-postcondition-bounds");
+        }
+        let response: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "action-second-com-invalid")?;
+        if response.as_object().is_none_or(|obj| obj.len() != 1)
+            || response.pointer("/result/type").and_then(|v| v.as_str()) != Some("boolean")
+            || response.pointer("/result/objectId").is_some()
+            || response.pointer("/result/value").and_then(|v| v.as_bool()) != Some(true)
+        {
+            return Err("action-original-node-second-com-postcondition-unconfirmed");
+        }
+        Ok(true)
+    }
+
+    fn parse_dom_form_capture_response(
+        raw: &str,
+    ) -> Result<Option<(String, String)>, &'static str> {
+        if raw.is_empty() || raw.len() > 8192 {
+            return Err("form-capture-com-result-bounds");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "form-capture-com-invalid")?;
+        if value.get("exceptionDetails").is_some()
+            || value.pointer("/result/objectId").is_some()
+            || value.pointer("/result/type").and_then(|v| v.as_str()) != Some("object")
+        {
+            return Err("form-capture-com-untrusted");
+        }
+        let fields = match value.pointer("/result/value") {
+            Some(serde_json::Value::Null) => return Ok(None),
+            Some(serde_json::Value::Object(fields)) if fields.len() == 4 => fields,
+            _ => return Err("form-capture-com-shape"),
+        };
+        if fields.get("method").and_then(|v| v.as_str()) != Some("POST")
+            || fields.get("encoding").and_then(|v| v.as_str())
+                != Some("application/x-www-form-urlencoded")
+        {
+            return Err("form-capture-method-or-encoding-denied");
+        }
+        let destination = fields
+            .get("destination")
+            .and_then(|v| v.as_str())
+            .ok_or("form-capture-destination-missing")?;
+        let body = fields
+            .get("body")
+            .and_then(|v| v.as_str())
+            .ok_or("form-capture-body-missing")?;
+        if destination.len() > 2048
+            || body.is_empty()
+            || body.len() > 2048
+            || !body.is_ascii()
+            || body.bytes().any(|v| v.is_ascii_control())
+            || !body.as_bytes().iter().all(|v| {
+                v.is_ascii_alphanumeric()
+                    || matches!(*v, b'%' | b'+' | b'&' | b'=' | b'-' | b'.' | b'_' | b'*')
+            })
+        {
+            return Err("form-capture-body-or-destination-bounds");
+        }
+        let url = reqwest::Url::parse(destination).map_err(|_| "form-capture-url-invalid")?;
+        if url.scheme() != "https"
+            || url.port().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.as_str() != destination
+        {
+            return Err("form-capture-url-denied");
+        }
+        Ok(Some((destination.to_owned(), body.to_owned())))
     }
 
     #[cfg(debug_assertions)]
@@ -3215,13 +3459,23 @@ mod host {
         parameters: String,
         done: NativeDomCdpDone,
     ) {
+        native_dom_cdp_with_limit_on_ui(core, method, parameters, PRODUCTION_DOM_FRAME_LIMIT, done);
+    }
+
+    fn native_dom_cdp_with_limit_on_ui(
+        core: &ICoreWebView2,
+        method: &'static str,
+        parameters: String,
+        max_output: usize,
+        done: NativeDomCdpDone,
+    ) {
         // The callback remains on WebView2's UI COM apartment. No CDP
         // debugging endpoint, remote debugger or external process exists.
         let pending = Arc::new(Mutex::new(Some(done)));
         let completed_pending = pending.clone();
         let completion =
             CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |hr, output| {
-                let checked = if hr.is_err() || output.len() > PRODUCTION_DOM_FRAME_LIMIT {
+                let checked = if hr.is_err() || output.len() > max_output {
                     Err("observation-identity-unavailable")
                 } else {
                     Ok(output.to_string())
@@ -3250,6 +3504,177 @@ mod host {
                 }
             }
         }
+    }
+
+    fn screenshot_chunk_crc(bytes: &[u8]) -> u32 {
+        let mut crc: u32 = !0;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ if crc & 1 == 1 { 0xedb8_8320 } else { 0 };
+            }
+        }
+        !crc
+    }
+
+    fn screenshot_png_bounds(data: &[u8]) -> Result<(u32, u32), &'static str> {
+        if data.len() < 57
+            || data.len() > PRODUCTION_SCREENSHOT_BYTES_LIMIT
+            || !data.starts_with(b"\x89PNG\r\n\x1a\n")
+            || &data[12..16] != b"IHDR"
+            || u32::from_be_bytes(data[8..12].try_into().unwrap()) != 13
+        {
+            return Err("native-screenshot-invalid-png");
+        }
+        let width = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(data[20..24].try_into().unwrap());
+        if width == 0 || width > 1024 || height == 0 || height > 768
+            || data[24] != 8 // enforce 8-bit pixels, not unusual high-depth images
+            || !matches!(data[25], 2 | 6)
+            || data[26..29] != [0, 0, 0]
+        // RGB/RGBA only
+        {
+            return Err("native-screenshot-viewport-or-format-denied");
+        }
+        let mut position = 8usize;
+        let mut chunks = 0usize;
+        let mut idat_seen = false;
+        let mut end_seen = false;
+        while position < data.len() {
+            if data.len() - position < 12 || chunks >= 128 {
+                return Err("native-screenshot-png-chunks-invalid");
+            }
+            let len = u32::from_be_bytes(data[position..position + 4].try_into().unwrap()) as usize;
+            let end = position
+                .checked_add(len + 12)
+                .filter(|v| *v <= data.len())
+                .ok_or("native-screenshot-png-chunks-oversize")?;
+            let tag = &data[position + 4..position + 8];
+            if (chunks == 0 && tag != b"IHDR")
+                || (tag != b"IHDR" && tag != b"IDAT" && tag != b"IEND")
+                || (tag == b"IHDR" && (chunks != 0 || len != 13))
+                || (tag == b"IDAT" && len == 0)
+                || (tag == b"IEND" && (len != 0 || !idat_seen || end != data.len()))
+            {
+                return Err("native-screenshot-png-chunk-denied");
+            }
+            if screenshot_chunk_crc(&data[position + 4..end - 4])
+                != u32::from_be_bytes(data[end - 4..end].try_into().unwrap())
+            {
+                return Err("native-screenshot-png-chunk-crc-mismatch");
+            }
+            idat_seen |= tag == b"IDAT";
+            end_seen |= tag == b"IEND";
+            position = end;
+            chunks += 1;
+        }
+        if !idat_seen || !end_seen {
+            return Err("native-screenshot-png-incomplete");
+        }
+        Ok((width, height))
+    }
+
+    fn parse_native_screenshot_cdp(raw: &str) -> Result<(String, String, u32, u32), &'static str> {
+        if raw.is_empty() || raw.len() > PRODUCTION_SCREENSHOT_CDP_LIMIT {
+            return Err("native-screenshot-cdp-bounds");
+        }
+        let document: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "native-screenshot-cdp-invalid")?;
+        let fields = document
+            .as_object()
+            .ok_or("native-screenshot-cdp-invalid")?;
+        if fields.len() != 1 {
+            return Err("native-screenshot-cdp-untrusted-fields");
+        }
+        let encoded = fields
+            .get("data")
+            .and_then(|v| v.as_str())
+            .ok_or("native-screenshot-cdp-data-missing")?;
+        if encoded.len() > 90 * 1024 || encoded.is_empty() {
+            return Err("native-screenshot-cdp-oversize");
+        }
+        let png = BASE64
+            .decode(encoded.as_bytes())
+            .map_err(|_| "native-screenshot-base64-invalid")?;
+        let (width, height) = screenshot_png_bounds(&png)?;
+        Ok((
+            encoded.to_owned(),
+            format!("{:x}", Sha256::digest(&png)),
+            width,
+            height,
+        ))
+    }
+
+    fn capture_native_screenshot_on_ui(
+        app: &tauri::AppHandle,
+        expected_url: &str,
+        generation: u64,
+        current_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+    ) -> Result<(String, String, u32, u32), &'static str> {
+        if stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+            || current_generation.load(Ordering::Acquire) != generation
+        {
+            return Err("native-screenshot-page-stale");
+        }
+        let (tx, rx) = mpsc::sync_channel::<Result<_, &'static str>>(1);
+        let window_app = app.clone();
+        let original_source = expected_url.to_owned();
+        app.run_on_main_thread(move || {
+            let tx_ui = tx.clone();
+            let dispatched = window_app
+                .get_webview_window("browser-host")
+                .ok_or("native-screenshot-window-unavailable")
+                .and_then(|window| {
+                    window
+                        .with_webview(move |native| {
+                            let sender = tx_ui.clone();
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    let _ = sender
+                                        .send(Err("native-screenshot-controller-unavailable"));
+                                    return;
+                                }
+                            };
+                            let mut source = PWSTR::null();
+                            if unsafe { core.Source(&mut source) }.is_err()
+                                || take_pwstr(source) != original_source
+                                || current_generation.load(Ordering::Acquire) != generation
+                                || stats.pending.load(Ordering::Acquire) != 0
+                                || stats.broken.load(Ordering::Acquire)
+                            {
+                                let _ = sender.send(Err("native-screenshot-source-changed"));
+                                return;
+                            }
+                            native_dom_cdp_with_limit_on_ui(
+                                &core,
+                                "Page.captureScreenshot",
+                                json!({
+                                    "format": "png",
+                                    "fromSurface": true,
+                                    "captureBeyondViewport": false,
+                                    "optimizeForSpeed": true
+                                })
+                                .to_string(),
+                                PRODUCTION_SCREENSHOT_CDP_LIMIT,
+                                Box::new(move |output| {
+                                    let checked =
+                                        output.and_then(|raw| parse_native_screenshot_cdp(&raw));
+                                    let _ = sender.send(checked);
+                                }),
+                            );
+                        })
+                        .map_err(|_| "native-screenshot-ui-unavailable")
+                });
+            if dispatched.is_err() {
+                let _ = tx.send(Err("native-screenshot-ui-unavailable"));
+            }
+        })
+        .map_err(|_| "native-screenshot-ui-unavailable")?;
+        rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "native-screenshot-timeout")?
     }
 
     fn observe_dom_on_ui(
@@ -3594,6 +4019,13 @@ mod host {
                                 let _ = sender.send(Err("action-page-stale"));
                                 return;
                             }
+                            let readback_core = core.clone();
+                            let readback_source = expected.clone();
+                            let readback_generation = current_generation.clone();
+                            let readback_stats = stats.clone();
+                            let readback_ref = reference.clone();
+                            let readback_action = action.clone();
+                            let readback_text = text.clone();
                             let declaration = if action == "submit" {
                                 DOM_EXACT_SUBMIT_JS
                             } else {
@@ -3620,13 +4052,57 @@ mod host {
                                 "Runtime.callFunctionOn",
                                 parameters,
                                 Box::new(move |remote| {
-                                    // A form DOM event may race navigation:
-                                    // successful closed COM acknowledgement
-                                    // means only DISPATCHED, never completed
-                                    // remote effect. Failed ACK is UNKNOWN.
-                                    let result = remote
-                                        .and_then(|raw| parse_dom_control_action_response(&raw));
-                                    let _ = sender.send(result);
+                                    // The FIRST renderer result only says a local
+                                    // mutation was attempted. It cannot confirm
+                                    // a resulting state or remote business effect.
+                                    match remote.and_then(|raw| parse_dom_control_action_response(&raw)) {
+                                        Ok(false) => {
+                                            let _ = sender.send(Ok(false));
+                                        }
+                                        Err(reason) => {
+                                            let _ = sender.send(Err(reason));
+                                        }
+                                        Ok(true) => {
+                                            let mut source = PWSTR::null();
+                                            if unsafe { readback_core.Source(&mut source) }.is_err()
+                                                || take_pwstr(source) != readback_source
+                                                || readback_generation.load(Ordering::Acquire) != request_generation
+                                                || readback_stats.broken.load(Ordering::Acquire)
+                                                || readback_stats.pending.load(Ordering::Acquire) != 0
+                                            {
+                                                let _ = sender.send(Err("action-second-com-page-changed"));
+                                                return;
+                                            }
+                                            let recheck = json!({
+                                                "objectId": readback_ref.root_object_id,
+                                                "functionDeclaration": DOM_EXACT_CONTROL_POSTCONDITION_JS,
+                                                "arguments": [
+                                                    {"value":readback_ref.slot},
+                                                    {"value":readback_action},
+                                                    {"value":readback_text},
+                                                    {"value":option_slot},
+                                                    {"value":delta_y}
+                                                ],
+                                                "returnByValue": true,
+                                                "silent": true,
+                                                "awaitPromise": false,
+                                                "generatePreview": false
+                                            }).to_string();
+                                            native_dom_cdp_on_ui(
+                                                &readback_core, "Runtime.callFunctionOn", recheck,
+                                                Box::new(move |second| {
+                                                    // This second authenticated COM callback
+                                                    // independently reads the original Node.
+                                                    // Even success is local only; the parent
+                                                    // continues to classify external effects
+                                                    // UNKNOWN and forbids automatic replay.
+                                                    let result = second.and_then(|raw|
+                                                        parse_dom_control_postcondition_response(&raw));
+                                                    let _ = sender.send(result);
+                                                }),
+                                            );
+                                        }
+                                    }
                                 }),
                             );
                         })
@@ -3639,6 +4115,252 @@ mod host {
         .map_err(|_| "action-ui-dispatch")?;
         rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
             .map_err(|_| "action-timeout")?
+    }
+
+    fn capture_retained_form_on_ui(
+        app: &tauri::AppHandle,
+        expected_url: &str,
+        generation: u64,
+        submitter: NativeDomNodeRef,
+        form_slot: usize,
+        current_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+    ) -> Result<Option<(String, String)>, &'static str> {
+        if stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+            || current_generation.load(Ordering::Acquire) != generation
+            || submitter.page_generation != generation
+        {
+            return Err("form-capture-page-stale");
+        }
+        let expected = expected_url.to_owned();
+        let (tx, rx) = mpsc::sync_channel::<Result<Option<(String, String)>, &'static str>>(1);
+        let app_for_ui = app.clone();
+        app.run_on_main_thread(move || {
+            let tx_ui = tx.clone();
+            let dispatched = app_for_ui
+                .get_webview_window("browser-host")
+                .ok_or("form-capture-window-unavailable")
+                .and_then(|window| {
+                    window
+                        .with_webview(move |native| {
+                            let sender = tx_ui.clone();
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    let _ = sender.send(Err("form-capture-controller-unavailable"));
+                                    return;
+                                }
+                            };
+                            let mut source = PWSTR::null();
+                            if unsafe { core.Source(&mut source) }.is_err()
+                                || take_pwstr(source) != expected
+                                || current_generation.load(Ordering::Acquire) != generation
+                                || stats.broken.load(Ordering::Acquire)
+                                || stats.pending.load(Ordering::Acquire) != 0
+                            {
+                                let _ = sender.send(Err("form-capture-native-page-changed"));
+                                return;
+                            }
+                            let parameters = json!({
+                                "objectId": submitter.root_object_id,
+                                "functionDeclaration": DOM_EXACT_FORM_CAPTURE_JS,
+                                "arguments": [
+                                    {"value":submitter.slot},
+                                    {"value":form_slot}
+                                ],
+                                "returnByValue": true,
+                                "silent": true,
+                                "awaitPromise": false,
+                                "generatePreview": false
+                            })
+                            .to_string();
+                            native_dom_cdp_on_ui(
+                                &core,
+                                "Runtime.callFunctionOn",
+                                parameters,
+                                Box::new(move |remote| {
+                                    let result = remote
+                                        .and_then(|raw| parse_dom_form_capture_response(&raw));
+                                    let _ = sender.send(result);
+                                }),
+                            );
+                        })
+                        .map_err(|_| "form-capture-ui-dispatch")
+                });
+            if dispatched.is_err() {
+                let _ = tx.send(Err("form-capture-ui-dispatch"));
+            }
+        })
+        .map_err(|_| "form-capture-ui-dispatch")?;
+        rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "form-capture-timeout")?
+    }
+
+    fn service_parent_form_capture_frame(
+        frame: &[u8],
+        write: &mut File,
+        app: &tauri::AppHandle,
+        session: &str,
+        latest_observation_id: u64,
+        last_check_sequence: &mut u64,
+        identities: &NativeDomIdentity,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &str,
+    ) -> Result<(), &'static str> {
+        let request: ParentDomFormCaptureRequest =
+            serde_json::from_slice(frame).map_err(|_| "form-capture-request-invalid")?;
+        let check = json!({
+            "version":request.version, "kind":"recheck-element",
+            "session":request.session, "checkSequence":request.check_sequence,
+            "observationId":request.observation_id, "pageGeneration":request.page_generation,
+            "sourceId":request.source_id, "index":request.index, "ordinal":request.ordinal
+        })
+        .to_string();
+        let (_, submitter) = validate_dom_recheck_request(
+            check.as_bytes(),
+            session,
+            *last_check_sequence,
+            latest_observation_id,
+            page_generation.load(Ordering::Acquire),
+            initial_url,
+            identities,
+        )?;
+        if request.kind != "capture-form"
+            || request.form_index == request.index
+            || request.form_ordinal >= PRODUCTION_DOM_MAX_ELEMENTS as u32
+        {
+            return Err("form-capture-original-form-required");
+        }
+        *last_check_sequence = request.check_sequence;
+        let form = identities
+            .reference_at(request.form_index, request.form_ordinal)
+            .ok();
+        let captured = match (submitter, form) {
+            (Some(submitter), Some(form)) if identities.may_submit(&submitter, &form) => {
+                capture_retained_form_on_ui(
+                    app,
+                    initial_url,
+                    request.page_generation,
+                    submitter,
+                    form.slot,
+                    page_generation.clone(),
+                    stats.clone(),
+                )
+                .ok()
+                .flatten()
+            }
+            _ => None,
+        };
+        let valid = captured.is_some()
+            && page_generation.load(Ordering::Acquire) == request.page_generation
+            && !stats.broken.load(Ordering::Acquire)
+            && stats.pending.load(Ordering::Acquire) == 0;
+        // Only the parent/host *sealed pipe* ever carries these potentially
+        // sensitive original control values; no page or model receives them.
+        let reply = ChildDomFormCaptureReply {
+            version: 2,
+            kind: "form-capture",
+            session: &request.session,
+            check_sequence: request.check_sequence,
+            observation_id: request.observation_id,
+            page_generation: request.page_generation,
+            source_id: &request.source_id,
+            index: request.index,
+            ordinal: request.ordinal,
+            form_index: request.form_index,
+            form_ordinal: request.form_ordinal,
+            state: if valid { "CAPTURED" } else { "STALE" },
+            method: valid.then_some("POST"),
+            encoding: valid.then_some("application/x-www-form-urlencoded"),
+            destination: if valid {
+                captured.as_ref().map(|v| v.0.clone())
+            } else {
+                None
+            },
+            body: if valid { captured.map(|v| v.1) } else { None },
+        };
+        let bytes = serde_json::to_vec(&reply).map_err(|_| "form-capture-reply-invalid")?;
+        if bytes.is_empty() || bytes.len() > 8192 {
+            return Err("form-capture-reply-bounds");
+        }
+        broker_write_frame(write, &bytes).map_err(|_| "form-capture-reply-pipe")
+    }
+
+    fn service_parent_screenshot_frame(
+        frame: &[u8],
+        write: &mut File,
+        app: &tauri::AppHandle,
+        session: &str,
+        latest_observation_id: u64,
+        last_check_sequence: &mut u64,
+        identities: &NativeDomIdentity,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &str,
+    ) -> Result<(), &'static str> {
+        let request: ParentDomScreenshotRequest =
+            serde_json::from_slice(frame).map_err(|_| "screenshot-request-invalid")?;
+        if request.version != 2
+            || request.kind != "capture-screenshot"
+            || request.session != session
+            || request.check_sequence == 0
+            || request.check_sequence > PRODUCTION_DOM_MAX_CHECKS
+            || request.check_sequence != last_check_sequence.saturating_add(1)
+            || request.observation_id == 0
+            || request.observation_id != latest_observation_id
+            || request.observation_id != identities.observation_id
+            || request.page_generation != page_generation.load(Ordering::Acquire)
+            || request.page_generation != identities.page_generation
+            || request.source_id != production_dom_source_id(initial_url)?
+            || !identities.screenshot_safe
+        {
+            return Err("native-screenshot-authenticated-page-or-sensitive-content-denied");
+        }
+        *last_check_sequence = request.check_sequence;
+        let captured = capture_native_screenshot_on_ui(
+            app,
+            initial_url,
+            request.page_generation,
+            page_generation.clone(),
+            stats.clone(),
+        );
+        let success = captured.is_ok()
+            && page_generation.load(Ordering::Acquire) == request.page_generation
+            && !stats.broken.load(Ordering::Acquire)
+            && stats.pending.load(Ordering::Acquire) == 0;
+        let screenshot = if success { captured.ok() } else { None };
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let reply = ChildDomScreenshotReply {
+            version: 2,
+            kind: "screenshot-capture",
+            session: &request.session,
+            check_sequence: request.check_sequence,
+            observation_id: request.observation_id,
+            page_generation: request.page_generation,
+            source_id: &request.source_id,
+            state: if screenshot.is_some() {
+                "CAPTURED"
+            } else {
+                "UNKNOWN"
+            },
+            format: "png",
+            width: screenshot.as_ref().map(|v| v.2).unwrap_or(0),
+            height: screenshot.as_ref().map(|v| v.3).unwrap_or(0),
+            captured_at_ms: timestamp,
+            sha256: screenshot.as_ref().map(|v| v.1.clone()),
+            bytes_base64: screenshot.map(|v| v.0),
+        };
+        let frame = serde_json::to_vec(&reply).map_err(|_| "native-screenshot-reply-invalid")?;
+        if frame.is_empty() || frame.len() > PRODUCTION_SCREENSHOT_CDP_LIMIT + 1024 {
+            return Err("native-screenshot-reply-size-denied");
+        }
+        broker_write_frame(write, &frame).map_err(|_| "native-screenshot-reply-pipe")
     }
 
     fn service_parent_dom_recheck_frame(
@@ -3920,6 +4642,34 @@ mod host {
                 last_check_sequence,
                 identities,
                 used_approval_ids,
+                page_generation,
+                stats,
+                initial_url,
+            );
+        }
+        if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-form") {
+            return service_parent_form_capture_frame(
+                &frame,
+                write,
+                app,
+                session,
+                *last_observation_id,
+                last_check_sequence,
+                identities,
+                page_generation,
+                stats,
+                initial_url,
+            );
+        }
+        if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-screenshot") {
+            return service_parent_screenshot_frame(
+                &frame,
+                write,
+                app,
+                session,
+                *last_observation_id,
+                last_check_sequence,
+                identities,
                 page_generation,
                 stats,
                 initial_url,
@@ -8109,6 +8859,112 @@ mod host {
             ));
         }
 
+        #[test]
+        fn native_original_form_capture_is_read_only_bounded_and_private() {
+            let script = DOM_EXACT_FORM_CAPTURE_JS;
+            for retained in [
+                "this.nodes[slot]",
+                "this.nodes[formSlot]",
+                "node.form !== form",
+                "this.observer.takeRecords().length",
+                "form.method !== 'post'",
+                "form.enctype !== 'application/x-www-form-urlencoded'",
+                "control.type !== 'hidden'",
+                "params.append(control.name, control.value)",
+                "destination.origin !== source.origin",
+                "form.elements.length > 9",
+            ] {
+                assert!(
+                    script.contains(retained),
+                    "missing form safety bound {retained}"
+                );
+            }
+            for dangerous in [
+                "querySelector",
+                "getElementById",
+                "requestSubmit(",
+                "form.submit(",
+                "node.click(",
+                "fetch(",
+                "XMLHttpRequest",
+                "sendBeacon",
+                "document.cookie",
+                "localStorage",
+                "innerHTML",
+                "outerHTML",
+            ] {
+                assert!(
+                    !script.contains(dangerous),
+                    "capture cannot dispatch {dangerous}"
+                );
+            }
+            let good = json!({"result":{"type":"object","value":{
+                "method":"POST", "encoding":"application/x-www-form-urlencoded",
+                "destination":"https://example.org/case/abc/form",
+                "body":"nonce=abc&commit=once"
+            }}});
+            assert_eq!(
+                parse_dom_form_capture_response(&good.to_string()),
+                Ok(Some((
+                    "https://example.org/case/abc/form".into(),
+                    "nonce=abc&commit=once".into()
+                )))
+            );
+            assert_eq!(
+                parse_dom_form_capture_response(
+                    &json!({"result":{"type":"object","value":null}}).to_string()
+                ),
+                Ok(None)
+            );
+            for (field, wrong) in [
+                ("method", json!("GET")),
+                ("encoding", json!("multipart/form-data")),
+                ("destination", json!("https://example.org:444/form")),
+                ("body", json!("a".repeat(2049))),
+            ] {
+                let mut forged = good.clone();
+                forged["result"]["value"][field] = wrong;
+                assert!(parse_dom_form_capture_response(&forged.to_string()).is_err());
+            }
+            let mut forged = good;
+            forged["result"]["value"]["secret"] = json!("data");
+            assert!(parse_dom_form_capture_response(&forged.to_string()).is_err());
+        }
+
+        #[test]
+        fn native_png_screenshot_from_actual_cdp_shape_is_bounded_crc_checked_and_secret_free() {
+            const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+            let input = json!({"data":PNG}).to_string();
+            let (encoded, hash, width, height) = parse_native_screenshot_cdp(&input).unwrap();
+            assert_eq!((width, height), (1, 1));
+            assert_eq!(encoded, PNG);
+            assert_eq!(
+                hash,
+                format!("{:x}", Sha256::digest(BASE64.decode(PNG).unwrap()))
+            );
+            assert!(!input.contains("password"));
+            for forged in [
+                json!({"data":PNG, "secret":"forbidden"}),
+                json!({"data":""}),
+                json!({"data":"not base64"}),
+                json!({"error":{"message":"token"}}),
+                json!({"data":"A".repeat(90 * 1024 + 1)}),
+            ] {
+                assert!(parse_native_screenshot_cdp(&forged.to_string()).is_err());
+            }
+            let mut bad_png = BASE64.decode(PNG).unwrap();
+            bad_png[24] = 16; // attempt to reinterpret PNG bit-depth without CRC update
+            assert!(screenshot_png_bounds(&bad_png).is_err());
+            let mut corrupt_crc = BASE64.decode(PNG).unwrap();
+            corrupt_crc[50] ^= 1;
+            assert!(screenshot_png_bounds(&corrupt_crc).is_err());
+            let declaration = include_str!("clack-browser-host.rs");
+            assert!(declaration.contains("\"Page.captureScreenshot\""));
+            assert!(declaration.contains("\"captureBeyondViewport\": false"));
+            let unsupported_pdf_operation = ["Page.", "printToPDF"].concat();
+            assert!(!declaration.contains(&unsupported_pdf_operation));
+        }
+
         fn native_dom_control_request(action: &str, index: u32) -> serde_json::Value {
             let mut value = json!({
                 "version":2,"kind":"act-element","session":NONCE,
@@ -8391,6 +9247,60 @@ mod host {
                 assert!(DOM_EXACT_CONTROL_ACTION_JS.contains(exact_readback));
             }
             assert!(!DOM_EXACT_CONTROL_ACTION_JS.contains("return {dispatched:true};"));
+            let second = DOM_EXACT_CONTROL_POSTCONDITION_JS;
+            for identity in [
+                "this.nodes[slot]",
+                "node.ownerDocument !== document",
+                "this.observer.takeRecords().length",
+                "option.parentElement === node",
+                "node.value === (action === 'clear' ? '' : text)",
+                "node.checked === (action === 'check')",
+                "this.state.scrollBefore",
+            ] {
+                assert!(
+                    second.contains(identity),
+                    "missing second COM retained-node bound {identity}"
+                );
+            }
+            for forbidden in [
+                "querySelector",
+                "getElementById",
+                "createElement",
+                "fetch(",
+                "XMLHttpRequest",
+                "sendBeacon",
+                "node.click(",
+                "requestSubmit(",
+                "dispatchEvent",
+                "document.cookie",
+                "localStorage",
+                "outerHTML",
+            ] {
+                assert!(
+                    !second.contains(forbidden),
+                    "postcondition cannot mutate {forbidden}"
+                );
+            }
+            assert_eq!(
+                parse_dom_control_postcondition_response(
+                    r#"{"result":{"type":"boolean","value":true}}"#,
+                ),
+                Ok(true)
+            );
+            for forged in [
+                r#"{"result":{"type":"boolean","value":false}}"#,
+                r#"{"result":{"type":"object","value":{"verified":true}}}"#,
+                r#"{"result":{"type":"boolean","value":true,"objectId":"other"}}"#,
+                r#"{"result":{"type":"boolean","value":true},"extra":"leak"}"#,
+                r#"{"result":{"type":"boolean","value":true},"exceptionDetails":{"text":"secret"}}"#,
+            ] {
+                assert!(parse_dom_control_postcondition_response(forged).is_err());
+            }
+            let source = include_str!("clack-browser-host.rs");
+            assert!(source
+                .contains("match remote.and_then(|raw| parse_dom_control_action_response(&raw))"));
+            assert!(source.contains("Box::new(move |second| {"));
+            assert!(source.contains("parse_dom_control_postcondition_response(&raw)"));
         }
 
         #[test]

@@ -42,6 +42,14 @@ pub enum TfWebOperation {
     HttpGet,
     HttpHead,
     WebSearch,
+    /// Internal write class, never deserializable from renderer/model JSON.
+    #[serde(skip_deserializing)]
+    BrowserBoundPost,
+    /// Only a consumed origin-scoped TF4 native application credential grant
+    /// can construct this method. No arbitrary authentication headers, raw
+    /// secrets or user-supplied origin are accepted by the public TF3 API.
+    #[serde(skip_deserializing)]
+    BrowserOriginCredentialGet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +170,15 @@ pub(super) struct TfBrowserBoundPost {
     pub(super) consumed_approval_id: String,
 }
 
+#[derive(Clone)]
+pub(super) struct TfBrowserOriginCredentialGet {
+    pub(super) destination: Url,
+    pub(super) approved_origin: Url,
+    pub(super) reference: String,
+    pub(super) source_page_generation: u64,
+    pub(super) consumed_approval_id: String,
+}
+
 #[derive(Debug)]
 pub(super) struct TfBrowserWriteTransport {
     pub(super) receipt: TfWebReceipt,
@@ -191,6 +208,7 @@ struct Pending {
     expires: Instant,
     approved: bool,
     browser_post: Option<TfBrowserBoundPost>,
+    browser_credential: Option<TfBrowserOriginCredentialGet>,
 }
 #[derive(Clone)]
 struct IndexedResult {
@@ -389,7 +407,10 @@ fn validate_policy(req: &TfWebRequest, policy: NetworkPolicy) -> Result<(), Stri
                 return Err("invalid-search-query".into());
             }
         }
-        TfWebOperation::HttpGet | TfWebOperation::HttpHead => {
+        TfWebOperation::HttpGet
+        | TfWebOperation::HttpHead
+        | TfWebOperation::BrowserBoundPost
+        | TfWebOperation::BrowserOriginCredentialGet => {
             if req.query.is_some() || (req.url.is_some() == req.search_result_id.is_some()) {
                 return Err("exactly-one-url-or-search-result-required".into());
             }
@@ -480,6 +501,7 @@ fn prepare_policy(
             expires: Instant::now() + TOKEN_TTL,
             approved: !prepared.requires_approval,
             browser_post: None,
+            browser_credential: None,
         },
     );
     Ok(prepared)
@@ -489,6 +511,12 @@ pub fn prepare(
     registry: &WorkspaceRegistry,
     state: &TfWebState,
 ) -> Result<TfWebPrepared, String> {
+    if matches!(
+        req.operation,
+        TfWebOperation::BrowserBoundPost | TfWebOperation::BrowserOriginCredentialGet
+    ) {
+        return Err("native-browser-private-witness-required".into());
+    }
     prepare_policy(req, registry, state, NetworkPolicy::Public)
 }
 
@@ -573,7 +601,7 @@ fn prepare_browser_bound_post_policy(
         return Err("browser-bound-post-scope-denied".into());
     }
     let req = TfWebRequest {
-        operation: TfWebOperation::HttpGet, // Internal transport marker only; request method is POST below.
+        operation: TfWebOperation::BrowserBoundPost,
         actor: actor.to_owned(),
         session_id: session_id.to_owned(),
         workspace_root: workspace_root.to_owned(),
@@ -613,6 +641,129 @@ pub(super) async fn execute_browser_bound_post(
         state,
         approved_origin,
         NetworkPolicy::Public,
+    )
+    .await
+}
+
+/// Prepare one credentialed GET in the EXISTING TF3 Public-policy token/quota
+/// owner. A moved original TF4 application-consent witness binds this
+/// origin, source page generation, exact destination and opaque reference.
+/// Neither a model nor the renderer can reach this private constructor.
+#[allow(dead_code)]
+pub(super) fn prepare_browser_origin_credential_get(
+    consumed_grant: super::tf_browser::NativeCredentialConsent,
+    req: TfBrowserOriginCredentialGet,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+) -> Result<TfWebPrepared, String> {
+    let (actor, session, root) = consumed_grant.tf3_identity();
+    let actor = actor.to_owned();
+    let session = session.to_owned();
+    let root = root.to_string_lossy().into_owned();
+    if !consumed_grant.matches_credential(&req)
+        || req.destination.scheme() != "https"
+        || req.destination.origin() != req.approved_origin.origin()
+        || req.destination.port().is_some()
+        || req.destination.query().is_some()
+        || req.destination.fragment().is_some()
+        || !req.destination.username().is_empty()
+        || req.destination.password().is_some()
+        || req.source_page_generation == 0
+        || req.consumed_approval_id.len() != 48
+        || req.reference.len() != 48
+        || ![&req.reference, &req.consumed_approval_id]
+            .iter()
+            .all(|value| {
+                value
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            })
+    {
+        return Err("origin-credential-exact-consumed-scope-required".into());
+    }
+    let target = normalize_url_policy(req.destination.as_str(), NetworkPolicy::Public)?;
+    if target != req.destination {
+        return Err("origin-credential-destination-normalization-changed".into());
+    }
+    let prepared = prepare_policy(
+        TfWebRequest {
+            operation: TfWebOperation::BrowserOriginCredentialGet,
+            actor,
+            session_id: session,
+            workspace_root: root,
+            url: Some(target.to_string()),
+            query: None,
+            search_result_id: None,
+            timeout_ms: Some(5_000),
+            max_bytes: Some(4 * 1024),
+            max_redirects: Some(0),
+        },
+        registry,
+        state,
+        NetworkPolicy::Public,
+    )?;
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "network-state-unavailable")?;
+    entries
+        .pending
+        .get_mut(&prepared.token)
+        .ok_or("origin-credential-token-vanished")?
+        .browser_credential = Some(req);
+    Ok(prepared)
+}
+
+/// Credential material is obtained by the TRUSTED native parent from the
+/// existing secret owner immediately before this single request. Only the
+/// approved destination origin receives Authorization: Bearer. Never hand the
+/// token to the browser renderer, model, screenshot or persisted receipt.
+#[allow(dead_code)]
+pub(super) async fn execute_browser_origin_credential_get(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+    secret: String,
+) -> Result<TfWebReceipt, String> {
+    if secret.len() < 24
+        || secret.len() > 2048
+        || !secret
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+    {
+        // Cancel the token on invalid/revoked key material; no retry.
+        let _ = cancel(token, state);
+        return Err("origin-credential-material-invalid-or-revoked".into());
+    }
+    let valid = {
+        let entries = state
+            .entries
+            .lock()
+            .map_err(|_| "network-state-unavailable")?;
+        let p = entries
+            .pending
+            .get(token)
+            .ok_or("unknown-or-consumed-token")?;
+        p.browser_credential.as_ref().is_some_and(|c| {
+            c.approved_origin == *approved_origin && p.target.as_ref() == Some(&c.destination)
+        })
+    };
+    if !valid {
+        let _ = cancel(token, state);
+        return Err("origin-credential-execution-scope-changed".into());
+    }
+    execute_policy_with_output_scoped(
+        token,
+        registry,
+        state,
+        Some(secret),
+        NetworkPolicy::Public,
+        None,
+        Some(approved_origin),
+        None,
+        false,
+        true,
     )
     .await
 }
@@ -658,6 +809,7 @@ async fn execute_browser_bound_post_policy(
         Some(approved_origin),
         None,
         true,
+        false,
     )
     .await?;
     Ok(TfBrowserWriteTransport {
@@ -755,8 +907,11 @@ fn receipt_for(p: &Pending) -> TfWebReceipt {
         body: None,
         started_at: now_ms(),
         ended_at: now_ms(),
-        credential_reference: (p.request.operation == TfWebOperation::WebSearch)
-            .then_some(CREDENTIAL_REF),
+        credential_reference: if p.browser_credential.is_some() {
+            Some("tf4_origin_opaque_keyring_reference")
+        } else {
+            (p.request.operation == TfWebOperation::WebSearch).then_some(CREDENTIAL_REF)
+        },
         credential_used: false,
         retry: "not_attempted",
         auto_retry: false,
@@ -1145,11 +1300,37 @@ async fn network_fetch(
     tls_test_root: Option<&reqwest::Certificate>,
 ) -> Result<(), Failure> {
     let search = p.request.operation == TfWebOperation::WebSearch;
-    // The only credentialed TF3 operation is the fixed-origin native Brave
-    // search path. Browser and ordinary GET/HEAD requests must not silently
-    // accept a credential supplied by a native caller.
-    if !search && credential.is_some() {
+    // Only an exact consumed native origin-credential scope or the fixed
+    // Brave provider can receive authentication. Ordinary public/browser
+    // requests cannot smuggle raw Authorization headers or secret material.
+    let browser_credential = p.browser_credential.as_ref();
+    if !search && browser_credential.is_none() && credential.is_some() {
         return Err(Failure("credential-operation-denied"));
+    }
+    if let Some(c) = browser_credential {
+        // The source-only isolated loopback fixture necessarily has a random
+        // ephemeral HTTP port. Production Public always rejects explicit
+        // origin ports and cleartext credential transmission.
+        #[cfg(any(test, feature = "tf-browser-isolation-acceptance"))]
+        let owned_test_port = policy == NetworkPolicy::FixtureLoopback
+            && c.destination.scheme() == "http"
+            && c.destination.host_str() == Some("127.0.0.1")
+            && c.destination.origin() == c.approved_origin.origin();
+        #[cfg(not(any(test, feature = "tf-browser-isolation-acceptance")))]
+        let owned_test_port = false;
+        if credential.is_none_or(str::is_empty)
+            || p.request.operation != TfWebOperation::BrowserOriginCredentialGet
+            || browser_approved_origin != Some(&c.approved_origin)
+            || p.target.as_ref() != Some(&c.destination)
+            || c.destination.origin() != c.approved_origin.origin()
+            || !c.destination.username().is_empty()
+            || c.destination.password().is_some()
+            || c.destination.query().is_some()
+            || c.destination.fragment().is_some()
+            || (c.destination.port().is_some() && !owned_test_port)
+        {
+            return Err(Failure("origin-credential-execution-scope-denied"));
+        }
     }
     let mut url = if search {
         if credential.is_none_or(str::is_empty) {
@@ -1172,7 +1353,8 @@ async fn network_fetch(
     // Never offer the browser owner a "SAFE_RETRY" receipt after that attempt,
     // even when HTTP returned 2xx or the native COM deferral completed.
     // Ordinary TF3 standalone GET/HEAD retain their existing contract.
-    let browser_resource = browser_bytes.is_some() || p.browser_post.is_some();
+    let browser_resource =
+        browser_bytes.is_some() || p.browser_post.is_some() || browser_credential.is_some();
     if let Some(post) = &p.browser_post {
         if credential.is_some()
             || browser_approved_origin != Some(&post.approved_origin)
@@ -1191,7 +1373,7 @@ async fn network_fetch(
     };
     let deadline = tokio::time::Instant::now()
         + Duration::from_millis(p.request.timeout_ms.unwrap_or(MAX_TIMEOUT));
-    let max_hops = if search {
+    let max_hops = if search || browser_credential.is_some() {
         0
     } else {
         p.request.max_redirects.unwrap_or(MAX_REDIRECTS)
@@ -1327,6 +1509,13 @@ async fn network_fetch(
             let value = reqwest::header::HeaderValue::from_str(key)
                 .map_err(|_| Failure("invalid-native-credential"))?;
             request = request.header("x-subscription-token", value);
+            receipt.credential_used = true;
+        }
+        if browser_credential.is_some() {
+            let secret = credential.ok_or(Failure("origin-credential-revoked"))?;
+            let header = reqwest::header::HeaderValue::from_str(&format!("Bearer {secret}"))
+                .map_err(|_| Failure("origin-credential-header-denied"))?;
+            request = request.header(reqwest::header::AUTHORIZATION, header);
             receipt.credential_used = true;
         }
         // Distinguish a network attempt from proof of remote delivery.
@@ -1471,7 +1660,11 @@ async fn network_fetch(
         if browser_bytes.is_some() && !browser_resource_content_type(&kind) {
             return Err(Failure("browser-content-type-denied"));
         }
-        if browser_bytes.is_none() && p.browser_post.is_none() && !text_type(&kind) {
+        if browser_bytes.is_none()
+            && p.browser_post.is_none()
+            && browser_credential.is_none()
+            && !text_type(&kind)
+        {
             return Err(Failure("nontext-content-type-denied"));
         }
         let mut bytes = Vec::new();
@@ -1542,7 +1735,7 @@ async fn network_fetch(
             let body = std::str::from_utf8(&saved).map_err(|_| Failure("search-invalid-json"))?;
             receipt.search_results = Some(parse_search(body, p, state)?);
             receipt.body = None;
-        } else if p.browser_post.is_some() {
+        } else if p.browser_post.is_some() || browser_credential.is_some() {
             // Never persist a remote response body into the browser action
             // receipt. Server HTTP success is NOT a business effect proof.
             receipt.body = None;
@@ -1570,15 +1763,19 @@ async fn execute_policy_with_output_scoped(
     browser_approved_origin: Option<&Url>,
     tls_test_root: Option<&reqwest::Certificate>,
     expected_browser_post: bool,
+    expected_browser_credential: bool,
 ) -> Result<TfWebReceipt, String> {
     let (p, mut rx) = consume_policy(token, registry, state, policy)?;
-    if p.browser_post.is_some() != expected_browser_post {
+    if p.browser_post.is_some() != expected_browser_post
+        || p.browser_credential.is_some() != expected_browser_credential
+    {
         complete(token, state);
         return Err("tf3-bound-post-executor-mismatch".into());
     }
     let mut receipt = receipt_for(&p);
     let mut attempted = false;
-    let browser_resource = browser_bytes.is_some() || p.browser_post.is_some();
+    let browser_resource =
+        browser_bytes.is_some() || p.browser_post.is_some() || p.browser_credential.is_some();
     let result = network_fetch(
         &p,
         &mut receipt,
@@ -1639,6 +1836,7 @@ async fn execute_policy_with_output(
         browser_bytes,
         None,
         None,
+        false,
         false,
     )
     .await
@@ -1701,6 +1899,7 @@ pub async fn execute_browser_resource_same_origin(
         Some(approved_origin),
         None,
         false,
+        false,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -1758,6 +1957,7 @@ pub(crate) async fn execute_owned_https_for_test(
         Some(&mut bytes),
         Some(approved_origin),
         Some(ephemeral_public_certificate),
+        false,
         false,
     )
     .await?;
@@ -2197,6 +2397,219 @@ mod tests {
                 "TF3 browser-facing request must reject unsupported field {name}"
             );
         }
+        let mut forged_write = base.clone();
+        forged_write["operation"] = serde_json::json!("browser_bound_post");
+        assert!(
+            serde_json::from_value::<TfWebRequest>(forged_write.clone()).is_err(),
+            "private write operation must not be deserializable from public IPC"
+        );
+        forged_write["operation"] = serde_json::json!("browser_origin_credential_get");
+        assert!(
+            serde_json::from_value::<TfWebRequest>(forged_write).is_err(),
+            "private origin credential cannot be deserializable from public IPC"
+        );
+        let (_, registry, state) = setup();
+        let synthetic = TfWebRequest {
+            operation: TfWebOperation::BrowserBoundPost,
+            actor: "native-test".into(),
+            session_id: "session-1".into(),
+            workspace_root: "not-an-authority".into(),
+            url: Some("https://example.org/write".into()),
+            query: None,
+            search_result_id: None,
+            timeout_ms: None,
+            max_bytes: None,
+            max_redirects: None,
+        };
+        assert_eq!(
+            prepare(synthetic, &registry, &state).unwrap_err(),
+            "native-browser-private-witness-required"
+        );
+        let second = TfWebRequest {
+            operation: TfWebOperation::BrowserOriginCredentialGet,
+            ..request(
+                std::path::Path::new("C:/no-authority"),
+                TfWebOperation::HttpGet,
+            )
+        };
+        assert_eq!(
+            prepare(second, &registry, &state).unwrap_err(),
+            "native-browser-private-witness-required"
+        );
+    }
+
+    #[tokio::test]
+    async fn isolated_origin_credential_get_is_exact_header_one_use_without_secret_receipt() {
+        const SYNTHETIC: &str = "tf4-synthetic-owned-secret-never-report";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!(
+            "http://127.0.0.1:{}/case/synthetic/credential",
+            listener.local_addr().unwrap().port(),
+        );
+        let origin = Url::parse(&endpoint).unwrap();
+        let target = origin.clone();
+        let received = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let observed = received.clone();
+        listener.set_nonblocking(true).unwrap();
+        let worker = thread::spawn(move || {
+            // Isolated test server must never strand the suite if TF3 correctly
+            // denies a credential before opening its one expected socket.
+            let started = Instant::now();
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break Some(socket),
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            && started.elapsed() < Duration::from_secs(2) =>
+                    {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    _ => break None,
+                }
+            };
+            let Some(mut socket) = socket.take() else {
+                return false;
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut raw = Vec::new();
+            while !raw.ends_with(b"\r\n\r\n") {
+                let mut chunk = [0u8; 1024];
+                let n = socket.read(&mut chunk).unwrap();
+                assert!(n > 0 && raw.len() + n <= 4096);
+                raw.extend_from_slice(&chunk[..n]);
+                if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            *observed.lock().unwrap() = raw;
+            socket.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK"
+            ).unwrap();
+            true
+        });
+        let (dir, registry, state) = setup();
+        let mut req = fixture(dir.path(), endpoint.clone());
+        req.operation = TfWebOperation::BrowserOriginCredentialGet;
+        req.max_redirects = Some(0);
+        req.max_bytes = Some(4096);
+        let token = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback)
+            .unwrap()
+            .token;
+        state
+            .entries
+            .lock()
+            .unwrap()
+            .pending
+            .get_mut(&token)
+            .unwrap()
+            .browser_credential = Some(TfBrowserOriginCredentialGet {
+            destination: target.clone(),
+            approved_origin: origin.clone(),
+            reference: "a".repeat(48),
+            source_page_generation: 2,
+            consumed_approval_id: "b".repeat(48),
+        });
+        let receipt = execute_policy_with_output_scoped(
+            &token,
+            &registry,
+            &state,
+            Some(SYNTHETIC.into()),
+            NetworkPolicy::FixtureLoopback,
+            None,
+            Some(&origin),
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+        let accepted = worker.join().unwrap();
+        assert!(accepted, "credential GET never reached controlled loopback server: terminal={}, reason={}, dns={:?}",
+            receipt.terminal, receipt.reason_code, receipt.dns_evidence);
+        let wire = String::from_utf8_lossy(&received.lock().unwrap()).to_ascii_lowercase();
+        assert!(wire.starts_with("get /case/synthetic/credential http/1.1\r\n"));
+        assert!(wire.contains(&format!(
+            "authorization: bearer {}",
+            SYNTHETIC.to_ascii_lowercase()
+        )));
+        assert!(!wire.contains("cookie:"));
+        assert_eq!(
+            receipt.operation,
+            TfWebOperation::BrowserOriginCredentialGet
+        );
+        assert_eq!(receipt.actual_method, "GET");
+        assert_eq!(
+            receipt.credential_reference,
+            Some("tf4_origin_opaque_keyring_reference")
+        );
+        assert!(receipt.credential_used);
+        assert_eq!(receipt.status_code, Some(200));
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert!(!receipt.auto_retry && receipt.body.is_none());
+        assert!(!serde_json::to_string(&receipt).unwrap().contains(SYNTHETIC));
+        assert!(
+            execute_policy_with_output_scoped(
+                &token,
+                &registry,
+                &state,
+                Some(SYNTHETIC.into()),
+                NetworkPolicy::FixtureLoopback,
+                None,
+                Some(&origin),
+                None,
+                false,
+                true,
+            )
+            .await
+            .is_err(),
+            "consumed credential token cannot replay"
+        );
+        let mut wrong_req = fixture(dir.path(), target.to_string());
+        wrong_req.operation = TfWebOperation::BrowserOriginCredentialGet;
+        wrong_req.max_redirects = Some(0);
+        let wrong_token =
+            prepare_policy(wrong_req, &registry, &state, NetworkPolicy::FixtureLoopback)
+                .unwrap()
+                .token;
+        state
+            .entries
+            .lock()
+            .unwrap()
+            .pending
+            .get_mut(&wrong_token)
+            .unwrap()
+            .browser_credential = Some(TfBrowserOriginCredentialGet {
+            destination: target,
+            approved_origin: origin.clone(),
+            reference: "a".repeat(48),
+            source_page_generation: 2,
+            consumed_approval_id: "b".repeat(48),
+        });
+        let wrong = Url::parse("http://127.0.0.1:2444/").unwrap();
+        let denied = execute_policy_with_output_scoped(
+            &wrong_token,
+            &registry,
+            &state,
+            Some(SYNTHETIC.into()),
+            NetworkPolicy::FixtureLoopback,
+            None,
+            Some(&wrong),
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(denied.terminal, "denied");
+        assert_eq!(
+            denied.reason_code,
+            "origin-credential-execution-scope-denied"
+        );
+        assert!(!denied.credential_used && denied.dns_evidence.is_empty());
+        assert!(denied.body.is_none());
     }
 
     #[tokio::test]
@@ -2379,6 +2792,7 @@ mod tests {
             format!("{:x}", Sha256::digest(dest.as_str().as_bytes()))
         );
         assert_eq!(result.receipt.actual_method, "POST");
+        assert_eq!(result.receipt.operation, TfWebOperation::BrowserBoundPost);
         assert_eq!(result.receipt.terminal, "completed");
         assert_eq!(result.receipt.status_code, Some(201));
         assert_eq!(result.receipt.effect_state, "Unknown");
@@ -3032,6 +3446,7 @@ mod tests {
             expires: Instant::now() + TOKEN_TTL,
             approved: true,
             browser_post: None,
+            browser_credential: None,
         };
         let results = parse_search(
             r#"{"web":{"results":[

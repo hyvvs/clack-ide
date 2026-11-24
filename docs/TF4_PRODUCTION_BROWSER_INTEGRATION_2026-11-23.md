@@ -8,6 +8,127 @@ baseline was 07b007c83ba12fdd001094b99d9918192d085fa9. Additional
 uncommitted production changes already existed at continuation startup;
 they were preserved rather than reset.
 
+## 2026-11-24: connected FORM, screenshots, native credential and second-COM local causality — source checkpoint, NOT installed acceptance
+
+**New versus previous ce6eea8 implementation:** These changes are a genuine
+functional continuation of the existing TF4/TF3/TF2 authorities. The previous
+optimized NSIS at ce6eea8 (staged host SHA-256
+942dc89c3ac8cf5e01240e1e196f40eff0de57d8da8ed1be6b799f41afa94a87;
+release app 8a367807ad8d6d5223bfb3184797a9f84b43f32c0176130c8ea83d4900c8c1fd;
+setup f10e6a8027206361e560150789f348146ef9a736201d1dba40443547f02954f5)
+**predates this source**, is not an install/physical proof for it, and must
+not be used for positive acceptance. The human install request
+ur_c636qc4lsf8l was still OPEN when checked. New CI of ce6eea8
+(45487246358) COMPLETED FAILED: Ubuntu WASI PASS, six failed job
+categories and coverage skipped, not CI green.
+
+**Connected original FORM vertical:** A new fixed native host
+DOM_EXACT_FORM_CAPTURE_JS accepts only the **original retained** FORM
+and submitter from the existing NativeDomIdentity, never selector fallback or
+page-supplied JS. It validates POST + urlencoded encoding, same original
+public HTTPS/default-443 source and destination, a single unnamed submitter,
+no alternate action/target/encoding and at most eight non-disabled ordinary
+hidden successful controls with bounded names/values. It deterministically
+serializes control bytes using URLSearchParams, rejecting text/password,
+checkbox, select, file, external form owners, changed/unsupported semantics.
+The sealed parent control turn captures method/destination/encoding/original
+visit indexes, body bytes and SHA-256 **before the genuine OS application
+consent dialog**, and the exact private facts are retained by the already
+existing TF4 Pending authority. The human approves method/destination,
+original nodes, body byte count and SHA. After central token consumption,
+the native parent captures the **same original FORM and submitter again**
+over the sealed turn, comparing all identities, destination and byte-for-byte
+body to the pre-consent intent, not just a self-consistent digest. Only then
+does it move the typed consumed native TF4 approval into the private TF3
+one-use body-bound POST executor; existing TF3 DNS/IP/TLS, quota, cancellation,
+expiry, zero-redirect and NeverReplay semantics remain the one network
+authority. There is no public/model POST operation or renderer send.
+DOM_EXACT_SUBMIT_JS remains deny-only. The transport-only sanitized POST
+receipt remains Unknown, never independent owned-server business effect
+proof. Public installed HTTPS positive form/replay and complete general
+successful-controls coverage are still **BLOCKED**.
+
+**Stable control local postconditions and link causality:** Original exact
+type/clear/select/check/uncheck/scroll still require genuine TF4 consent,
+original retained node/option, sealed action parameter SHA and single-use
+dispatch. The fixed native host now issues a **second separate authenticated
+WebView2 COM Runtime.callFunctionOn callback**, following its initial bounded
+mutation ACK, to check the same retained Node's value, selected original
+option, checked state or scroll-direction result without exporting the value,
+DOM HTML, selector, page text or secret. Missing/false/late COM callback,
+stale page or changed original node stay UNKNOWN, never retry. This is
+local DOM causality, NOT evidence that a server business side effect happened.
+Original retained link navigation still intentionally requires an
+authenticated action-to-request causal edge absent from WebResourceRequested;
+the broker's production causal ID remains None to avoid false-positive
+same-URL navigation attribution.
+
+**Actual native screenshot/evidence path:** The existing exclusive sealed
+parent/host v2 turn now invokes WebView2 Page.captureScreenshot for a bounded
+viewport PNG only after original page/observation matching and an explicit
+one-use genuine TF4 application consent naming its selected TF2 workspace
+evidence destination. Host and parent independently check original session,
+page ID, snapshot, page generation, source URL, bounded capture time, 1024x768
+dimensions, at most 64 KiB, PNG IHDR/chunks/CRC and full SHA-256. Host denies
+screenshots after omitted/truncated sensitive structural observation.
+Screenshot bytes cross only the authenticated host->parent pipe and are never
+returned via model, semantic snapshot or Tauri receipt. The **existing TF2
+filesystem authority** performs canonical workspace/path/reparse validation,
+write parent leases, same-directory atomic no-clobber commit and independent
+final file hash/readback; only sanitized metadata is returned. A real TF2
+atomic workspace file effect and replay denial passed a source integration
+test. Pixel privacy and actual installed WebView2-to-TF2 screenshot provenance
+remain **unaccepted**; this does not prove screenshots never contain sensitive
+visible content.
+
+**Origin-scoped credential delivery:** A private native-only CredentialGet
+operation requires the same genuine TF4 one-use app dialog and an exact
+original native observed page/snapshot/generation, a same-origin public
+HTTPS/no-query/default-port destination and opaque 48-hex reference. It uses
+the existing OS credential owner (fixed Clack TF4 service; account derived
+from the original approved origin hash and opaque ref), reading a strictly
+closed JSON token/expiration envelope **immediately before dispatch**,
+denying revoked/expired, malformed, unsafe, stale or foreign credentials.
+No page DOM/model/renderer receives raw token or a generic secret-store
+handle. The existing TF3 Public policy sends one parent-held Bearer
+Authorization header only to the exact approved origin and resource; no
+redirects, implicit cookie transfer, response body disclosure or retry.
+The resulting parent receipt contains origin, destination/ref SHA,
+HTTP status and delivery boolean, never the raw secret. An isolated
+test-only loopback HTTP server independently observed the exact synthetic
+Authorization header, method and one-use replay, with no cookie or leaked
+receipt data; wrong origin was denied before DNS/socket. The loopback test
+exception permits ephemeral HTTP test ports ONLY under the compile/test
+FixtureLoopback policy; production Public still denies cleartext/private
+targets and explicit ports. No deployed owned public HTTPS credentials or
+installed external effect has been accepted.
+
+**Current verification classification:** Source/isolated suites on this
+working tree: TF3 network test collection including isolated exact POST,
+credential header/one-use and negative scope tests; TF4 native owner tests
+including genuine-form intent binding, screenshot TF2 no-clobber commit and
+origin-ref/expiry; runtime sealed-form/screenshot contract and native host
+fixed-program tests, the latter with 62/62 active tests PASS. Eleven opt-in
+physical native tests remain ignored in normal Cargo runs. The fixture's
+six independent Node tests remain isolated localhost HTTP and cannot prove
+real installed browser action. The finished NSIS build is for earlier ce6eea8.
+This code does NOT yet implement TF2-governed browser download/upload or
+complete all eleven grouped lifecycle races; no model-native browser tool
+is enabled. Public TLS443 independently owned fixture, real installed
+consent, server-side positive effect/replay, complete seventeen-step E2E
+and final Product-wide UI/UX Polish & Acceptance are all unverified.
+The existing thirteen governing exit gates remain exactly
+**0 PASS / 5 PARTIAL / 8 BLOCKED**; no changed source-test count promotes
+a gate to installed production PASS.
+
+**One consolidated operator-owned hosting prerequisite:** The existing
+scripts/tf4-public-https-fixture/README.md now specifies two separate
+operator-owned public FQDNs, CA-trusted TLS443, private persistent one-use
+ledger, nonprivileged service identity, separately protected read-only
+oracle, approximate capacity, operator-dependent possible costs, and explicit
+deployment and teardown controls. No public DNS/tunnel/private service
+exposure or hosting cost was authorized or performed.
+
 ## 2026-11-24: accelerated source-functional continuation — NOT installed production acceptance
 
 **Implementation, distinct from acceptance:** On `tf/browser-computer-use`,
