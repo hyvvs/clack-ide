@@ -1958,7 +1958,13 @@ async fn execute_confined_native(
         .path()
         .resource_dir()
         .map_err(|_| "confined-native-bundle-resources-unavailable")?;
-    let host_executable = resource_root.join("clack-browser-host.exe");
+    // The native-host resource is deliberately namespaced instead of placed
+    // beside the app binary: Tauri's automatic binary staging can otherwise
+    // collide with the pinned resource under the same basename. The exact
+    // bundled path remains internal, not chosen by the model or renderer.
+    let host_executable = resource_root
+        .join("tf4-native-host")
+        .join("clack-browser-host.exe");
     let private_parent = app
         .path()
         .app_local_data_dir()
