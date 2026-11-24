@@ -974,6 +974,13 @@ fn native_link_navigation_observed(
     if tf3.terminal != "completed"
         || tf3.reason_code != "ok"
         || tf3.policy_decision != "allowed"
+        || tf3.tls_state != "verified"
+        // A redirect or credential-bearing response cannot establish the
+        // postcondition of this exact approved link without a separately
+        // bound destination/credential authority. Stay UNKNOWN instead.
+        || !tf3.redirect_chain.is_empty()
+        || tf3.credential_used
+        || tf3.credential_reference.is_some()
         || !tf3
             .status_code
             .is_some_and(|status| (200..300).contains(&status))
@@ -1518,12 +1525,20 @@ pub fn prepare(
         }
         // The inert text-page engine has no DOM Node identity and must not
         // manufacture a production action token for this operation.
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
         if session.native.is_none()
             && matches!(
                 req.operation,
                 TfBrowserOperation::Click | TfBrowserOperation::Type | TfBrowserOperation::Scroll
             )
         {
+            return Err("native-action-requires-confined-approved-runtime".into());
+        }
+        #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+        if matches!(
+            req.operation,
+            TfBrowserOperation::Click | TfBrowserOperation::Type | TfBrowserOperation::Scroll
+        ) {
             return Err("native-action-requires-confined-approved-runtime".into());
         }
         if session.busy {
@@ -3553,6 +3568,22 @@ mod tests {
         ));
         let mut altered = make_receipt();
         altered.tf3.as_mut().unwrap().content_sha256 = None;
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().tls_state = "unknown";
+        assert!(!native_link_navigation_observed(
+            &altered,
+            source,
+            1,
+            &SemanticRole::Link
+        ));
+        let mut altered = make_receipt();
+        altered.tf3.as_mut().unwrap().credential_used = true;
         assert!(!native_link_navigation_observed(
             &altered,
             source,
