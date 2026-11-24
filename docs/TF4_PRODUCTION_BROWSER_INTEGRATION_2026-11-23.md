@@ -1984,3 +1984,87 @@ TF2 evidence, owned public two-origin TLS443 server oracle, external
 business effects, final Product-wide UI/UX acceptance and all
 original protected-branch restrictions remain required. Do not enable
 native browser model tools or merge Draft PR #46.
+
+### 25 November: exhaustive existing fourteen-function native runtime opt-in inventory (same ef73 binary)
+
+The **same unchanged** compiled `ef73c13` staged optimized native host
+SHA-256 `979e13611f6e0d0c8c390bb3b878b97b27d189d4a93fdd381e667bbad381a257`
+was then used to run the remaining physical test functions **individually**.
+Every one of the **14 distinct existing**
+`physical_production_*` tests in
+`src-tauri/src/modules/net/tf_browser_runtime.rs` has now reported its own
+actual physical **PASS** using the exact staged host; the screenshot
+function additionally passed **both** separate safe-image and
+sensitive-omission-denial modes, for **15 successful physical test
+invocations**. This is a 14-function **native runtime physical probe
+inventory**, **not** the distinct canonical 11 grouped host/renderer
+race cases, nor the seventeen-step installed application E2E.
+
+The last five distinct source-matched positive/negative physical checks,
+which supplement the seven previously listed cases, are:
+
+* Original host child readiness with no fixture: true AppContainer/COM
+  readiness and owned Job/UDF teardown **PASS**.
+* Original browser private HTTPS TCPv4 denial: owned regular-process
+  positive listener `1`, restricted WebView2 TCP connection `0`
+  **PASS**, no direct-network fallback.
+* Closed native DOM terminal after a TF3 HTTPS denial: physical COM
+  `denied` with `visited=0` and `elements=0` **PASS as a
+  negative**, never misidentified as a positive rendered page.
+* Exact locally assigned RFC1918 interface negative: Windows reported
+  a real `Preferred` IPv4 address belonging to this machine, an owned
+  listener on its exact local address:443 accepted `1` positive
+  parent connection while the restricted AppContainer made `0`
+  connections **PASS**. No other LAN machine or public target was used.
+* IANA static public `https://example.org/` positive, explicitly
+  opted in: actual TF3 HTTPS with TLS observation, one original
+  WebView2 COM document completion (`577` response bytes, DNS
+  hops `1`), native DOM `visited=3`/`elements=1`,
+  original Job/UDF cleanup **PASS**; no credentials or external write.
+
+Three additional previously existing exact-host physical tests (to
+finish the inventory) also **PASS**:
+`physical_production_owned_https_document_resources_and_dom`
+on separately scoped `-CssRedirect` fixture (HTML `1263` bytes,
+CSS `browser-resource-redirect-denied` zero-follow, image `68`
+bytes, DOM `visited=15`/`elements=12`, `2` omitted
+controls, original reference stale/recheck);
+`physical_production_opt_in_exclusive_control_turn_snapshot`
+(one genuine COM host control turn, one-use read-only observation);
+and `physical_production_owned_https_one_document_exact_element_recheck`
+(separately scoped static `-MinimalRecheckDocument`, original node
+serial/ordinal accepted twice, stale old snapshot refused, correct
+close cleanup, **no debug DOM mutation**).
+Both owned HTTPS fixture sessions were explicitly stopped and their
+ephemeral certificate/TLS listener/UDF resources cleaned up.
+
+**Failed configuration attempts retained:** The RFC1918 probe first
+failed before launch with `UNAVAILABLE: select an address assigned to
+this Windows machine` because its required
+`CLACK_TF4_OWNED_RFC1918_ADDRESS` environment value was absent;
+the public documentation-positive test likewise first failed before
+launch with `explicit HTTPS documentation target opt-in required`
+because `CLACK_TF4_POSITIVE_HTTPS_URL` was unset. The two failures
+were **not** counted as passes. They were corrected only by passing
+the exact OS-owned local IPv4 interface and explicitly permitted
+`https://example.org/` respectively; both independent reruns
+then succeeded with the *unchanged* ef73 executable and test code.
+No broader security/network policy or privilege change was made.
+
+The checksum-bound human installation request
+`ur_xu6so3fb407e` was still **OPEN** when last queried. CI
+`45512678852` on documentation-only `16894aa` completed
+**CANCELLED** with some failing jobs, and source-equivalent
+documentation-head CI `45513317566` on `1589dd8` was
+**in progress** when queried. No CI-green assertion follows.
+Source-matched native probes **cannot** establish installed application
+identity, genuine application user consent or one-use TF4 approval
+E2E, independent public two-origin TLS443 write oracle,
+remote postcondition, screenshot TF2 evidence, credentials or file
+transfers. The governing **thirteen** TF4 release gates are still
+exactly **0 PASS / 5 PARTIAL / 8 BLOCKED**. The separately required
+11 grouped race cases remain **9/11** with two unspecified cases;
+the real external-link action causality remains `Unknown` and
+`NEVER_REPLAY`. Draft PR #46 stays unmerged, model-native TF4 browser
+actions remain disabled and the final Product-wide UI/UX gate remains
+blocking.
