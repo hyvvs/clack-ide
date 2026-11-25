@@ -254,8 +254,21 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
             b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()]
     };
     if mode == "idle" {
+        // TCP write boundaries are not HTTP body boundaries: macOS can merge
+        // the five paced writes into one or two reqwest bytes_stream items.
+        // Make each body observation an actual HTTP chunk without completing
+        // the response, so five Body/IPC sequences remain a real assertion.
+        let chunk = |body: &[u8]| {
+            let mut framed = format!("{:X}\r\n", body.len()).into_bytes();
+            framed.extend_from_slice(body);
+            framed.extend_from_slice(b"\r\n");
+            framed
+        };
+        parts[0] = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec();
+        let meaningful = std::mem::take(&mut parts[1]);
+        parts[1] = chunk(&meaningful);
         for _ in 0..4 {
-            parts.push(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n".to_vec());
+            parts.push(chunk(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n"));
         }
     } else if mode == "done" {
         parts.push(b"{\"done\":true,\"done_reason\":\"stop\"}\n".to_vec());

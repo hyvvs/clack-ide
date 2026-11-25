@@ -12,7 +12,12 @@ concurrency:
 
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    # Keep PowerShell-AST acceptance tests on a stable image while
+    # ubuntu-latest transitions to 26.04: the 26.04 hosted runner intermittently
+    # crashes `pwsh -File` with an invalid .NET assembly name before it can
+    # inspect any command (run 45705101798, 20 genuine frontend test failures).
+    # Do not skip, mock or relax the approval/effect assertions.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
