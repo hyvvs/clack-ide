@@ -2068,3 +2068,161 @@ the real external-link action causality remains `Unknown` and
 `NEVER_REPLAY`. Draft PR #46 stays unmerged, model-native TF4 browser
 actions remain disabled and the final Product-wide UI/UX gate remains
 blocking.
+
+## 25 November 2026 — prospective grouped definitions and new functional source acceptance
+
+This continuation extends the **existing** TF4 owner, host and public fixture.
+The previously unnamed two remaining grouped cases are now **prospectively
+specified by the user** (they are not reconstructed historical case names):
+
+* **Case 10: approved-action-cancel-close-ordering.** Exact centrally consumed
+  original action versus cancel, close and shutdown **before** dispatch
+  commitment; opposite dispatch-first ordering must stay potentially effectful.
+  Approval and action cannot be replayed. Existing atomic active-action phase,
+  exclusive host control turn and session-owned shutdown are reused.
+* **Case 11: approved-dispatch-crash-restart.** A consumed original effect
+  crosses dispatch then its native/broker/app completion becomes unavailable.
+  Uncertain outcome persists on restart through the **existing custom-tool
+  execution ledger**, without a second ledger, retransmission or terminal
+  promotion. A consumed-identity hash is admitted only after authoritative
+  conversation/agent/workspace-root verification, before a possible effect is
+  dispatched. Unresolved TF4 effects cannot be evicted at ledger capacity;
+  failed durable admission denies dispatch.
+
+The original nine fixture-owned grouped cases and their physical evidence
+remain unchanged. The grouped runner lists cases 10 and 11 as
+`NOT_PROVEN` and rejects attempts to certify them using its nine-case
+acceptance-only isolated fault mode. Focused native-owner/ledger source tests
+**3 PASS / 0 FAIL** cover action-vs-cancel order, restarted token rejection,
+durable reopen→UNKNOWN, duplicate token denial, capacity retention and no
+terminal promotion. These tests **do not** prove physical case 10 or 11:
+installed human application approval, live crash/restart observation, a
+privately owned public server ledger and Job/UDF lifecycle still require
+independent acceptance. The authoritative physical grouped count is **9/11**.
+
+**Original FORM and host:** The fixed original-node native FORM preview now
+supports bounded deterministic UTF-8, URL-encoded ordinary successful
+controls: ordered duplicate names, text fields, CRLF textarea normalization,
+selected original options, checked checkbox/radio values, omitted disabled
+and unnamed controls, and a named original submitter. Passwords, files,
+credential-like fields (including hidden tokens), external associated
+controls, hard-wrap textarea, ambiguous charset, foreign destination and
+unsupported control types fail closed. It still has no renderer submit,
+`FormData(form)`, `fetch`, selector fallback, raw model-visible body or
+generic POST. The existing original FORM/submitter identity, before-consent
+body/digest, after-consent byte-for-byte recapture, one consumed TF4 witness,
+private TF3 POST and conservative Unknown/NEVER_REPLAY authority are retained.
+
+Actual focused evidence: `node --test
+scripts/tf4-form-successful-controls.test.mjs` **5/5 PASS**;
+`cargo test --locked --features tf-browser-native-runtime --bin
+clack-browser-host native_original_form_capture_is_read_only_bounded_and_private`
+**1/1 PASS**. A fresh source-current **debug** native host was built with
+`cargo build --offline --locked --features tf-browser-native-runtime --bin
+clack-browser-host` exit **0**, 16,420,352 bytes, SHA-256
+`df3fd4e34acae7edb0c54b90dbd499ce732569f255280d5709fb2b5ca593cd38`.
+This debug binary is **not** the optimized ef73 package or an installed app.
+
+**New genuinely physical original-node FORM proof:** On separately opted-in
+`-MinimalOriginalFormDocument -InteractiveControls` mode of the existing
+owned-loopback HTTPS fixture, run ID
+`4a99086841ed44d08cd5941b7e437d8e`, source-current WebView2/AppContainer
+test `physical_production_owned_https_original_form_capture_before_consent`
+**1 PASS**: original page generation 1, exact retained FORM/submitter true,
+deterministic **116-byte** body with SHA binding and one-use control turn,
+**no native POST**. Fixture `-Action Stop` exit 0. This is physical
+preconsent capture, **not** approved installed post or independent remote effect.
+
+**Native network resource admission:** The same native host now arms one-use
+original-document/navigation claims after authenticated readiness; permits
+the sole initial exact DOCUMENT and bounded context+extension+MIME
+same-origin queryless stylesheet/raster-image/font resource classes; denies
+Fetch/XHR/Script/Other, uncontrolled successor document/reload/navigation and
+unexpected response MIME. Existing TF3 public DNS/IP/TLS and zero redirect
+remain authoritative. Context/extension/MIME is only a conservative boundary,
+**not a proof that even an admitted passive HTTP GET is effect-free**. Two
+native source tests **2/2 PASS**. New targeted real WebView2/AppContainer
+resource regression using the existing `-CssRedirect` owned HTTPS fixture,
+run ID `219fe5dfaa0144e0aed6bedac33c0471`, **1 PASS**: HTML 1263 B
+and PNG 68 B completed, redirected CSS denied without follow-up,
+DOM 15 visited/12 retained/2 sensitive controls omitted, stale reference
+rejected and exact fresh retained-node recheck accepted. Fixture stop exit 0.
+This was a regression-specific physical test of the **new** network change,
+not a repeat of the whole 14-function prior inventory.
+
+**Positive, separately governed owned tab (source-bound initial scope):**
+`OpenConfinedTab` uses the existing visible TF4 application consent and
+independently isolated native host/AppContainer/UDF per new session. The
+approved exact opener ID, actor, session, workspace root, revision,
+destination and new session are bound and rechecked; in-flight opens count
+toward session capacity. Each new tab retains opener identity and explicitly
+owned root close cascades to exact scoped child cleanup, refusing to call
+unknown Job/UDF shutdown `Observed`. Nested tabs, uncontrolled popup/window
+fallback, stale/foreign owner or non-root HTTPS destinations are denied.
+This does **not** yet provide a positive page-requested popup; WebView2
+`NewWindowRequested` remains veto-only and installed tab positive/negative
+physical acceptance remains incomplete.
+
+**CI triage and local source tests:** Prior workflow
+`45513774604` at `f9e7cf2` was COMPLETE/FAIL: Rust Clippy,
+frontend Test, macOS/Windows Rust nextest, macOS/Windows WASI adversarial
+failed; Ubuntu WASI PASS and coverage skipped. Protected main
+`dddab1b9` workflow `44994093010` was also red, but at different
+steps in several jobs (Rust and macOS/Windows cargo check, frontend Lint);
+the Windows WASI `WorkspaceChanged` signature is independently visible in
+both logs. It is incorrect to classify **all** current failures inherited.
+Targeted TF4 Linux cfg/unused import/mutable fixes were made without global
+Clippy suppression. Vitest now selects script `*.test.mjs` written for
+Vitest, while the node:test script suites are automatically selected and
+run by `scripts/run-node-script-tests.mjs` in CI rather than being silently
+ignored. Local complete Node-native script run **142/142 PASS**, including
+existing public two-origin server fixture's six isolated Node tests and
+the new FORM five; no public fixture was deployed. Existing public fixture
+has not acquired the two authorized CA-trusted HTTPS:443 origins and private
+independent effect oracle.
+
+**Release effect:** These new current-source tests do not amend the
+previously physically accepted **14/14** exact optimized ef73 functions or
+promote the **9/11** grouped score. Human-only checksum-gated installer
+request `ur_xu6so3fb407e` still **OPEN**. The installed candidate previously
+examined does not match the optimized release SHA. No actual installed
+application approval/replay, public effect acceptance or full 17-step
+production run has been proven. Native model browser capabilities stay off.
+Canonical 13 gates remain **0 PASS / 5 PARTIAL / 8 BLOCKED**. PR #46 stays
+Draft/unmerged; final Product-wide UI/UX Polish & Acceptance remains a
+separate mandatory release blocker.
+
+**Additional focused source-current verification and failures kept:**
+
+* The single canonical Node-native script runner discovered **24** actual
+  `node:test` suite files and ran **142/142 PASS** (zero skipped or failed),
+  including TF4's six independent fixture source tests and five new FORM tests.
+  Vitest keeps its unrelated legitimate `scripts/*.test.mjs` suites.
+* `npm run check-types` PASS. Focused TF4 browser UI/SDK Vitest
+  `ChatToolsControl.browser.test.tsx` + `tfBrowser.test.ts` **17/17 PASS**.
+* After the child-tab owned-shutdown lifetime correction,
+  `cargo test --offline --locked --lib --features tf-browser-native-runtime
+  confined_tab_` **4/4 PASS**; `grouped_case` **3/3 PASS**; the retained
+  action kind/approval class regression **1/1 PASS**. An initial focused
+  compilation **FAILED** with Rust E0713 (lock guard temporary outliving
+  `NativeBackground::drop`); corrected at the exact owned child cleanup site
+  and verified by the subsequent passing native test runs. No failed
+  historical evidence was rewritten.
+* Source-scoped `rustfmt --edition 2021 --config skip_children=true --check`
+  for changed TF4 Rust files PASS and `git diff --check` PASS. Broad
+  `cargo fmt --all -- --check` still **FAILS** on other pre-existing,
+  unrelated LM11/compute examples and sources; none of those were rewritten.
+  A local broad `vitest list` additionally **FAILED** while collecting
+  an unrelated preserved untracked `outputs/anyps5-review-.../archive.test.mjs`
+  whose direct process CLI input is unavailable; focused TF4 Vitest explicitly
+  excluded that untracked evidence tree and passed. No unrelated artifacts
+  were changed or deleted.
+* Feature-gated grouped runner `cargo run --offline --locked --features
+  tf-browser-native-runtime,tf-browser-isolation-acceptance --example
+  tf_browser_isolation_acceptance -- --list-grouped` exit **0** printed the
+  original nine implemented case names, `implemented=9 required=11`, and
+  both newly prospective names explicitly `NOT_PROVEN`. An initial
+  `--list-grouped` invocation missing the separately required isolation
+  acceptance feature exited **2** before any real host run; the correctly
+  feature-gated invocation succeeded. No original physical suite was rerun
+  and no 11/11 acceptance was asserted.

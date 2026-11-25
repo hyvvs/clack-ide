@@ -5,6 +5,12 @@
 //!
 //! References are random opaque handles bound to the exact native session,
 //! page, generation, snapshot and observed element. No selector/text fallback.
+// Keep the portable identity contract available for tests and shared types on
+// targets where the production native browser owner is not enabled.
+#![cfg_attr(
+    not(all(windows, feature = "tf-browser-native-runtime")),
+    allow(dead_code)
+)]
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -158,7 +164,7 @@ pub(crate) struct PreparedAction {
 /// NOT be replayed using the same authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum NativeEffectTerminal {
+pub enum NativeEffectTerminal {
     Denied,
     Stale,
     CancelledBeforeDispatch,
@@ -176,7 +182,7 @@ pub(crate) enum NativeEffectTerminal {
 /// always `Unknown` because the page/server effect has not been established.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub(crate) enum NativeEffectOutcome {
+pub enum NativeEffectOutcome {
     Success,
     Failed,
     Cancelled,
@@ -747,7 +753,13 @@ impl BrowserPageContract {
                 .snapshot
                 .as_ref()
                 .is_none_or(|s| s.snapshot_id != a.snapshot_id)
-            || !self.element_handles.contains_key(&a.element_ref)
+            || self.element_handles.get(&a.element_ref).is_none_or(|held| {
+                // Reconfirm that the same retained source still classifies
+                // this exact action. A forged/downgraded action kind may not
+                // promote a destructive/unknown gesture to a read-only one.
+                action.effect != classify(action.kind, Some(&held.source))
+                    || action.requires_approval != (action.effect != BrowserEffect::ReadOnly)
+            })
         {
             return Err("UNKNOWN_COMPLETION");
         }
@@ -925,6 +937,12 @@ mod tests {
         assert_eq!(a.effect, BrowserEffect::Unknown);
         assert!(a.requires_approval);
         assert!(p.verify_completion(&a).is_ok());
+        let mut changed_kind = a.clone();
+        changed_kind.kind = BrowserActionKind::Inspect;
+        assert_eq!(
+            p.verify_completion(&changed_kind).unwrap_err(),
+            "UNKNOWN_COMPLETION"
+        );
         p.observe(
             1,
             "https://example.org/form",

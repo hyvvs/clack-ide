@@ -486,12 +486,13 @@ mod host {
       return {dispatched:false};
     }"#;
     // Private read-only preview for the ORIGINAL retained FORM and submitter.
-    // Deliberately supports only a narrow, deterministic POST encoding: at
-    // most eight ordinary hidden successful controls and ONE unnamed native
-    // submitter. Any text, password, file, checkbox, select, duplicate
-    // submitter, disabled or custom form control FAILS CLOSED. Form bytes
-    // travel only over the sealed native host pipe to the existing TF4 consent
-    // owner; never into a semantic/model snapshot or a screenshot.
+    // Bounded, deterministic UTF-8 form-urlencoded successful controls. This
+    // intentionally does NOT invoke FormData(form), submit(), or page script:
+    // those may run arbitrary formdata/submit listeners before approval.
+    // Retained original FORM and submitter, exact ordered body, and subsequent
+    // recapture all travel solely over the sealed pipe to TF4's consent owner.
+    // Unmodelled controls, secrets, external form owners and ambiguous browser
+    // serialization fail closed; neither DOM values nor body enter snapshots.
     const DOM_EXACT_FORM_CAPTURE_JS: &str = r#"function(slot, formSlot) {
       if (this.observer.takeRecords().length) this.state.changed = true;
       if (this.state.changed) return null;
@@ -503,13 +504,15 @@ mod host {
           node.isContentEditable || form.isContentEditable ||
           !node.getClientRects().length || node.matches(':disabled') ||
           !((node.tagName === 'BUTTON' || node.tagName === 'INPUT') && node.type === 'submit') ||
-          node.name !== '' || node.hasAttribute('formaction') ||
+          node.hasAttribute('formaction') ||
           node.hasAttribute('formmethod') || node.hasAttribute('formenctype') ||
           node.hasAttribute('formtarget') || node.hasAttribute('formnovalidate') ||
           form.hasAttribute('novalidate') || !form.hasAttribute('action') ||
           form.method !== 'post' || form.enctype !== 'application/x-www-form-urlencoded' ||
           form.target.toLowerCase() !== '_self' ||
-          form.elements.length < 2 || form.elements.length > 9) return null;
+          form.elements.length < 2 || form.elements.length > 17 ||
+          document.characterSet.toLowerCase() !== 'utf-8' ||
+          (form.acceptCharset && form.acceptCharset.trim().toLowerCase() !== 'utf-8')) return null;
       const targetHref = form.action;
       if (!targetHref || targetHref.length > 2048 || targetHref.includes('?') ||
           targetHref.includes('#')) return null;
@@ -519,15 +522,70 @@ mod host {
           source.port !== '' || destination.username !== '' || destination.password !== '' ||
           destination.href === source.href) return null;
       const params = new URLSearchParams();
+      // Normalize only TEXTAREA line breaks. Browser URL-encoded form
+      // submission encodes CRLF; plain text/hidden values with control
+      // characters and hard-wrapped textareas are outside this bounded scope.
+      const safe = (value, multiline) => {
+        if (typeof value !== 'string' || value.length > 256 ||
+            /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value) ||
+            (!multiline && /[\u0009\u000a\u000d]/.test(value))) return null;
+        return multiline ? value.replace(/\r\n|\r|\n/g, '\r\n') : value;
+      };
+      const ordinaryName = (control) => {
+        if (typeof control.name !== 'string' || control.name.length > 64 ||
+            safe(control.name, false) === null ||
+            control.name === '_charset_' || control.name === 'isindex') return false;
+        // Credential-like user-editable fields require the separate secret
+        // grant, not a generic original FORM preview.
+        if (/password|passwd|secret|api[_-]?key|access[_-]?token|csrf[_-]?token|session[_-]?token|authorization|one[_-]?time|credit[_-]?card|\bcvv\b|\bcvc\b/i.test(control.name) ||
+            (control.type !== 'hidden' &&
+             /^(?:username|current-password|new-password|one-time-code|cc-.*)$/.test(
+               (control.getAttribute('autocomplete') || '').trim().toLowerCase()))) return false;
+        return true;
+      };
       let seenSubmitter = false;
       for (const control of form.elements) {
-        if (control === node) { if (seenSubmitter) return null; seenSubmitter = true; continue; }
-        if (control.tagName !== 'INPUT' || control.type !== 'hidden' ||
-            control.disabled || control.form !== form || !form.contains(control) ||
+        if (control.form !== form || !form.contains(control) ||
             control.ownerDocument !== document || control.isContentEditable ||
-            !control.name || control.name.length > 64 || control.value.length > 256 ||
-            /[\u0000-\u001f\u007f]/.test(control.name + control.value)) return null;
-        params.append(control.name, control.value);
+            control.hasAttribute('dirname') || !ordinaryName(control)) return null;
+        const tag = control.tagName, type = control.type;
+        if (tag === 'INPUT' && (type === 'password' || type === 'file')) return null;
+        if ((tag === 'INPUT' || tag === 'BUTTON') && type === 'submit') {
+          if (control === node) {
+            if (seenSubmitter) return null;
+            seenSubmitter = true;
+            if (control.name) {
+              const value = safe(control.value, false);
+              if (value === null) return null;
+              params.append(control.name, value);
+            }
+          }
+          continue; // other submitters are not successful
+        }
+        if (control === node) return null;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return null;
+        if (tag === 'INPUT' &&
+            !['hidden', 'text', 'search', 'email', 'tel', 'url', 'checkbox', 'radio'].includes(type)) return null;
+        if (tag === 'TEXTAREA' && control.wrap === 'hard') return null;
+        if (control.matches(':disabled') || !control.name) continue;
+        if (tag === 'INPUT' && (type === 'checkbox' || type === 'radio') && !control.checked) continue;
+        if (tag === 'SELECT') {
+          for (const option of control.options) {
+            const parent = option.parentElement;
+            if (option.ownerDocument !== document || !parent ||
+                !((parent === control) ||
+                  (parent.tagName === 'OPTGROUP' && parent.parentElement === control))) return null;
+            if (!option.selected || option.disabled ||
+                (parent.tagName === 'OPTGROUP' && parent.disabled)) continue;
+            const value = safe(option.value, false);
+            if (value === null) return null;
+            params.append(control.name, value);
+          }
+        } else {
+          const value = safe(control.value, tag === 'TEXTAREA');
+          if (value === null) return null;
+          params.append(control.name, value);
+        }
       }
       const body = params.toString();
       if (!seenSubmitter || !body || body.length > 2048) return null;
@@ -1179,23 +1237,85 @@ mod host {
             && parsed.port_or_known_default() == Some(443)
     }
 
-    // NavigationStarting is a document-level boundary, not the TF3 resource
-    // allowlist. Restrict its HTTPS authority to the single owned origin and
-    // reject all query/fragment variants; static dependent CSS/images/fonts
-    // still use their existing individually brokered resource deferrals.
-    // This does NOT authorize arbitrary same-origin GET paths: that requires
-    // a trusted parent resource manifest and remains a separate acceptance gate.
+    // Only the exact parent-authorized initial document is eligible. There
+    // is no trusted parent successor-navigation token in this protocol.
     fn production_document_navigation_allowed(raw: &str, original: &str) -> bool {
-        if !production_broker_url(raw) || !production_broker_url(original) {
+        if raw != original || !production_broker_url(raw) {
             return false;
         }
-        let (Ok(target), Ok(source)) = (reqwest::Url::parse(raw), reqwest::Url::parse(original))
-        else {
-            return false;
-        };
-        target.origin() == source.origin()
-            && target.query().is_none()
-            && target.fragment().is_none()
+        reqwest::Url::parse(raw).is_ok_and(|target| target.query().is_none())
+    }
+
+    // Separate one-use claims allow either COM event ordering without opening
+    // a second document request or navigation. Only the trusted readiness
+    // acknowledgement arms these claims, immediately before Navigate.
+    #[derive(Default)]
+    struct ProductionNetworkAdmission {
+        armed: AtomicBool,
+        navigation_claimed: AtomicBool,
+        document_claimed: AtomicBool,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ProductionResource {
+        Document,
+        Passive(&'static [&'static str]),
+    }
+
+    impl ProductionNetworkAdmission {
+        fn navigation(&self, raw: &str, original: &str) -> bool {
+            self.armed.load(Ordering::Acquire)
+                && production_document_navigation_allowed(raw, original)
+                && !self.navigation_claimed.swap(true, Ordering::AcqRel)
+        }
+
+        fn resource(
+            &self,
+            method: &str,
+            raw: &str,
+            original: &str,
+            context: COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
+        ) -> Option<ProductionResource> {
+            if !self.armed.load(Ordering::Acquire) || method != "GET" {
+                return None;
+            }
+            if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT {
+                return (production_document_navigation_allowed(raw, original)
+                    && !self.document_claimed.swap(true, Ordering::AcqRel))
+                .then_some(ProductionResource::Document);
+            }
+            if !self.document_claimed.load(Ordering::Acquire) || !production_broker_url(raw) {
+                return None;
+            }
+            let target = reqwest::Url::parse(raw).ok()?;
+            let source = reqwest::Url::parse(original).ok()?;
+            if target.origin() != source.origin() || target.query().is_some() {
+                return None;
+            }
+            let (_, extension) = target.path().rsplit('/').next()?.rsplit_once('.')?;
+            // Context plus extension is a narrow admission heuristic, NOT
+            // proof that a server's GET handler is effect-free. The parent
+            // must still enforce its exact TF3 URL and bounded response policy.
+            let mime: &'static [&'static str] =
+                match (context, extension.to_ascii_lowercase().as_str()) {
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, "css") => &["text/css"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, "png") => &["image/png"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, "jpg" | "jpeg") => &["image/jpeg"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, "gif") => &["image/gif"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, "webp") => &["image/webp"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, "avif") => &["image/avif"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, "woff") => {
+                        &["font/woff", "application/font-woff"]
+                    }
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, "woff2") => {
+                        &["font/woff2", "application/font-woff2"]
+                    }
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, "ttf") => &["font/ttf"],
+                    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT, "otf") => &["font/otf"],
+                    _ => return None,
+                };
+            Some(ProductionResource::Passive(mime))
+        }
     }
 
     fn sid_string(sid: *mut core::ffi::c_void) -> Result<String, String> {
@@ -3286,6 +3406,7 @@ mod host {
         page_generation: u64,
         session: String,
         url: String,
+        production_resource: Option<ProductionResource>,
     }
 
     thread_local! {
@@ -5040,6 +5161,18 @@ mod host {
                 phase_a.stale_page_denied.fetch_add(1, Ordering::Relaxed);
                 payload = BrokerPayload::denied(502);
             }
+            if !payload.synthetic && (200..=299).contains(&payload.status) {
+                if let Some(ProductionResource::Passive(mime)) = pending.production_resource {
+                    if !mime.contains(&payload.content_type.as_str()) {
+                        trace.record(
+                            "production.resource.mime-denied",
+                            "passive response MIME differs from admitted extension/context",
+                        );
+                        stats.denied.fetch_add(1, Ordering::Relaxed);
+                        payload = BrokerPayload::denied(403);
+                    }
+                }
+            }
             if let Err(error) =
                 unsafe { broker_set_response(&pending.args, &pending.environment, &payload) }
             {
@@ -5625,6 +5758,7 @@ mod host {
         // dispatch WebResourceRequested before NavigationStarting. The first
         // controlled navigation stays on epoch 1 regardless of event order.
         let page_generation = Arc::new(AtomicU64::new(1));
+        let network_admission = Arc::new(ProductionNetworkAdmission::default());
         let root = args.root.clone();
         let pid = std::process::id();
         let port = args.fixture_port;
@@ -5647,6 +5781,7 @@ mod host {
                 let worker_production = production;
                 let worker_initial_url = document_url.clone();
                 let worker_generation = page_generation.clone();
+                let worker_network_admission = network_admission.clone();
                 let worker_phase_a = phase_a.clone();
                 let worker_grouped_completed = grouped_completed.clone();
                 let handle = app.handle().clone();
@@ -5833,6 +5968,7 @@ mod host {
                             let (ack_tx, ack_rx) = mpsc::sync_channel(1);
                             let core_app = handle.clone();
                             let approved_url = worker_initial_url.clone();
+                            let admission = worker_network_admission.clone();
                             let ack_trace = worker_trace.clone();
                             let dispatched = handle.run_on_main_thread(move || {
                                 let navigation_ack = ack_tx.clone();
@@ -5840,7 +5976,10 @@ mod host {
                                     .ok_or("production controller vanished")
                                     .and_then(|window| window.with_webview(move |native| {
                                         let success = unsafe { native.controller().CoreWebView2() }
-                                            .and_then(|core| unsafe { core.Navigate(&HSTRING::from(approved_url)) })
+                                            .and_then(|core| {
+                                                admission.armed.store(true, Ordering::Release);
+                                                unsafe { core.Navigate(&HSTRING::from(approved_url)) }
+                                            })
                                             .is_ok();
                                         let _ = navigation_ack.send(success);
                                     }).map_err(|_| "production controller dispatch failed"));
@@ -6322,6 +6461,7 @@ mod host {
                 let callback_udf = udf.clone();
                 let callback_fault = fault;
                 let callback_generation = page_generation.clone();
+                let callback_network_admission = network_admission.clone();
                 let callback_phase_a = phase_a.clone();
                 let callback_observer = setup_observer.clone();
                 let counter = Arc::new(AtomicU64::new(0));
@@ -6483,6 +6623,7 @@ mod host {
                         let nav_fault = callback_fault;
                         let nav_production = callback_production;
                         let nav_expected_url = callback_url.clone();
+                        let nav_admission = callback_network_admission.clone();
                         let nav_first_expected = Arc::new(AtomicBool::new(false));
                         let navigation_handler = NavigationStartingEventHandler::create(Box::new(
                             move |_, args| {
@@ -6511,6 +6652,7 @@ mod host {
                                 let current_url = take_pwstr(raw);
                                 if current_url == "about:blank"
                                     && !nav_first_expected.load(Ordering::Acquire)
+                                    && (!nav_production || !nav_admission.armed.load(Ordering::Acquire))
                                 {
                                     return Ok(());
                                 }
@@ -6545,22 +6687,17 @@ mod host {
                                     return Ok(());
                                 }
                                 if nav_production {
-                                    if !production_document_navigation_allowed(
-                                        &current_url, &nav_expected_url) {
-                                        nav_stats.broken.store(true, Ordering::Release);
-                                        nav_trace.error("production.navigation.denied",
-                                            "unsupported document scheme/port/origin/query/fragment");
+                                    if !nav_admission.navigation(&current_url, &nav_expected_url) {
+                                        nav_trace.record("production.navigation.denied",
+                                            "document outside one-use parent initial navigation authority");
                                         if unsafe { args.SetCancel(true) }.is_err() {
                                             production_fatal_feature_veto(
                                                 &nav_trace, &nav_stats, "production.navigation.veto-failed");
                                         }
                                         return Ok(());
                                     }
-                                    if nav_first_expected.swap(true, Ordering::AcqRel) {
-                                        nav_generation.fetch_add(1, Ordering::AcqRel);
-                                        nav_phase_a.note("production-page-generation-invalidated");
-                                    }
-                                    nav_trace.record("production.navigation.policy-pending", "native page epoch bound to TF3 resource authorization");
+                                    nav_first_expected.store(true, Ordering::Release);
+                                    nav_trace.record("production.navigation.policy-pending", "one-use initial native page epoch bound to TF3 resource authorization");
                                     return Ok(());
                                 }
                                 if nav_fault == BrokerFault::PageRace
@@ -6612,6 +6749,7 @@ mod host {
                         let event_core = core.clone();
                         let event_document_url = callback_url.clone();
                         let event_production = callback_production;
+                        let event_admission = callback_network_admission.clone();
                         let held_dependent = Arc::new(AtomicU64::new(0));
                         let event_held_dependent = held_dependent.clone();
                         let handler = WebResourceRequestedEventHandler::create(Box::new(
@@ -6652,6 +6790,17 @@ mod host {
                                 if event_stats.broken.load(Ordering::Acquire) {
                                     return broker_deny_on_ui(&args, &event_env, 502, &event_trace, &event_stats);
                                 }
+                                let production_resource = if event_production {
+                                    let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
+                                    if unsafe { args.ResourceContext(&mut context) }.is_err() {
+                                        return broker_deny_on_ui(&args, &event_env, 502, &event_trace, &event_stats);
+                                    }
+                                    let Some(admitted) = event_admission.resource(&method, &uri, &event_document_url, context) else {
+                                        event_trace.record("production.resource.context-denied", "GET outside initial document/passive context authority");
+                                        return broker_deny_on_ui(&args, &event_env, 403, &event_trace, &event_stats);
+                                    };
+                                    Some(admitted)
+                                } else { None };
                                 let deferral = match unsafe { args.GetDeferral() } {
                                     Ok(deferral) => deferral,
                                     Err(_) => {
@@ -6669,6 +6818,7 @@ mod host {
                                         page_generation: request_generation,
                                         session: callback_session.clone(),
                                         url: uri.clone(),
+                                        production_resource,
                                     });
                                 });
                                 event_stats.pending.fetch_add(1, Ordering::Relaxed);
@@ -8869,10 +9019,19 @@ mod host {
                 "this.observer.takeRecords().length",
                 "form.method !== 'post'",
                 "form.enctype !== 'application/x-www-form-urlencoded'",
-                "control.type !== 'hidden'",
-                "params.append(control.name, control.value)",
+                "['hidden', 'text', 'search', 'email', 'tel', 'url', 'checkbox', 'radio']",
+                "tag === 'TEXTAREA'",
+                "tag === 'SELECT'",
+                "control.matches(':disabled')",
+                "!control.checked",
+                "params.append(control.name, value)",
+                "value.replace(/\\r\\n|\\r|\\n/g, '\\r\\n')",
+                "seenSubmitter = true",
+                "control.form !== form",
+                "option.ownerDocument !== document",
+                "document.characterSet.toLowerCase() !== 'utf-8'",
                 "destination.origin !== source.origin",
-                "form.elements.length > 9",
+                "form.elements.length > 17",
             ] {
                 assert!(
                     script.contains(retained),
@@ -9533,20 +9692,13 @@ mod host {
         }
 
         #[test]
-        fn production_document_navigation_is_original_origin_queryless_only() {
+        fn production_document_navigation_is_exact_and_one_use() {
             let original = "https://example.test/start";
-            for allowed in [
-                original,
-                "https://example.test/new-page",
-                "https://example.test:443/new-page",
-                "https://example.test/styles/site.css",
-            ] {
-                assert!(
-                    production_document_navigation_allowed(allowed, original),
-                    "same-origin queryless document denied: {allowed}"
-                );
-            }
+            assert!(production_document_navigation_allowed(original, original));
             for blocked in [
+                "https://example.test/new-page",
+                "https://example.test:443/start",
+                "https://example.test/styles/site.css",
                 "https://other.example/start",
                 "https://example.test:444/start",
                 "http://example.test/start",
@@ -9564,11 +9716,90 @@ mod host {
                     "unexpected document navigation allowed: {blocked}"
                 );
             }
+            let admission = ProductionNetworkAdmission::default();
+            assert!(!admission.navigation(original, original));
+            admission.armed.store(true, Ordering::Release);
+            assert!(!admission.navigation("https://example.test/next", original));
+            assert!(admission.navigation(original, original));
+            assert!(!admission.navigation(original, original));
+            assert!(!admission.navigation("https://example.test/next", original));
             let host_source = include_str!("clack-browser-host.rs");
             assert!(host_source.contains("production_document_navigation_allowed("));
             assert!(host_source.contains("&current_url, &nav_expected_url"));
             assert!(host_source.contains("production.navigation.veto-failed"));
             assert!(host_source.contains("production.resource.args-missing"));
+        }
+
+        #[test]
+        fn production_network_admission_separates_document_and_passive_com_contexts() {
+            let original = "https://example.test/start";
+            let admission = ProductionNetworkAdmission::default();
+            let doc = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT;
+            let css = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET;
+            let image = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
+            let font = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT;
+            let resource =
+                |method, uri, context| admission.resource(method, uri, original, context);
+            assert_eq!(resource("GET", original, doc), None);
+            admission.armed.store(true, Ordering::Release);
+            assert_eq!(resource("GET", "https://example.test/site.css", css), None);
+            assert_eq!(resource("GET", "https://example.test/next", doc), None);
+            // ResourceRequested may precede NavigationStarting.
+            assert_eq!(
+                resource("GET", original, doc),
+                Some(ProductionResource::Document)
+            );
+            assert!(admission.navigation(original, original));
+            assert_eq!(resource("GET", original, doc), None);
+            assert!(!admission.navigation(original, original));
+            for (uri, context, expected) in [
+                ("https://example.test/site.css", css, "text/css"),
+                ("https://example.test/pixel.png", image, "image/png"),
+                ("https://example.test/font.woff2", font, "font/woff2"),
+            ] {
+                let Some(ProductionResource::Passive(mimes)) = resource("GET", uri, context) else {
+                    panic!("passive fixture resource denied: {uri}");
+                };
+                assert!(mimes.contains(&expected));
+                assert!(!mimes.contains(&"text/html"));
+                assert!(!mimes.contains(&"application/javascript"));
+            }
+            for context in [
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT(999),
+                doc,
+            ] {
+                assert_eq!(
+                    resource("GET", "https://example.test/pixel.png", context),
+                    None
+                );
+            }
+            for uri in [
+                "https://other.example/pixel.png",
+                "https://example.test:444/pixel.png",
+                "https://example.test/pixel.png?write=1",
+                "https://example.test/pixel.png?",
+                "https://example.test/pixel.png#fragment",
+                "https://example.test/pixel.png/next",
+                "https://example.test/pixel.svg",
+                "https://example.test/write",
+                "https://example.test/script.js",
+            ] {
+                assert_eq!(resource("GET", uri, image), None, "unexpected URI {uri}");
+            }
+            assert_eq!(
+                resource("POST", "https://example.test/pixel.png", image),
+                None
+            );
+            assert_eq!(resource("GET", "https://example.test/pixel.png", css), None);
+            assert_eq!(
+                resource("GET", "https://example.test/font.woff2", image),
+                None
+            );
         }
 
         #[test]

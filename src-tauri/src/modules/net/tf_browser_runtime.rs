@@ -6,13 +6,23 @@
 //! Browser readiness requires retained kernel process identity, matching SID,
 //! job membership and the WebView2 COM effective UDF *before navigation*.
 //! The acceptance-only host/fixture mode is never launched by this module.
+// The portable wire contract remains available to unit tests and shared TF3
+// types even when the native session owner is not packaged on this target.
+#![cfg_attr(
+    not(all(windows, feature = "tf-browser-native-runtime")),
+    allow(dead_code)
+)]
 
-#[cfg(any(windows, test))]
-use super::tf_browser_contract::{BrowserPageContract, PageSnapshot};
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+use super::tf_browser_contract::BrowserPageContract;
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+use super::tf_browser_contract::PageSnapshot;
 use super::tf_browser_contract::{ObservedElement, SemanticRole, SemanticState};
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+use super::tf_web::TfWebOperation;
 use super::tf_web::TfWebReceipt;
-#[cfg(any(windows, test))]
-use super::tf_web::{self, TfWebOperation, TfWebRequest, TfWebState};
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+use super::tf_web::{self, TfWebRequest, TfWebState};
 use crate::modules::workspace::WorkspaceRegistry;
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -1336,7 +1346,7 @@ fn validate_host_binary(path: &Path, expected: &str) -> Result<PathBuf, String> 
     Ok(path)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
 mod windows_owner {
     use super::*;
     use std::ffi::{c_void, OsStr};
@@ -5607,14 +5617,17 @@ mod tests {
     }
 
     /// Independent physical read-only original FORM successful-control
-    /// capture, BEFORE user consent. This runs through the exact retained
+    /// capture, BEFORE user consent. A separately opted-in invocation against
+    /// -InteractiveControls covers ordinary named controls and CRLF textarea
+    /// bytes without changing the historical hidden-only acceptance variant.
+    /// Both run through the exact retained
     /// native FORM and submitter COM identities, the production control-turn
     /// pipe and the normal WebView2 AppContainer/TF3 document broker.
     /// It does not consume any user approval or issue the POST, so a positive
     /// capture MUST NOT be reported as an installed form submission effect.
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[tokio::test]
-    #[ignore = "opt-in real WebView2 original hidden-only FORM capture; no consent, network POST or installed E2E"]
+    #[ignore = "opt-in original FORM capture; optional INTERACTIVE=1 ordinary controls; no consent, POST or installed E2E"]
     async fn physical_production_owned_https_original_form_capture_before_consent() {
         use std::time::Duration;
         assert_eq!(
@@ -5622,6 +5635,7 @@ mod tests {
             Ok("1"),
             "explicit real original-form capture opt-in required"
         );
+        let interactive = std::env::var("CLACK_TF4_NATIVE_FORM_INTERACTIVE").as_deref() == Ok("1");
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let evidence = manifest.join("target").join("tf4-owned-https");
         let owned_cert = std::fs::canonicalize(evidence.join("server.cer"))
@@ -5767,7 +5781,11 @@ mod tests {
             )
             .await
             .map_err(|_| "original-form-real-com-capture-deadline".to_owned())??;
-            let expected_body = b"flow=owned+browser&stamp=unique%2Btoken";
+            let expected_body: &[u8] = if interactive {
+                b"flow=owned+browser&message=hello+world&notes=first%0D%0Asecond&flags=ok&color=blue&choice=one&choice=two&commit=send"
+            } else {
+                b"flow=owned+browser&stamp=unique%2Btoken"
+            };
             if intent.target != target
                 || intent.observation_id == 0
                 || intent.original_form_index == intent.original_submitter_index

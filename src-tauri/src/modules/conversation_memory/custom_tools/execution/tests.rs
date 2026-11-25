@@ -156,6 +156,69 @@ fn mcp_restart_interrupted_effects_are_unknown_and_never_replayed() {
     );
 }
 
+#[test]
+fn grouped_case11_native_browser_ledger_recovers_unknown_and_blocks_duplicate_and_pruning() {
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let token = "fixture-consumed-approval";
+    let mut record = native_browser_effect_record(owner.clone(), token);
+    record.epoch = "old-process".into();
+    let id = record.id.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    let mut ledger = Ledger {
+        version: 1,
+        records: vec![],
+    };
+    append_native_browser_effect(&mut ledger, record, |_| Ok(owner.clone())).unwrap();
+    write_ledger(&store, &path, &ledger).unwrap();
+    let disk = fs::read_to_string(&path).unwrap();
+    assert!(!disk.contains(token));
+    assert_eq!(ledger.records[0].effect, "possible");
+    let mut reopened = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    let interrupted = &reopened.records[0];
+    assert_eq!(interrupted.id, id);
+    assert_eq!(interrupted.state, "interrupted");
+    assert_eq!(interrupted.effect, "unknown");
+    assert_eq!(interrupted.error.as_deref(), Some("interrupted-no-replay"));
+    assert!(!prunable(interrupted, Err("owner-unavailable".into())));
+    assert!(!prunable(interrupted, Ok(owner.clone())));
+    assert!(append_native_browser_effect(
+        &mut reopened,
+        native_browser_effect_record(owner.clone(), token),
+        |_| Ok(owner.clone())
+    )
+    .is_err());
+    assert_eq!(reopened.records.len(), 1);
+    assert_eq!(
+        read_ledger(&session_file::SessionFile::default(), &path)
+            .unwrap()
+            .records[0]
+            .effect,
+        "unknown"
+    );
+    // A full ledger of unresolved effects must deny new dispatch rather than
+    // remove the only durable uncertainty record.
+    for i in 1..MAX_RECORDS {
+        let mut row = native_browser_effect_record(owner.clone(), &format!("fixture-{i}"));
+        row.epoch = "old-process".into();
+        append_native_browser_effect(&mut reopened, row, |_| Ok(owner.clone())).unwrap();
+    }
+    recover(&mut reopened, &MEMORY_EPOCH);
+    assert!(append_native_browser_effect(
+        &mut reopened,
+        native_browser_effect_record(owner.clone(), "new"),
+        |_| Ok(owner.clone())
+    )
+    .is_err());
+    assert_eq!(reopened.records.len(), MAX_RECORDS);
+}
+
 #[tokio::test]
 async fn mcp_success_preserves_external_provenance_and_untrusted_output_in_t2_history() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

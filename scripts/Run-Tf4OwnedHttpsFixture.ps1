@@ -50,6 +50,9 @@ param(
     # One real original FORM/submitter with supported hidden-only controls,
     # captured by WebView2 before consent; never automatically submitted.
     [switch] $MinimalOriginalFormDocument,
+    # Only with -MinimalOriginalFormDocument: isolated ordinary controls and
+    # named submitter for source-current original-node capture validation.
+    [switch] $InteractiveControls,
     # Isolated positive HTML form fixture for a future TF3-governed POST.
     # It confers no native action or network approval and is never default.
     [switch] $SubmittingFormDocument
@@ -74,6 +77,7 @@ if ($Action -eq 'Help') {
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalClickDocument (two bounded static pages for the separate live COM click navigation probe)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalSensitiveDocument (one static synthetic credential-control screenshot-denial probe)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalOriginalFormDocument (one static original hidden-only FORM/submitter capture, no POST)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalOriginalFormDocument -InteractiveControls (one static named-control FORM capture, no POST)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -SubmittingFormDocument (bounded real HTML POST; server accepts at most one submission)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId <32-hex-run-id>'
     Write-Output ('Second terminal: $env:CLACK_TF4_OWNED_HTTPS_CERT = "' + $publicPath + '"')
@@ -278,8 +282,41 @@ if ($MinimalOriginalFormDocument) {
 <button type="submit">Approve original form</button>
 </form></main></body></html>
 '@
+    if ($InteractiveControls) {
+        # A separately opted-in, bounded document exercises the *same*
+        # retained native FORM+submitter capture; never makes a POST. No page
+        # script, external resources, secrets, events or page-derived values
+        # enter the host's structural snapshot.
+        $originalFormHtml = @'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'self'">
+<link rel="icon" href="data:,">
+<title>TF4 original ordinary control capture</title></head>
+<body><main><h1>Controlled ordinary FORM</h1>
+<form action="/capture-only" method="post" enctype="application/x-www-form-urlencoded" target="_self" accept-charset="UTF-8">
+<input type="hidden" name="flow" value="owned browser">
+<input type="text" name="message" value="hello world">
+<textarea name="notes">first
+second</textarea>
+<input type="checkbox" name="flags" value="ok" checked>
+<input type="checkbox" name="flags" value="skip">
+<input type="radio" name="color" value="blue" checked>
+<select name="choice" multiple>
+<option value="one" selected>One</option>
+<option value="two" selected>Two</option>
+</select>
+<input type="text" name="disabled" value="omitted" disabled>
+<button type="submit" name="commit" value="send">Approve ordinary form</button>
+</form></main></body></html>
+'@
+    }
     $routes.Clear()
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($originalFormHtml) })
+}
+if ($InteractiveControls -and -not $MinimalOriginalFormDocument) {
+    throw '-InteractiveControls requires -MinimalOriginalFormDocument.'
 }
 if ($SubmittingFormDocument) {
     if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalRecheckDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument) {

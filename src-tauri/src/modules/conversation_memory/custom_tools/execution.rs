@@ -154,6 +154,11 @@ pub(super) fn runtime_supported(entry: &Entry, access: &Access) -> bool {
             .is_none_or(|reference| io::credential_account(&entry.id, reference).is_ok())
 }
 fn prunable(record: &Record, owner: Result<Access>) -> bool {
+    if record.tool.id == "tf.browser_operation.v1"
+        && matches!(record.effect.as_str(), "possible" | "unknown")
+    {
+        return false;
+    }
     terminal(&record.state)
         && (record.epoch != *MEMORY_EPOCH
             || record.test
@@ -495,15 +500,144 @@ fn edit_record(
     );
     Ok(record)
 }
+
+/// TF4 calls only after consuming its original native consent. No public
+/// command exposes this ledger admission or accepts an approval from the UI.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) fn begin_native_browser_effect(
+    app: &tauri::AppHandle,
+    actor: &str,
+    session: &str,
+    root: &Path,
+    consumed_approval: &str,
+) -> Result<String> {
+    let state = app.state::<MemoryState>();
+    let lock = state.owner("custom-tools")?;
+    let _guard = lock.lock().map_err(|_| "tool-execution-unavailable")?;
+    let owner = access(app, session)?;
+    let mut originals = original_owner(app, session)?;
+    load_tasks(app, &mut originals)?;
+    if owner.agent != actor || project::authorized_tool_root(app, &originals, root)? != root {
+        return Err("browser-ledger-owner-mismatch".into());
+    }
+    let mut ledger = read_ledger(&state.custom_tools, &path(app)?)?;
+    let record = native_browser_effect_record(owner, consumed_approval);
+    let id = record.id.clone();
+    append_native_browser_effect(&mut ledger, record, |r| access(app, &r.session_id))?;
+    let path = path(app)?;
+    // Dispatch requires a successful durable write, not just a cached value
+    // after a failed synchronization.
+    state.custom_tools.set(
+        &path,
+        "executions",
+        Some(serde_json::to_value(&ledger).map_err(|_| "tool-execution-corrupt")?),
+    )?;
+    Ok(id)
+}
+
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+fn append_native_browser_effect(
+    ledger: &mut Ledger,
+    record: Record,
+    owner: impl Fn(&Record) -> Result<Access>,
+) -> Result<()> {
+    if ledger.records.iter().any(|old| old.id == record.id) {
+        return Err("browser-ledger-no-replay".into());
+    }
+    if ledger.records.len() == MAX_RECORDS {
+        let index = ledger
+            .records
+            .iter()
+            .position(|r| prunable(r, owner(r)))
+            .ok_or("tool-execution-capacity")?;
+        ledger.records.remove(index);
+    }
+    ledger.records.push(record);
+    Ok(())
+}
+
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+fn native_browser_effect_record(owner: Access, consumed_approval: &str) -> Record {
+    let id = format!("tf4-{}", digest(consumed_approval.as_bytes()));
+    let at = now();
+    Record {
+        id: id.clone(),
+        epoch: MEMORY_EPOCH.clone(),
+        window: "native-browser".into(),
+        session_id: owner.session,
+        workspace_id: owner.workspace,
+        agent_id: owner.agent,
+        run_id: owner.run,
+        task_id: None,
+        tool: Reference {
+            id: "tf.browser_operation.v1".into(),
+            version: 1,
+            hash: digest(b"tf.browser_operation.v1"),
+        },
+        tool_name: "Native browser action".into(),
+        kind: "native".into(),
+        arguments_hash: digest(consumed_approval.as_bytes()),
+        permissions: vec!["network".into()],
+        test: false,
+        state: "running".into(),
+        effect: "possible".into(),
+        created_at: at,
+        updated_at: at,
+        approval: Some(digest(consumed_approval.as_bytes())),
+        native_id: None,
+        result: None,
+        error: None,
+        transitions: vec![("running".into(), at)],
+        confinement: None,
+        function: None,
+        mcp: None,
+    }
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) fn finish_native_browser_effect(
+    app: &tauri::AppHandle,
+    id: &str,
+    observed: bool,
+    not_attempted: bool,
+) -> Result<()> {
+    edit_record(app, id, |record| {
+        if record.tool.id != "tf.browser_operation.v1" || record.epoch != *MEMORY_EPOCH {
+            return Err("browser-ledger-owner-mismatch".into());
+        }
+        if terminal(&record.state) {
+            // A record recovered as interrupted cannot later become success.
+            if observed || not_attempted {
+                return Err("browser-ledger-terminal-no-replay".into());
+            }
+        } else {
+            if observed {
+                record.effect = "reported".into();
+                transition(record, "succeeded", None);
+            } else if not_attempted {
+                record.effect = "none".into();
+                transition(record, "failed", Some("native-browser-not-attempted"));
+            } else {
+                record.effect = "unknown".into();
+                transition(record, "interrupted", Some("interrupted-no-replay"));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
 fn policy(
     app: &tauri::AppHandle,
     access: &Access,
     definition: &Definition,
     originals: &Originals,
 ) -> Result<String> {
-    let profiles = crate::modules::self_hosted_profiles::authoritative_settings_value(app, "agentPermissionProfiles")
-        .map_err(|_| "permission-denied")?
-        .unwrap_or(json!({}));
+    let profiles = crate::modules::self_hosted_profiles::authoritative_settings_value(
+        app,
+        "agentPermissionProfiles",
+    )
+    .map_err(|_| "permission-denied")?
+    .unwrap_or(json!({}));
     let profile = &profiles[&access.agent];
     if profile["mode"] == "chat-only"
         || (originals.meta["run"]["mutationMode"] == "read-only"

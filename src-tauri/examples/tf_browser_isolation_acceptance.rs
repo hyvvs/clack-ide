@@ -288,6 +288,19 @@ mod windows {
     }
 
     const REQUIRED_GROUPED_RACES: usize = 11;
+    // These governing cases require the real application approval owner, not
+    // the acceptance-only host broker fault channel. Keep them visible in the
+    // inventory without allowing an isolated fixture to certify them.
+    const APPLICATION_GROUPED_CASES: [(&str, &str); 2] = [
+        (
+            "approved-action-cancel-close-ordering",
+            "case 10: approved action; cancel/close before dispatch and opposite ordering",
+        ),
+        (
+            "approved-dispatch-crash-restart",
+            "case 11: approved effectful dispatch; crash/restart, durable unknown and no replay",
+        ),
+    ];
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RunnerMode {
@@ -307,6 +320,12 @@ mod windows {
                 Ok(RunnerMode::GroupedOnly(PhaseAScenario::GROUPED.to_vec()))
             }
             [flag, label] if flag == "--grouped-only" => {
+                if APPLICATION_GROUPED_CASES
+                    .iter()
+                    .any(|(name, _)| name == label)
+                {
+                    return Err(format!("{label}: NOT_PROVEN; requires genuine application approval and installed lifecycle evidence"));
+                }
                 let scenario = PhaseAScenario::GROUPED
                     .iter()
                     .copied()
@@ -625,6 +644,16 @@ mod windows {
                 parse_runner_mode(&["--list-grouped".into()]).unwrap(),
                 RunnerMode::ListGrouped,
             );
+            assert_eq!(
+                PhaseAScenario::GROUPED.len() + APPLICATION_GROUPED_CASES.len(),
+                REQUIRED_GROUPED_RACES
+            );
+            for (label, _) in APPLICATION_GROUPED_CASES {
+                let error =
+                    parse_runner_mode(&["--grouped-only".into(), label.into()]).unwrap_err();
+                assert!(error.contains("NOT_PROVEN"));
+                assert!(error.contains("genuine application approval"));
+            }
             for args in [
                 vec!["--grouped-only", "dependent-timeout"],
                 vec!["--grouped-only", "stale-page-generation"],
@@ -6221,6 +6250,7 @@ document.title='clack-renderer-js-__NONCE__';"#;
             "status":if all_selected_verified {"PASS_SELECTED_GROUPED_ONLY"} else {"FAILED"},
             "requiredFullGroupedCaseCount":REQUIRED_GROUPED_RACES,
             "implementedDistinctGroupedCaseCount":PhaseAScenario::GROUPED.len(),
+            "applicationCasesNotProven":APPLICATION_GROUPED_CASES.iter().map(|(label, requirement)| json!({"label":label,"requirement":requirement,"status":"NOT_PROVEN"})).collect::<Vec<_>>(),
             "fullElevenGroupedRequirement":"NOT_PROVEN",
             "originalEightNegatives":"NOT_RERUN_NOT_REVERIFIED",
             "originalNinePhaseA":"NOT_RERUN_NOT_REVERIFIED",
@@ -6263,6 +6293,9 @@ document.title='clack-renderer-js-__NONCE__';"#;
                 );
                 for scenario in PhaseAScenario::GROUPED {
                     println!("{}", scenario.label());
+                }
+                for (label, requirement) in APPLICATION_GROUPED_CASES {
+                    println!("{label}: NOT_PROVEN ({requirement})");
                 }
                 return Ok(());
             }

@@ -1,8 +1,10 @@
 import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "path";
-import { defineConfig, type PluginOption, type UserConfig } from "vite";
+import { type PluginOption, type UserConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 import Inspect from "vite-plugin-inspect";
 import { createDevWatchIgnore } from "./scripts/dev-watch.mjs";
 
@@ -15,8 +17,29 @@ const analyze = process.env.ANALYZE === "true";
 // `npm run dev` from paying its transform-tracking overhead on every run.
 const inspectGraph = process.env.INSPECT === "true";
 
+// Node's own test runner and Vitest both discover *.test.mjs in scripts/.
+// Only exclude genuine node:test files from Vitest; the adjacent Vitest
+// *.test.mjs suites must remain discovered. CI separately executes EVERY
+// node:test script through scripts/run-node-script-tests.mjs.
+function nodeNativeScriptSuites(dir = path.resolve(__dirname, "scripts")): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return nodeNativeScriptSuites(full);
+    if (!entry.isFile() || !entry.name.endsWith(".test.mjs")) return [];
+    if (!readFileSync(full, "utf8").includes("node:test")) return [];
+    return [path.relative(__dirname, full).replaceAll("\\", "/")];
+  });
+}
+
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
+  test: {
+    // Exclude only actual node:test suites, not all scripts/*.test.mjs.
+    exclude: [
+      ...configDefaults.exclude,
+      ...nodeNativeScriptSuites(),
+    ],
+  },
   plugins: [
     babel({
       presets: [reactCompilerPreset({ target: "19" })],
