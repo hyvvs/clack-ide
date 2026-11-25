@@ -155,8 +155,13 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
             id.includes("/scheduler/")
           )
             return "react";
+          // React already statically imports the Radix chunk in the emitted
+          // production graph. Co-locate these eager dependencies so gzip can
+          // share its dictionary across them without changing lazy boundaries.
+          // Measured with gzip9 per emitted JS file: -1,610 B total and
+          // -747 B against the startup size-limit patterns (TF4 audit).
           if (id.includes("@radix-ui/") || id.includes("/radix-ui/"))
-            return "radix";
+            return "react";
 
           return null;
         },
