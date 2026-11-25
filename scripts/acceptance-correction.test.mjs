@@ -35,7 +35,7 @@ describe.skipIf(!parser)("confirmed shell effects", () => {
     expect(result.writes).toHaveLength(3);
     expect(result.boundary.thresholdEvent.toolCallId).toBe("3");
     expect(result.boundary.page.kind).toBe("current-accepted-plan");
-  });
+  }, 30_000); // Three real PowerShell AST parser processes; retain every effect assertion under contended Linux CI.
   it.each([{ error: "refused multiline" }, { exit_code: 1 }, { timed_out: true }, { truncated: true }, { stderr: "write error" }, { exit_code: null }])("does not count failed/refused/uncertain result %j", async output => {
     await writeFile(path.join(root, "probe.txt"), "probe\n");
     expect(await confirmedWrite(root, shell("s", "Set-Content probe.txt -Value 'probe'", output))).toBeUndefined();
