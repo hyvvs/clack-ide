@@ -3,6 +3,77 @@
 Date: 2026-11-25. Branch: `tf/browser-computer-use`, Draft PR #46.
 Baseline source: `c3c3496d4fd60f19c62c0e4ca114c8d44d9908fa`.
 
+## Owner decision 25 November 2026 — DEVELOPMENT POLICY (authoritative)
+
+**Option C is explicitly authorized for development and Draft PR verification.**
+The governing `.size-limit.json` now enforces **2,000,000 decimal bytes**
+independent gzip9 for **all** emitted `dist/assets/*.js`, including every
+lazy-loaded feature chunk. The original **540,000 decimal-byte named startup**
+hard ceiling and `@size-limit/file` algorithm are **unchanged**. This owner
+decision does not retroactively make any historical 1,500,000-byte failure
+green. The original 1.5 MB threshold, failed workflows and optimization A/B
+experiments remain historical evidence in the sections below.
+
+**Per-PR review:** Additional emitted gzip9 growth **greater than 10,000
+bytes**, compared against the **exact PR base SHA built using the same Node,
+OS, target, frozen npm installation, Vite production build and gzip9 script**,
+triggers a separate, failing performance-review check. Exactly +10,000 B is
+permitted by this trigger, but both absolute size limits must independently
+pass. Actual emitted HTML modulepreload + recursively reachable static ESM
+graphs for **both** windows are also audited; more than 10,000 B growth of any
+window's preload or static closure likewise requires review, even if other
+chunk reductions offset total growth. A human performance-review decision
+must be recorded before releasing a regressed candidate; CI failing review
+cannot be bypassed by reclassifying assets. No future ceiling increase is
+authorized without a new, separately recorded strategic decision.
+
+**Important scope distinction:** the historical named startup hard gate is
+**not** the complete eager renderer graph. Current `89c5e40` main-window
+HTML refers to **76 unique preloaded + entry JS files totaling 833,231 gzip9
+bytes**, against protected-main **837,819** (-4,588). Settings HTML refers
+to **54 files totaling 470,269 gzip9**, against protected-main **476,309**
+(-6,040). The separate `scripts/emitted-js-budget.mjs` checks both HTML
+preloads and recursively statically imported JS; it does **not** classify
+dynamic imports as eager. These graphs are review data with the growth
+trigger described above; they do not silently expand or narrow the original
+540,000-byte startup budget's file patterns. Startup time and renderer memory
+still require independent real desktop measurements before merge.
+
+**Acceptance is not implied:** this policy is authorized only for development
+and Draft PR verification. Do not pass any TF4 browser production gate merely
+because the new total-output hard limit passes; source-matched installed
+runtime benchmarks, external-effect approval/oracle, positive popup and
+lifecycle 10–11, full seventeen-step E2E and final Product-wide UI/UX
+Polish & Acceptance are still mandatory.
+
+### Reproducing both CI performance checks
+
+```sh
+npm ci
+npm run build
+npm run size
+node scripts/emitted-js-budget.mjs snapshot --dist dist --source-sha <head-sha> --out head.json
+# From a separate detached worktree at the exact PR base SHA, with its own npm ci:
+npm run build
+node /path/to/current/scripts/emitted-js-budget.mjs snapshot --dist /path/to/base/dist --source-sha <base-sha> --out base.json
+node scripts/emitted-js-budget.mjs compare --base base.json --head head.json --max-growth 10000
+```
+
+CI automatically creates the isolated base worktree and executes these steps
+using Node 24 on the same `ubuntu-latest` runner, and preserves the exact
+absolute `npm run size` result as an independent blocking job step. A
+failing review trigger records `PERFORMANCE_GROWTH_REVIEW_REQUIRED` and
+requires explicit performance-owner review, not an automatic ceiling change.
+Each snapshot can be independently audited down to the per-file SHA-256 and
+gzip9 byte count, as can the existing
+`outputs/tf4-history-gzip9-20261125.json` historical measurement record.
+
+### Historical-only record below this point
+
+Everything below was authored while 1.5 MB was still the active limit or
+Option C was still merely a proposal. Its past-tense failures and proposed
+options are intentionally preserved, **not** restated as current policy.
+
 ## Governing measurement
 
 No size-limit configuration or measurement implementation was changed. The

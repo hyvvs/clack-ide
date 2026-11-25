@@ -1,5 +1,37 @@
 # Clack Shared Engineering State
 
+## 25 November 2026 owner-approved TF4 JavaScript policy — DRAFT verification only
+
+The owner explicitly authorized **Option C** after independent Node 22.20.0 /
+lockfile-pinned production builds: initial 2026-06-17 1,422,193 B JS;
+protected main `dddab1b9` 1,891,004 B; functional TF4 `58e4b811`
+1,904,557 B; optimized TF4 `89c5e40` **1,883,704 B**, 7,300 B
+*below* protected main. The 1,500,000-byte total cap originated in the
+initial commit and is **historical**, not a new TF4 constraint; old failures
+remain failures under that former policy. For development/Draft PR only,
+`.size-limit.json` now hard-gates **2,000,000 B total emitted JS gzip9**,
+retaining **540,000 B historical named startup gzip9**, full JS-asset scope
+and original `@size-limit/file` algorithm. Exact-base PR gzip9 total growth
+**greater than 10,000 B** triggers a separate failing review check; actual
+main/settings HTML modulepreload and static closure growth are also checked
+with the same review trigger. Further ceiling increases require separate owner
+authorization. The detailed audit and reproduction commands live in
+[TF4 JavaScript budget decision](TF4_JAVASCRIPT_BUDGET_2026-11-25.md).
+
+**This is not production approval or runtime latency evidence.** The old named
+startup gate does not cover the complete main HTML preload graph (833,231 B
+current, 837,819 B protected main), which must also be reviewed. Source-matched
+installed cold/warm, renderer memory, Chat/Editor/Terminal/Browser Panel/
+Settings activation and interaction benchmarks remain mandatory. The
+existing human-only `58e4b811` installation handoff and its archive are
+historical until a verified current-source optimized package supersedes it.
+Genuine installed effect permissions, positive popup, lifecycle cases 10–11,
+the seventeen-step E2E and independent public two-origin HTTPS oracle remain
+unproven. The canonical TF4 matrix remains **0 PASS / 5 PARTIAL / 8 BLOCKED**,
+grouped lifecycle **9/11**. PR #46 remains OPEN/DRAFT; unaccepted model-native
+capabilities remain disabled, protected main is not modified, and the mandatory
+final Product-wide UI/UX Polish & Acceptance release blocker is unchanged.
+
 ## Current mandatory final release gate — Product-wide UI/UX Polish & Acceptance (22 November 2026)
 
 **Required and not yet accepted.** The [authoritative full-platform roadmap](COS_FULL_PLATFORM_AUDIT_2026-10-22.md#mandatory-final-release-dependency--product-wide-uiux-polish--acceptance-22-november-2026) now makes the cross-feature **Product-wide UI/UX Polish & Acceptance** phase a blocking dependency of final production completion. It covers LM/Compute/GPU, Qualification Lab, Tool Fabric, browser/MCP, permissions/security, Agent/mission state, Context Compiler, durable jobs, diagnostics, settings, workspaces, chat and all associated dialogs/panes/drawers/popovers/windows. Sizing, responsive behavior, hierarchy, progressive disclosure, findability, density, scrolling, typography, keyboard navigation, empty/loading/error/success states, terminology, advanced diagnostics and real native desktop usability each require documented verification. Functional/technical backend milestones may be accepted within their own scope; product-wide release readiness may **not** be granted until the final UX gate has passed.

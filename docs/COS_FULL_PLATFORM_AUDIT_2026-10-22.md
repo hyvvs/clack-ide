@@ -1,5 +1,25 @@
 # Chat On Steroids Full-Platform Audit and Clack Capability Roadmap
 
+### TF4 owner-authorized Draft PR performance policy (25 November 2026)
+
+The archived 1,500,000-byte total gzip9 client JS budget was introduced in the
+June 17 initial commit, before TF4 and before later merged product features.
+Independently rebuilt protected main is 1,891,004 B; optimized TF4 is
+1,883,704 B. **For development/Draft PR only**, the owner approved a new
+**2,000,000-byte hard total emitted JS limit** with unchanged **540,000-byte
+named startup hard limit**, identical gzip9-all-JS methodology, exact-PR-base
+comparison, and **explicit review for >10,000 B compressed growth**.
+Actual emitted HTML eager/modulepreload graphs remain separately audited;
+they are not equivalent to the historical named startup subset. A future
+ceiling revision needs its own strategic authorization. See the
+[full, inspectable TF4 decision record](TF4_JAVASCRIPT_BUDGET_2026-11-25.md)
+and CI regression check. This is **not** a retroactive historical pass, a
+runtime performance finding, installation approval or TF4 gate promotion.
+Source-matched installed runtime benchmarks and all thirteen real production
+acceptance gates, grouped lifecycle 10–11, the seventeen-step E2E, independent
+external effect oracle and **final Product-wide UI/UX Polish & Acceptance**
+remain required before release/merge.
+
 ## Master roadmap reconciliation — 18 November 2026
 
 ### Mandatory final release dependency — Product-wide UI/UX Polish & Acceptance (22 November 2026)

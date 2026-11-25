@@ -15,6 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Size reports and growth review are for the exact PR head, rather
+          # than an implicit synthetic merge commit with a different identity.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v6
         with:
@@ -56,12 +60,53 @@ jobs:
         continue-on-error: true
 
       - name: Build frontend
+        id: build_frontend
         if: success() || failure()
         run: npm run build
 
       - name: Size budget
         if: success() || failure()
         run: npm run size
+
+      # The unchanged @size-limit/file command above is the hard absolute
+      # gzip9 gate. This additional emitted-code audit reads the Vite HTML
+      # modulepreloads and recursively follows static imports, so a change can
+      # never hide eager execution growth behind named startup chunk patterns.
+      - name: Record exact emitted JS and actual eager modulepreload graph
+        if: always() && steps.build_frontend.outcome == 'success'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node scripts/emitted-js-budget.mjs snapshot \
+            --dist dist --source-sha "$PR_HEAD_SHA" \
+            --out "$RUNNER_TEMP/tf4-head-emitted-js.json"
+
+      # Compare exactly the GitHub PR base SHA, not a historical initial
+      # checkout or mutable local branch. Build with the same runner, Node,
+      # locked dependencies, Vite command and compression algorithm as head.
+      # This is a review trigger, NOT permission to exceed absolute ceilings.
+      - name: Compare emitted gzip9 growth to exact PR base
+        if: always() && github.event_name == 'pull_request' && steps.build_frontend.outcome == 'success'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          [[ "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/tf4-pr-base" "$PR_BASE_SHA"
+          (
+            cd "$RUNNER_TEMP/tf4-pr-base"
+            npm ci
+            npm run build
+          )
+          node scripts/emitted-js-budget.mjs snapshot \
+            --dist "$RUNNER_TEMP/tf4-pr-base/dist" \
+            --source-sha "$PR_BASE_SHA" \
+            --out "$RUNNER_TEMP/tf4-base-emitted-js.json"
+          node scripts/emitted-js-budget.mjs compare \
+            --base "$RUNNER_TEMP/tf4-base-emitted-js.json" \
+            --head "$RUNNER_TEMP/tf4-head-emitted-js.json" \
+            --max-growth 10000 \
+            --out "$RUNNER_TEMP/tf4-emitted-js-growth.json"
 
       - name: Dead code (advisory)
         run: npm run knip
