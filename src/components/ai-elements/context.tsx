@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import type { LanguageModelUsage } from "ai";
 import type { ComponentProps } from "react";
 import { createContext, useContext, useMemo } from "react";
-import { getUsage } from "tokenlens";
+import { modelUsageCostUSD } from "./modelUsageCost";
 
 const PERCENT_MAX = 100;
 const ICON_RADIUS = 10;
@@ -200,13 +200,10 @@ export const ContextContentFooter = ({
 }: ContextContentFooterProps) => {
   const { modelId, usage } = useContextValue();
   const costUSD = modelId
-    ? getUsage({
-        modelId,
-        usage: {
-          input: usage?.inputTokens ?? 0,
-          output: usage?.outputTokens ?? 0,
-        },
-      }).costUSD?.totalUSD
+    ? modelUsageCostUSD(modelId, {
+        input: usage?.inputTokens ?? 0,
+        output: usage?.outputTokens ?? 0,
+      })
     : undefined;
   const totalCost = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -269,10 +266,7 @@ export const ContextInputUsage = ({
   }
 
   const inputCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { input: inputTokens, output: 0 },
-      }).costUSD?.totalUSD
+    ? modelUsageCostUSD(modelId, { input: inputTokens, output: 0 })
     : undefined;
   const inputCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -309,10 +303,7 @@ export const ContextOutputUsage = ({
   }
 
   const outputCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { input: 0, output: outputTokens },
-      }).costUSD?.totalUSD
+    ? modelUsageCostUSD(modelId, { input: 0, output: outputTokens })
     : undefined;
   const outputCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -349,10 +340,7 @@ export const ContextReasoningUsage = ({
   }
 
   const reasoningCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { reasoningTokens },
-      }).costUSD?.totalUSD
+    ? modelUsageCostUSD(modelId, { reasoningTokens })
     : undefined;
   const reasoningCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
@@ -389,10 +377,7 @@ export const ContextCacheUsage = ({
   }
 
   const cacheCost = modelId
-    ? getUsage({
-        modelId,
-        usage: { cacheReads: cacheTokens, input: 0, output: 0 },
-      }).costUSD?.totalUSD
+    ? modelUsageCostUSD(modelId, { cacheReads: cacheTokens, input: 0, output: 0 })
     : undefined;
   const cacheCostText = new Intl.NumberFormat("en-US", {
     currency: "USD",
