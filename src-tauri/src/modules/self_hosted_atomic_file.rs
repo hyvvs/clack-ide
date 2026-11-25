@@ -12,8 +12,10 @@ const TEMP_SUFFIX: &str = ".pending";
 // the staged replacement. A fixed same-directory recovery name preserves the
 // OLD complete settings file in that documented failure window. It is never
 // an authority and is never replayed as a new qualifying effect.
+#[cfg(windows)]
 const REPLACED_BACKUP: &str = ".terax-settings.json.replaced-backup";
 
+#[cfg(windows)]
 fn old_backup_path(path: &Path) -> std::path::PathBuf {
     path.with_file_name(REPLACED_BACKUP)
 }

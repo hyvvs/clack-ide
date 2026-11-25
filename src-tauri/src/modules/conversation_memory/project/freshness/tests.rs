@@ -128,7 +128,11 @@ fn events_invalidate_only_known_dependencies_and_reject_late_checks() {
     state.finish(&entry, generation, "current").unwrap();
     assert!(!state.invalidate(&[to_canon(dir.path().join("other.txt"))]));
     assert_eq!(state.status(&entry).unwrap(), "current");
-    assert!(state.invalidate(&[to_canon(dir.path().join("module.txt"))]));
+    // Match the canonical dependency recorded by Batch::read_observation.
+    // On macOS a temporary /var path resolves to /private/var, so merely
+    // stringifying the lexical path falsely misses this genuine event.
+    let observed = std::fs::canonicalize(dir.path().join("module.txt")).unwrap();
+    assert!(state.invalidate(&[to_canon(observed)]));
     assert!(state.finish(&entry, generation, "current").is_err());
     assert_eq!(state.status(&entry).unwrap(), "potentially-stale");
     assert_eq!(

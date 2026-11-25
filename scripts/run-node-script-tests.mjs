@@ -81,7 +81,10 @@ if (files.length === 0) {
   }
   let status = run(files);
   if (scope === 'portable') {
-    const mixedStatus = run(['--test-name-pattern', portableMixedTest, mixedSuite], true);
+    // Node 24 defaults to its spec reporter in noninteractive Linux CI. The
+    // matched-count check consumes TAP explicitly rather than guessing from
+    // presentation-dependent reporter output (or accepting zero test matches).
+    const mixedStatus = run(['--test-reporter=tap', '--test-name-pattern', portableMixedTest, mixedSuite], true);
     status ||= mixedStatus;
     process.stdout.write('HISTORICAL_ACCEPTANCE=NOT_RUN (requires original evidence; run --evidence-bound separately)\n');
   }

@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -26,7 +26,10 @@ describe("hosted offline WebView launches fail closed without independent OS egr
       // A deliberately missing settings directory proves this guard fires
       // before credential/settings IO. No provider key is supplied.
       const impossibleSettings = path.join(repo, "__offline_isolation_missing_settings__");
-      const oldHashes = frozenFiles.map(checksum);
+      // Preserve every genuinely available original archive byte. In a clean
+      // runner missing historical files are observed as ABSENT, not replaced
+      // with synthetic evidence or scored as original acceptance.
+      const before = frozenFiles.map(file => existsSync(file) ? checksum(file) : null);
       const result = spawnSync(process.execPath,
         [runner, `--offline-dry-run=${mode}`], {
           cwd: repo, encoding: "utf8", windowsHide: true, timeout: 12_000,
@@ -38,7 +41,7 @@ describe("hosted offline WebView launches fail closed without independent OS egr
       expect(result.stderr).toContain("POST-POLICY HOSTED TEST ISOLATION UNSAFE");
       expect(result.stderr).toContain("before any settings, workspace, or provider initialization");
       expect(result.stdout).not.toContain("remote-control-native-start");
-      expect(frozenFiles.map(checksum)).toEqual(oldHashes);
+      expect(frozenFiles.map(file => existsSync(file) ? checksum(file) : null)).toEqual(before);
       expect(() => statSync(impossibleSettings)).toThrow();
     },
   );

@@ -9446,7 +9446,10 @@ mod host {
                 );
             }
             assert!(probe.ends_with("return {dispatched:false};\n    }"));
-            let source = include_str!("clack-browser-host.rs");
+            // Git's Windows checkout can represent the exact same source
+            // with CRLF, whereas this structural safety assertion uses LF.
+            // Normalize line endings for the assertion, not executable JS.
+            let source = include_str!("clack-browser-host.rs").replace("\r\n", "\n");
             assert!(source.contains(
                 "if action == \"submit\" {\n                                DOM_EXACT_SUBMIT_JS"
             ));

@@ -66,6 +66,7 @@ impl TfOperation {
                 | Self::BuildCargoBuild
         )
     }
+    #[cfg(windows)]
     fn is_repo(self) -> bool {
         matches!(
             self,
@@ -84,6 +85,7 @@ impl TfOperation {
                 | Self::RepoSwitchBranch
         )
     }
+    #[cfg(windows)]
     fn is_build(self) -> bool {
         matches!(
             self,
@@ -242,10 +244,15 @@ pub struct Tf4DownloadEvidence {
 
 #[derive(Clone)]
 struct Pending {
+    // On non-Windows this approval object remains structural but cannot
+    // execute a filesystem operation; its Windows-only scope fields must
+    // remain intact for native consent, replay and path checks.
+    #[cfg_attr(not(windows), allow(dead_code))]
     request_id: String,
     request: TfOperationRequest,
     workspace_root: PathBuf,
     cwd: PathBuf,
+    #[cfg_attr(not(windows), allow(dead_code))]
     canonical_paths: Vec<PathBuf>,
     expires: Instant,
     approved: bool,

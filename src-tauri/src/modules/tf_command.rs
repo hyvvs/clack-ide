@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::LazyLock;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(any(windows, test))]
+use std::time::Duration;
+use std::time::Instant;
 #[cfg(windows)]
 use tokio::sync::Semaphore;
 
@@ -215,7 +217,7 @@ pub fn prepare(
     #[cfg(not(windows))]
     {
         let _ = (request, registry, state);
-        return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+        Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into())
     }
     #[cfg(windows)]
     {
@@ -337,7 +339,7 @@ pub fn execute(
     #[cfg(not(windows))]
     {
         let _ = (token, registry, state);
-        return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+        Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into())
     }
     #[cfg(windows)]
     {
@@ -645,7 +647,7 @@ pub async fn tf_command_approve(token: String, app: tauri::AppHandle) -> Result<
     #[cfg(not(windows))]
     {
         let _ = (token, app);
-        return Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into());
+        Err("UNSUPPORTED: bounded native command requires Windows Job Objects".into())
     }
     #[cfg(windows)]
     {

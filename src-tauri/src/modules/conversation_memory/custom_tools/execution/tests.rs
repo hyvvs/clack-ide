@@ -340,10 +340,7 @@ fn output_schema_is_deterministic_and_bounded() {
 fn real_file_read_is_bounded_and_rejects_traversal_secrets_and_other_workspace() {
     let root = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
-    #[cfg(unix)]
     let workspace = root.path().canonicalize().unwrap();
-    #[cfg(windows)]
-    let workspace = root.path().to_path_buf();
     fs::write(root.path().join("ok.txt"), "actual input").unwrap();
     fs::write(root.path().join(".env"), "ENV_CANARY").unwrap();
     fs::write(other.path().join("private.txt"), "OTHER_CANARY").unwrap();
@@ -736,7 +733,8 @@ fn registry_to_real_native_execution_keeps_recipient_scope_and_version() {
         fs::write(dir.path().join("result.txt"), "verified output").unwrap();
         let args = json!({"path":"result.txt"});
         schema::arguments(&version.definition, &args).unwrap();
-        let value = io::read_file(dir.path(), "result.txt", 1024, &AtomicBool::new(false)).unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let value = io::read_file(&workspace, "result.txt", 1024, &AtomicBool::new(false)).unwrap();
         schema::value_matches(&version.definition.output_schema, &value, 0).unwrap();
     }
     for access in [
@@ -823,8 +821,9 @@ fn source_qualified_index_identity_resolves_to_real_guarded_native_read() {
         fs::write(dir.path().join("capability.txt"), "native index fixture").unwrap();
         let arguments = json!({"path":"capability.txt"});
         schema::arguments(&selected.definition, &arguments).unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
         let output =
-            io::read_file(dir.path(), "capability.txt", 8192, &AtomicBool::new(false)).unwrap();
+            io::read_file(&workspace, "capability.txt", 8192, &AtomicBool::new(false)).unwrap();
         schema::value_matches(&selected.definition.output_schema, &output, 0).unwrap();
         assert_eq!(output, json!("native index fixture"));
     }
