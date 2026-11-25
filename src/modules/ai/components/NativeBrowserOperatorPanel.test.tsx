@@ -152,6 +152,68 @@ describe("manual native TF4 app approval presentation", () => {
     expect(failedClosed).toContain('"responseSha256": null');
   });
 
+  it("seals the original native screenshot to the observed page and refuses bare sessions", () => {
+    const observed = closedNativePage(page, session);
+    expect(originalNativeOperatorRequest("screenshot", scope, observed))
+      .toEqual({
+        operation: "screenshot", actor: scope.actor,
+        sessionId: scope.sessionId, workspaceRoot: scope.workspaceRoot,
+        browserSessionId: session, pageId: page.pageId,
+        pageGeneration: page.pageGeneration, snapshotId: page.snapshotId,
+      });
+    expect(originalNativeOperatorRequest("screenshot", scope, null)).toBeNull();
+    expect(originalNativeOperatorRequest("screenshot", {
+      ...scope, browserId: "9".repeat(48),
+    }, observed)).toBeNull();
+    expect(originalNativeOperatorRequest("screenshot", scope, observed,
+      observed?.elements[0])).toBeNull();
+    expect(originalNativeOperatorRequest("screenshot", scope, observed,
+      undefined, undefined, "https://example.org/")).toBeNull();
+    expect(preparedNativeOperatorMatches({
+      token: "4".repeat(48), requestId: "5".repeat(48),
+      operation: "screenshot", requiresApproval: true,
+      browserSessionId: session, engine: "confined_webview2_read_only_unaccepted",
+    }, "screenshot", session)).toBe(true);
+    expect(preparedNativeOperatorMatches({
+      token: "4".repeat(48), requestId: "5".repeat(48),
+      operation: "screenshot", requiresApproval: false,
+      browserSessionId: session, engine: "confined_webview2_read_only_unaccepted",
+    }, "screenshot", session)).toBe(false);
+  });
+
+  it("exports only bounded TF2 screenshot metadata, never PNG bytes, page or paths", () => {
+    const receipt = boundedNativeReceiptEvidence({
+      requestId: "f".repeat(48), operation: "screenshot",
+      terminal: "completed", policyDecision: "allowed",
+      effectState: "Observed", retry: "NEVER_REPLAY", autoRetry: false,
+      nativeScreenshotEvidence: {
+        format: "png", width: 800, height: 600,
+        contentSha256: "a".repeat(64), bytesVerified: 12991,
+        workspaceRelativeFile: `tf4-browser-screenshot-${"1".repeat(24)}.png`,
+        effectState: "Observed", retry: "NEVER_REPLAY",
+        png: "PNG_SECRET_BYTES",
+        privatePath: "C:/Users/secret/unapproved.png",
+      },
+      requestedUrl: "https://example.org/?secret=SECRET_URL",
+    });
+    expect(receipt).toContain('"nativeTf2Screenshot": {');
+    expect(receipt).toContain('"bytesVerified": 12991');
+    expect(receipt).toContain(`"contentSha256": "${"a".repeat(64)}"`);
+    expect(receipt).not.toMatch(/PNG_SECRET_BYTES|SECRET_URL|unapproved|privatePath/);
+    const bad = boundedNativeReceiptEvidence({
+      requestId: "e".repeat(48), operation: "screenshot",
+      nativeScreenshotEvidence: {
+        format: "bmp", width: -10, height: 999999, bytesVerified: -2,
+        contentSha256: "bad", workspaceRelativeFile: "../secret.png",
+        effectState: "forged", retry: "SAFE_RETRY",
+      },
+    });
+    expect(bad).toContain('"workspaceRelativeFile": null');
+    expect(bad).toContain('"contentSha256": null');
+    expect(bad).toContain('"bytesVerified": null');
+    expect(bad).not.toContain("../secret.png");
+  });
+
   it("accepts only an original retained FORM and actual native submit fieldType candidate", () => {
     const observed = closedNativePage(formPage, session);
     expect(observed?.elements).toEqual([

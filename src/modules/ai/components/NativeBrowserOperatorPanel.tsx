@@ -19,6 +19,7 @@ type NativeOperation =
   | "uncheck"
   | "scroll"
   | "submit"
+  | "screenshot"
   | "close_confined";
 type Prepared = {
   token: string;
@@ -60,6 +61,16 @@ type NativeReceipt = {
     bodyBytes: number;
   };
   nativePage?: unknown;
+  nativeScreenshotEvidence?: {
+    format?: string;
+    width?: number;
+    height?: number;
+    contentSha256?: string;
+    bytesVerified?: number;
+    workspaceRelativeFile?: string;
+    effectState?: string;
+    retry?: string;
+  };
   nativeEffectEvidence?: {
     brokerRequestId: number;
     sourcePageGeneration: number;
@@ -285,6 +296,21 @@ export function originalNativeOperatorRequest(
       ? { ...base, browserSessionId: scope.browserId, url: popup.expectedDestination }
       : null;
   }
+  if (operation === "screenshot") {
+    // A screenshot is never authorized by the session ID alone. The backend
+    // rechecks this exact retained native page/snapshot before showing the
+    // genuine OS privacy+TF2 destination approval and again when consuming it.
+    if (!page || page.browserSessionId !== scope.browserId ||
+        !exactHandle(page.pageId) || !exactHandle(page.snapshotId) ||
+        !Number.isSafeInteger(page.pageGeneration) || page.pageGeneration < 1 ||
+        element !== undefined || parameters !== undefined || url !== undefined)
+      return null;
+    return {
+      ...base, browserSessionId: scope.browserId,
+      pageId: page.pageId, pageGeneration: page.pageGeneration,
+      snapshotId: page.snapshotId,
+    };
+  }
   if (!nativeMutation(operation)) {
     return { ...base, browserSessionId: scope.browserId };
   }
@@ -369,7 +395,7 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     ![
       "open_confined", "observe_confined", "click", "trigger_page_popup",
       "open_requested_popup", "type", "clear", "select", "check", "uncheck",
-      "scroll", "submit", "close_confined",
+      "scroll", "submit", "screenshot", "close_confined",
     ].includes(receipt.operation)
   ) return null;
   const closed = (item: unknown, allowed: readonly string[]): string =>
@@ -386,6 +412,14 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     receipt.operation === "submit" && rawTransport &&
     typeof rawTransport === "object" && !Array.isArray(rawTransport)
       ? (rawTransport as Record<string, unknown>) : null;
+  const rawScreenshot = receipt.nativeScreenshotEvidence;
+  const screenshot = receipt.operation === "screenshot" && rawScreenshot &&
+    typeof rawScreenshot === "object" && !Array.isArray(rawScreenshot)
+      ? (rawScreenshot as Record<string, unknown>) : null;
+  const screenshotFile =
+    typeof screenshot?.workspaceRelativeFile === "string" &&
+    /^tf4-browser-screenshot-[a-f0-9]{24}\.png$/.test(screenshot.workspaceRelativeFile)
+      ? screenshot.workspaceRelativeFile : null;
   const safe = {
     requestId: receipt.requestId,
     operation: receipt.operation,
@@ -417,6 +451,22 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
       bodyBytes: Number.isSafeInteger(formTransport.bodyBytes) &&
         Number(formTransport.bodyBytes) >= 0 && Number(formTransport.bodyBytes) <= 65_536
         ? formTransport.bodyBytes : null,
+    } : null,
+    nativeTf2Screenshot: screenshot ? {
+      format: closed(screenshot.format, ["png"]),
+      width: Number.isSafeInteger(screenshot.width) &&
+        Number(screenshot.width) >= 1 && Number(screenshot.width) <= 16_384
+        ? screenshot.width : null,
+      height: Number.isSafeInteger(screenshot.height) &&
+        Number(screenshot.height) >= 1 && Number(screenshot.height) <= 16_384
+        ? screenshot.height : null,
+      contentSha256: hash(screenshot.contentSha256),
+      bytesVerified: Number.isSafeInteger(screenshot.bytesVerified) &&
+        Number(screenshot.bytesVerified) >= 1 && Number(screenshot.bytesVerified) <= 16 * 1024 * 1024
+        ? screenshot.bytesVerified : null,
+      workspaceRelativeFile: screenshotFile,
+      effectState: closed(screenshot.effectState, ["Observed", "Unknown", "NotAttempted"]),
+      retry: closed(screenshot.retry, ["NEVER_REPLAY"]),
     } : null,
   };
   return JSON.stringify(safe, null, 2);
@@ -480,7 +530,7 @@ export function NativeBrowserOperatorPanel({
     setBusy(true);
     setLastEvidence(null);
     if (operation === "type") setTestText("");
-    if (nativeMutation(operation)) {
+    if (nativeMutation(operation) || operation === "screenshot") {
       setFormRef("");
       setSubmitterRef("");
     }
@@ -501,7 +551,8 @@ export function NativeBrowserOperatorPanel({
         // Actual user decision occurs only inside the existing Tauri OS dialog.
         await invoke<void>("tf_browser_approve", { token: preparedToken });
       }
-      if (nativeMutation(operation)) setPage(null); // No old refs after attempted effect.
+      if (nativeMutation(operation) || operation === "screenshot")
+        setPage(null); // Screenshot can advance the session revision; no stale refs.
       const receipt = await invoke<NativeReceipt>("tf_browser_execute", {
         token: preparedToken,
       });
@@ -556,6 +607,18 @@ export function NativeBrowserOperatorPanel({
         setResult(sent
           ? "Original FORM+submitter native POST: TF3 transport receipt observed. Server-side effect UNKNOWN; NEVER REPLAY. Only closed SHA-256 and byte evidence exported."
           : `Original FORM submission unverified/UNKNOWN · ${safeReason(receipt.reasonCode)}. Never replay a possible write.`);
+      } else if (operation === "screenshot") {
+        const evidence = receipt.nativeScreenshotEvidence;
+        const verified = receipt.terminal === "completed" &&
+          receipt.policyDecision === "allowed" &&
+          receipt.effectState === "Observed" &&
+          evidence?.format === "png" &&
+          /^[a-f0-9]{64}$/.test(evidence.contentSha256 ?? "") &&
+          /^tf4-browser-screenshot-[a-f0-9]{24}\.png$/.test(evidence.workspaceRelativeFile ?? "") &&
+          Number.isSafeInteger(evidence.bytesVerified) && (evidence.bytesVerified ?? 0) > 0;
+        setResult(verified
+          ? "Native screenshot: genuine per-call OS privacy consent and TF2 workspace PNG commit/readback reported. Independently verify the fixed evidence path and SHA-256. Re-observe before further page actions."
+          : `Native screenshot outcome UNKNOWN or unverified · ${safeReason(receipt.reasonCode)}. NEVER REPLAY.`);
       } else if (operation === "click") {
         const success =
           receipt.terminal === "success" &&
@@ -708,6 +771,16 @@ export function NativeBrowserOperatorPanel({
           </p>
           <p className="text-muted-foreground">
             Original browser {page.browserSessionId.slice(0, 10)} · page {page.pageId.slice(0, 10)} · snapshot {page.snapshotId.slice(0, 10)} · origin {page.origin}.
+          </p>
+          <Button type="button" size="sm" variant="outline" disabled={busy}
+            onClick={() => { void executeOnce("screenshot"); }}>
+            Capture original page screenshot into TF2 workspace + OS privacy approval
+          </Button>
+          <p className="text-muted-foreground">
+            This captures potentially sensitive on-screen content. The genuine
+            OS dialog identifies the exact workspace-relative PNG destination;
+            approve only for a trusted workspace. No screenshot bytes are shown
+            to the model or copied into the native receipt.
           </p>
           {page.elements
             .filter((element) => element.role === "link")
