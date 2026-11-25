@@ -29,6 +29,39 @@ export function summarizeOracle(record, nonce, origin) {
   }
   const accepted = events.filter(e => e.disposition === 'one-write-accepted');
   const denied = events.filter(e => e.disposition === 'replay-denied');
+  const attempts = events.filter(e => e.disposition === 'post-ingress');
+  const byAttempt = new Map();
+  const positions = new Map(events.map((event, index) => [event, index]));
+  const uuid = /^[a-f0-9-]{36}$/;
+  for (const event of attempts) {
+    if (event.method !== 'POST' || !uuid.test(event.attemptId ?? '')
+        || byAttempt.has(event.attemptId)
+        || ![`/case/${nonce}/form`, `/case/${nonce}/upload`, '/__other-post'].includes(event.path))
+      throw new Error('oracle-ingress-invalid');
+    byAttempt.set(event.attemptId, event);
+  }
+  const outcomes = new Map();
+  for (const event of [...accepted, ...denied]) {
+    // Historical ledgers lack ingress IDs. Do not infer zero historical attempts.
+    if (event.attemptId === undefined) continue;
+    const ingress = byAttempt.get(event.attemptId);
+    if (!ingress || ingress.path !== event.path || outcomes.has(event.attemptId)
+        || positions.get(ingress) >= positions.get(event))
+      throw new Error('oracle-write-ingress-mismatch');
+    outcomes.set(event.attemptId, event);
+  }
+  const holdEnds = events.filter(e => ['held-response-disconnected', 'held-response-release'].includes(e.disposition));
+  const ended = new Set();
+  for (const event of holdEnds) {
+    const write = outcomes.get(event.attemptId);
+    if (!write || write.disposition !== 'one-write-accepted'
+        || event.method !== 'POST' || event.path !== `/case/${nonce}/form`
+        || write.path !== event.path || !Number.isSafeInteger(write.responseHoldMs)
+        || write.responseHoldMs < 1 || write.responseHoldMs > 30000
+        || ended.has(event.attemptId) || positions.get(write) >= positions.get(event))
+      throw new Error('oracle-response-hold-mismatch');
+    ended.add(event.attemptId);
+  }
   return {
     runNonce: nonce, oracleOrigin: origin, events: events.length,
     independentNavigationRequests: events.filter(e =>
@@ -36,8 +69,17 @@ export function summarizeOracle(record, nonce, origin) {
     formAccepted: accepted.filter(e => e.path === `/case/${nonce}/form`).length,
     uploadAccepted: accepted.filter(e => e.path === `/case/${nonce}/upload`).length,
     replayDenied: denied.length,
-    acceptedWriteEvidence: accepted.map(({ eventId, method, path, bodySha256, bodyBytes, at }) =>
-      ({ eventId, method, path, bodySha256, bodyBytes, at })),
+    // Counts cover parsed POST requests recorded by this implementation only.
+    // A fresh, isolated nonce/ledger is required for a no-replay conclusion.
+    recordedPostAttempts: attempts.length,
+    formPostAttempts: attempts.filter(e => e.path === `/case/${nonce}/form`).length,
+    uploadPostAttempts: attempts.filter(e => e.path === `/case/${nonce}/upload`).length,
+    otherPostAttempts: attempts.filter(e => e.path === '/__other-post').length,
+    legacyUnlinkedWriteOutcomes: [...accepted, ...denied].filter(e => e.attemptId === undefined).length,
+    heldResponseEvidence: holdEnds.map(({ eventId, attemptId, disposition, at }) =>
+      ({ eventId, attemptId, disposition, at })),
+    acceptedWriteEvidence: accepted.map(({ eventId, method, path, bodySha256, bodyBytes, at, attemptId, responseHoldMs }) =>
+      ({ eventId, method, path, bodySha256, bodyBytes, at, attemptId, responseHoldMs })),
     eventSetSha256: createHash('sha256').update(JSON.stringify(events)).digest('hex'),
     // Server-side truth alone does NOT prove native action causality/consent.
     nativeApprovalOrOriginalNodeCausalityProven: false,

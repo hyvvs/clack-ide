@@ -2,54 +2,22 @@ import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./context";
-import { isPublicWebUrl } from "@/modules/ai/lib/webSearchAdapters";
 import { researchText } from "@/modules/ai/lib/webResearch";
+import { isPublicWebUrl } from "@/modules/ai/lib/webSearchAdapters";
+import {
+  tfBrowserOpenSchema, tfBrowserNavigateSchema, tfBrowserInspectSchema,
+  tfBrowserClickSchema, tfBrowserBackSchema, tfBrowserCloseSchema,
+  validateTfBrowserInput,
+  type TfBrowserToolName,
+} from "./tfBrowserSchemas";
+export {
+  tfBrowserOpenSchema, tfBrowserNavigateSchema, tfBrowserInspectSchema,
+  tfBrowserClickSchema, tfBrowserBackSchema, tfBrowserCloseSchema,
+  TF_BROWSER_SCHEMAS, isTfBrowserTool, validateTfBrowserInput,
+  type TfBrowserToolName,
+} from "./tfBrowserSchemas";
 
-/** TF4 is an inert native text browser. Every model operation is an exact
- * structured request: no JavaScript, selectors, cookies, raw credentials,
- * keystrokes, DOM mutation, arbitrary native command or screenshot route. */
 const nativeId = z.string().regex(/^[a-fA-F0-9]{48}$/);
-const browserSessionId = nativeId;
-const snapshotId = nativeId;
-const elementId = nativeId;
-const publicUrl = z.string().max(2048).refine(isPublicWebUrl);
-const timeoutMs = z.number().int().min(1000).max(15_000).optional();
-const maxBytes = z.number().int().min(256).max(65_536).optional();
-const timed = {timeoutMs, maxBytes};
-
-export const tfBrowserOpenSchema = z.object({url:publicUrl,...timed}).strict();
-export const tfBrowserNavigateSchema = z.object({
-  browserSessionId,url:publicUrl,...timed,
-}).strict();
-export const tfBrowserInspectSchema = z.object({
-  browserSessionId,snapshotId:snapshotId.optional(),
-}).strict();
-/** A click is an exact link ID previously returned by the native snapshot.
- * Native rechecks snapshot freshness, element/link binding and destination. */
-export const tfBrowserClickSchema = z.object({
-  browserSessionId,snapshotId,elementId,...timed,
-}).strict();
-export const tfBrowserBackSchema = z.object({
-  browserSessionId,...timed,
-}).strict();
-export const tfBrowserCloseSchema = z.object({browserSessionId}).strict();
-
-export const TF_BROWSER_SCHEMAS = {
-  tf_browser_open:tfBrowserOpenSchema,
-  tf_browser_navigate:tfBrowserNavigateSchema,
-  tf_browser_inspect:tfBrowserInspectSchema,
-  tf_browser_click:tfBrowserClickSchema,
-  tf_browser_back:tfBrowserBackSchema,
-  tf_browser_close:tfBrowserCloseSchema,
-} as const;
-export type TfBrowserToolName = keyof typeof TF_BROWSER_SCHEMAS;
-export function isTfBrowserTool(name:string):name is TfBrowserToolName {
-  return Object.prototype.hasOwnProperty.call(TF_BROWSER_SCHEMAS,name);
-}
-export function validateTfBrowserInput(name:string,input:unknown):boolean {
-  return isTfBrowserTool(name) && TF_BROWSER_SCHEMAS[name].safeParse(input).success;
-}
-
 type BrowserOperation = "open"|"navigate"|"snapshot"|"click_link"|"back"|"close";
 const operationFor:Readonly<Record<TfBrowserToolName,BrowserOperation>> = {
   tf_browser_open:"open",

@@ -180,8 +180,12 @@ pub(super) struct TfBrowserBoundPost {
 pub(super) struct TfBrowserOriginCredentialGet {
     pub(super) destination: Url,
     pub(super) approved_origin: Url,
+    // These fields are used by the native consumed-consent preparer.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     pub(super) reference: String,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     pub(super) source_page_generation: u64,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     pub(super) consumed_approval_id: String,
 }
 
@@ -190,6 +194,7 @@ pub(super) struct TfBrowserBoundDownload {
     pub(super) destination: Url,
     pub(super) approved_origin: Url,
     pub(super) source_page_generation: u64,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     pub(super) consumed_approval_id: String,
 }
 
@@ -200,9 +205,11 @@ pub(super) struct TfBrowserBoundUpload {
     pub(super) source_page_generation: u64,
     pub(super) original_file_sha256: String,
     pub(super) body: Vec<u8>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     pub(super) consumed_approval_id: String,
 }
 
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
 #[derive(Debug)]
 pub(super) struct TfBrowserWriteTransport {
     pub(super) receipt: TfWebReceipt,
@@ -688,7 +695,7 @@ fn prepare_browser_bound_post_policy(
 /// Only the native owner may execute its one prepared bound write, after the
 /// original-node and body scope has been rechecked. HTTP 2xx remains Unknown,
 /// NEVER_REPLAY, until an independent owned-server receipt proves the effect.
-#[allow(dead_code)]
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
 pub(super) async fn execute_browser_bound_post(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -710,7 +717,6 @@ pub(super) async fn execute_browser_bound_post(
 /// origin, source page generation, exact destination and opaque reference.
 /// Neither a model nor the renderer can reach this private constructor.
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-#[allow(dead_code)]
 pub(super) fn prepare_browser_origin_credential_get(
     consumed_grant: super::tf_browser::NativeCredentialConsent,
     req: TfBrowserOriginCredentialGet,
@@ -779,7 +785,7 @@ pub(super) fn prepare_browser_origin_credential_get(
 /// existing secret owner immediately before this single request. Only the
 /// approved destination origin receives Authorization: Bearer. Never hand the
 /// token to the browser renderer, model, screenshot or persisted receipt.
-#[allow(dead_code)]
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 pub(super) async fn execute_browser_origin_credential_get(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -819,10 +825,12 @@ pub(super) async fn execute_browser_origin_credential_get(
         registry,
         state,
         Some(secret),
-        NetworkPolicy::Public,
-        None,
-        Some(approved_origin),
-        None,
+        NetworkScope {
+            policy: NetworkPolicy::Public,
+            browser_bytes: None,
+            browser_approved_origin: Some(approved_origin),
+            tls_test_root: None,
+        },
         Tf3ExecutionKind::OriginCredentialGet,
     )
     .await
@@ -832,6 +840,7 @@ pub(super) async fn execute_browser_origin_credential_get(
 /// with one existing TF3 one-use token, Public DNS/IP/TLS, exact original
 /// HTTPS origin and no redirects. An actual *moved* TF4/TF2 consent witness
 /// is required, never just a URL/body self-digest or model POST argument.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 fn native_transfer_network_scope(
     destination: &Url,
     origin: &Url,
@@ -911,6 +920,7 @@ pub(super) fn prepare_browser_bound_download(
     Ok(prepared)
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 pub(super) async fn execute_browser_bound_download(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -923,10 +933,12 @@ pub(super) async fn execute_browser_bound_download(
         registry,
         state,
         None,
-        NetworkPolicy::Public,
-        Some(&mut bytes),
-        Some(approved_origin),
-        None,
+        NetworkScope {
+            policy: NetworkPolicy::Public,
+            browser_bytes: Some(&mut bytes),
+            browser_approved_origin: Some(approved_origin),
+            tls_test_root: None,
+        },
         Tf3ExecutionKind::BoundDownload,
     )
     .await?;
@@ -990,6 +1002,7 @@ pub(super) fn prepare_browser_bound_upload(
     Ok(prepared)
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 pub(super) async fn execute_browser_bound_upload(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -1023,10 +1036,12 @@ pub(super) async fn execute_browser_bound_upload(
         registry,
         state,
         None,
-        NetworkPolicy::Public,
-        None,
-        Some(approved_origin),
-        None,
+        NetworkScope {
+            policy: NetworkPolicy::Public,
+            browser_bytes: None,
+            browser_approved_origin: Some(approved_origin),
+            tls_test_root: None,
+        },
         Tf3ExecutionKind::BoundUpload,
     )
     .await?;
@@ -1038,6 +1053,7 @@ pub(super) async fn execute_browser_bound_upload(
     })
 }
 
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
 async fn execute_browser_bound_post_policy(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -1074,10 +1090,12 @@ async fn execute_browser_bound_post_policy(
         registry,
         state,
         None,
-        policy,
-        None,
-        Some(approved_origin),
-        None,
+        NetworkScope {
+            policy,
+            browser_bytes: None,
+            browser_approved_origin: Some(approved_origin),
+            tls_test_root: None,
+        },
         Tf3ExecutionKind::FormPost,
     )
     .await?;
@@ -1199,6 +1217,7 @@ fn receipt_for(p: &Pending) -> TfWebReceipt {
         dns_evidence: Vec::new(),
     }
 }
+#[cfg(test)]
 fn consume(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -1556,18 +1575,28 @@ fn parse_search(
     }
     Ok(results)
 }
+struct NetworkScope<'a> {
+    policy: NetworkPolicy,
+    browser_bytes: Option<&'a mut Vec<u8>>,
+    browser_approved_origin: Option<&'a Url>,
+    tls_test_root: Option<&'a reqwest::Certificate>,
+}
+
 async fn network_fetch(
     p: &Pending,
     receipt: &mut TfWebReceipt,
     cancel: &mut watch::Receiver<bool>,
     credential: Option<&str>,
     state: &TfWebState,
-    policy: NetworkPolicy,
     attempted: &mut bool,
-    mut browser_bytes: Option<&mut Vec<u8>>,
-    browser_approved_origin: Option<&Url>,
-    tls_test_root: Option<&reqwest::Certificate>,
+    scope: NetworkScope<'_>,
 ) -> Result<(), Failure> {
+    let NetworkScope {
+        policy,
+        mut browser_bytes,
+        browser_approved_origin,
+        tls_test_root,
+    } = scope;
     let search = p.request.operation == TfWebOperation::WebSearch;
     // Only an exact consumed native origin-credential scope or the fixed
     // Brave provider can receive authentication. Ordinary public/browser
@@ -2075,13 +2104,10 @@ async fn execute_policy_with_output_scoped(
     registry: &WorkspaceRegistry,
     state: &TfWebState,
     credential: Option<String>,
-    policy: NetworkPolicy,
-    browser_bytes: Option<&mut Vec<u8>>,
-    browser_approved_origin: Option<&Url>,
-    tls_test_root: Option<&reqwest::Certificate>,
+    scope: NetworkScope<'_>,
     expected_kind: Tf3ExecutionKind,
 ) -> Result<TfWebReceipt, String> {
-    let (p, mut rx) = consume_policy(token, registry, state, policy)?;
+    let (p, mut rx) = consume_policy(token, registry, state, scope.policy)?;
     if pending_executor_kind(&p) != expected_kind
         || (expected_kind != Tf3ExecutionKind::PublicRead
             && p.request.operation
@@ -2100,7 +2126,7 @@ async fn execute_policy_with_output_scoped(
     }
     let mut receipt = receipt_for(&p);
     let mut attempted = false;
-    let browser_resource = browser_bytes.is_some()
+    let browser_resource = scope.browser_bytes.is_some()
         || p.browser_post.is_some()
         || p.browser_credential.is_some()
         || p.browser_download.is_some()
@@ -2111,11 +2137,8 @@ async fn execute_policy_with_output_scoped(
         &mut rx,
         credential.as_deref(),
         state,
-        policy,
         &mut attempted,
-        browser_bytes,
-        browser_approved_origin,
-        tls_test_root,
+        scope,
     )
     .await;
     if let Err(Failure(reason)) = result {
@@ -2161,10 +2184,12 @@ async fn execute_policy_with_output(
         registry,
         state,
         credential,
-        policy,
-        browser_bytes,
-        None,
-        None,
+        NetworkScope {
+            policy,
+            browser_bytes,
+            browser_approved_origin: None,
+            tls_test_root: None,
+        },
         Tf3ExecutionKind::PublicRead,
     )
     .await
@@ -2222,10 +2247,12 @@ pub async fn execute_browser_resource_same_origin(
         registry,
         state,
         None,
-        NetworkPolicy::Public,
-        Some(&mut bytes),
-        Some(approved_origin),
-        None,
+        NetworkScope {
+            policy: NetworkPolicy::Public,
+            browser_bytes: Some(&mut bytes),
+            browser_approved_origin: Some(approved_origin),
+            tls_test_root: None,
+        },
         Tf3ExecutionKind::PublicRead,
     )
     .await?;
@@ -2260,7 +2287,7 @@ pub(crate) fn prepare_owned_https_for_test(
     prepare_policy(req, registry, state, NetworkPolicy::FixtureLoopback)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) async fn execute_owned_https_for_test(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -2280,10 +2307,12 @@ pub(crate) async fn execute_owned_https_for_test(
         registry,
         state,
         None,
-        NetworkPolicy::FixtureLoopback,
-        Some(&mut bytes),
-        Some(approved_origin),
-        Some(ephemeral_public_certificate),
+        NetworkScope {
+            policy: NetworkPolicy::FixtureLoopback,
+            browser_bytes: Some(&mut bytes),
+            browser_approved_origin: Some(approved_origin),
+            tls_test_root: Some(ephemeral_public_certificate),
+        },
         Tf3ExecutionKind::PublicRead,
     )
     .await?;
@@ -2812,6 +2841,7 @@ mod tests {
                 destination: origin.clone(),
                 approved_origin: origin.clone(),
                 source_page_generation: 2,
+                #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
                 consumed_approval_id: "a".repeat(48),
             });
         }
@@ -2821,10 +2851,12 @@ mod tests {
             &registry,
             &state,
             None,
-            NetworkPolicy::FixtureLoopback,
-            Some(&mut bytes),
-            Some(&origin),
-            None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: Some(&mut bytes),
+                browser_approved_origin: Some(&origin),
+                tls_test_root: None,
+            },
             Tf3ExecutionKind::BoundDownload,
         )
         .await
@@ -2848,10 +2880,12 @@ mod tests {
                 &registry,
                 &state,
                 None,
-                NetworkPolicy::FixtureLoopback,
-                Some(&mut Vec::new()),
-                Some(&origin),
-                None,
+                NetworkScope {
+                    policy: NetworkPolicy::FixtureLoopback,
+                    browser_bytes: Some(&mut Vec::new()),
+                    browser_approved_origin: Some(&origin),
+                    tls_test_root: None,
+                },
                 Tf3ExecutionKind::BoundDownload
             )
             .await
@@ -2880,6 +2914,7 @@ mod tests {
             destination: origin.clone(),
             approved_origin: origin.clone(),
             source_page_generation: 2,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             consumed_approval_id: "a".repeat(48),
         });
         let mut denial_bytes = Vec::new();
@@ -2888,10 +2923,12 @@ mod tests {
             &registry,
             &state,
             None,
-            NetworkPolicy::FixtureLoopback,
-            Some(&mut denial_bytes),
-            Some(&origin),
-            None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: Some(&mut denial_bytes),
+                browser_approved_origin: Some(&origin),
+                tls_test_root: None,
+            },
             Tf3ExecutionKind::BoundDownload,
         )
         .await
@@ -2981,6 +3018,7 @@ mod tests {
             source_page_generation: 2,
             original_file_sha256: format!("{:x}", Sha256::digest(&payload)),
             body: payload.clone(),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             consumed_approval_id: "a".repeat(48),
         });
         let receipt = execute_policy_with_output_scoped(
@@ -2988,21 +3026,25 @@ mod tests {
             &registry,
             &state,
             None,
-            NetworkPolicy::FixtureLoopback,
-            None,
-            Some(&target),
-            None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: None,
+                browser_approved_origin: Some(&target),
+                tls_test_root: None,
+            },
             Tf3ExecutionKind::BoundUpload,
         )
         .await
         .unwrap();
         worker.join().unwrap();
-        let seen = observed.lock().unwrap();
-        assert!(seen.starts_with(b"POST /case/owned/upload HTTP/1.1\r\n"));
-        assert!(seen.ends_with(&payload));
-        assert!(String::from_utf8_lossy(&seen)
-            .to_ascii_lowercase()
-            .contains("content-type: application/octet-stream"));
+        {
+            let seen = observed.lock().unwrap();
+            assert!(seen.starts_with(b"POST /case/owned/upload HTTP/1.1\r\n"));
+            assert!(seen.ends_with(&payload));
+            assert!(String::from_utf8_lossy(&seen)
+                .to_ascii_lowercase()
+                .contains("content-type: application/octet-stream"));
+        }
         assert_eq!(receipt.operation, TfWebOperation::BrowserBoundUpload);
         assert_eq!(receipt.actual_method, "POST");
         assert_eq!(receipt.terminal, "completed");
@@ -3020,10 +3062,12 @@ mod tests {
                 &registry,
                 &state,
                 None,
-                NetworkPolicy::FixtureLoopback,
-                None,
-                Some(&target),
-                None,
+                NetworkScope {
+                    policy: NetworkPolicy::FixtureLoopback,
+                    browser_bytes: None,
+                    browser_approved_origin: Some(&target),
+                    tls_test_root: None,
+                },
                 Tf3ExecutionKind::BoundUpload,
             )
             .await
@@ -3101,8 +3145,11 @@ mod tests {
             .browser_credential = Some(TfBrowserOriginCredentialGet {
             destination: target.clone(),
             approved_origin: origin.clone(),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             reference: "a".repeat(48),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             source_page_generation: 2,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             consumed_approval_id: "b".repeat(48),
         });
         let receipt = execute_policy_with_output_scoped(
@@ -3110,10 +3157,12 @@ mod tests {
             &registry,
             &state,
             Some(SYNTHETIC.into()),
-            NetworkPolicy::FixtureLoopback,
-            None,
-            Some(&origin),
-            None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: None,
+                browser_approved_origin: Some(&origin),
+                tls_test_root: None,
+            },
             Tf3ExecutionKind::OriginCredentialGet,
         )
         .await
@@ -3149,10 +3198,12 @@ mod tests {
                 &registry,
                 &state,
                 Some(SYNTHETIC.into()),
-                NetworkPolicy::FixtureLoopback,
-                None,
-                Some(&origin),
-                None,
+                NetworkScope {
+                    policy: NetworkPolicy::FixtureLoopback,
+                    browser_bytes: None,
+                    browser_approved_origin: Some(&origin),
+                    tls_test_root: None,
+                },
                 Tf3ExecutionKind::OriginCredentialGet,
             )
             .await
@@ -3176,8 +3227,11 @@ mod tests {
             .browser_credential = Some(TfBrowserOriginCredentialGet {
             destination: target,
             approved_origin: origin.clone(),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             reference: "a".repeat(48),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             source_page_generation: 2,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             consumed_approval_id: "b".repeat(48),
         });
         let wrong = Url::parse("http://127.0.0.1:2444/").unwrap();
@@ -3186,10 +3240,12 @@ mod tests {
             &registry,
             &state,
             Some(SYNTHETIC.into()),
-            NetworkPolicy::FixtureLoopback,
-            None,
-            Some(&wrong),
-            None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: None,
+                browser_approved_origin: Some(&wrong),
+                tls_test_root: None,
+            },
             Tf3ExecutionKind::OriginCredentialGet,
         )
         .await
@@ -3367,12 +3423,14 @@ mod tests {
         .await
         .unwrap();
         server.join().unwrap();
-        let observed = received.lock().unwrap();
-        assert!(observed.starts_with(b"POST /one-write HTTP/1.1\r\n"));
-        assert!(observed.ends_with(&payload));
-        assert!(String::from_utf8_lossy(&observed)
-            .to_ascii_lowercase()
-            .contains("content-type: application/x-www-form-urlencoded"));
+        {
+            let observed = received.lock().unwrap();
+            assert!(observed.starts_with(b"POST /one-write HTTP/1.1\r\n"));
+            assert!(observed.ends_with(&payload));
+            assert!(String::from_utf8_lossy(&observed)
+                .to_ascii_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded"));
+        }
         assert_eq!(
             result.request_body_sha256,
             format!("{:x}", Sha256::digest(&payload))

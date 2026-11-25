@@ -5,6 +5,11 @@ import {
   closedNativePage,
   confinedRootUrl,
   nativeOperatorRoleAllowed,
+  nativeOperatorReceiptMatches,
+  originalNativeOperatorRequest,
+  originalNativeSubmitPair,
+  pendingOriginalPopupAttempt,
+  preparedNativeOperatorMatches,
 } from "./NativeBrowserOperatorPanel";
 
 const session = "a".repeat(48);
@@ -15,6 +20,19 @@ const page = {
   pageGeneration: 2,
   origin: "https://example.org",
   elements: [{ elementRef: "d".repeat(48), role: "link" }],
+};
+const formRef = "1".repeat(48);
+const submitterRef = "2".repeat(48);
+const scope = {
+  actor: "owned-human", sessionId: "owned-chat", workspaceRoot: "C:/owned-workspace", browserId: session,
+};
+const formPage = {
+  ...page, pageGeneration: 1,
+  elements: [
+    { elementRef: formRef, role: "form" },
+    { elementRef: submitterRef, role: "button", fieldType: "submit" },
+    { elementRef: "3".repeat(48), role: "button", fieldType: "button" },
+  ],
 };
 
 describe("manual native TF4 app approval presentation", () => {
@@ -132,5 +150,149 @@ describe("manual native TF4 app approval presentation", () => {
     });
     expect(failedClosed).toContain('"reasonCode": "native-authorization-or-transport-unverified"');
     expect(failedClosed).toContain('"responseSha256": null');
+  });
+
+  it("accepts only an original retained FORM and actual native submit fieldType candidate", () => {
+    const observed = closedNativePage(formPage, session);
+    expect(observed?.elements).toEqual([
+      { elementRef: formRef, role: "form" },
+      { elementRef: submitterRef, role: "button", fieldType: "submit" },
+      { elementRef: "3".repeat(48), role: "button" },
+    ]);
+    expect(originalNativeSubmitPair(observed, formRef, submitterRef)).toBe(true);
+    expect(originalNativeSubmitPair(observed, formRef, "3".repeat(48))).toBe(false);
+    expect(originalNativeSubmitPair(observed, submitterRef, formRef)).toBe(false);
+    expect(originalNativeSubmitPair(observed, formRef, formRef)).toBe(false);
+    expect(originalNativeSubmitPair(observed, "f".repeat(48), submitterRef)).toBe(false);
+    expect(originalNativeOperatorRequest("submit", scope, observed, observed?.elements[1], formRef))
+      .toEqual({
+        operation: "submit", actor: scope.actor, sessionId: scope.sessionId,
+        workspaceRoot: scope.workspaceRoot, browserSessionId: session,
+        pageId: page.pageId, pageGeneration: 1, snapshotId: page.snapshotId,
+        elementId: submitterRef, text: formRef,
+      });
+    expect(originalNativeOperatorRequest("submit", scope, observed, observed?.elements[2], formRef))
+      .toBeNull();
+    expect(originalNativeOperatorRequest("submit", scope, observed, observed?.elements[1],
+      "https://example.org/?secret=never")) .toBeNull();
+    expect(originalNativeOperatorRequest("submit", { ...scope, browserId: "4".repeat(48) },
+      observed, observed?.elements[1], formRef)).toBeNull();
+  });
+
+  it("separates exact original-page popup trigger from separately approved native child", () => {
+    const original = closedNativePage({ ...page, pageGeneration: 1 }, session);
+    expect(original).not.toBeNull();
+    const link = original?.elements[0];
+    const root = "https://popup.example.org/";
+    expect(nativeOperatorRoleAllowed("trigger_page_popup", "link")).toBe(true);
+    expect(nativeOperatorRoleAllowed("trigger_page_popup", "button")).toBe(false);
+    const request = originalNativeOperatorRequest("trigger_page_popup", scope,
+      original, link, undefined, root);
+    expect(request).toEqual({
+      operation: "trigger_page_popup", actor: scope.actor, sessionId: scope.sessionId,
+      workspaceRoot: scope.workspaceRoot, browserSessionId: session,
+      pageId: page.pageId, pageGeneration: 1, snapshotId: page.snapshotId,
+      elementId: page.elements[0].elementRef,
+    });
+    expect(JSON.stringify(request)).not.toContain(root);
+    expect(originalNativeOperatorRequest("trigger_page_popup", scope, original,
+      link, undefined, "https://popup.example.org/path")).toBeNull();
+    expect(originalNativeOperatorRequest("trigger_page_popup", scope,
+      closedNativePage(page, session), link, undefined, root)).toBeNull();
+
+    const triggerReceipt = {
+      toolId: "tf.browser_operation.v1", requestId: "8".repeat(48),
+      actor: scope.actor, sessionId: scope.sessionId, browserSessionId: session,
+      operation: "trigger_page_popup" as const,
+      engine: "confined_webview2_read_only_unaccepted",
+      terminal: "unknown", nativeTerminal: "DISPATCHED",
+      canonicalTerminal: "UNKNOWN", policyDecision: "allowed",
+      effectState: "Unknown", reasonCode: "native-action-dispatched",
+      retry: "NEVER_REPLAY", autoRetry: false,
+    };
+    const attempt = pendingOriginalPopupAttempt(original, link ?? null, root, triggerReceipt);
+    expect(attempt).toMatchObject({
+      openerId: session, sourcePageId: page.pageId, sourceSnapshotId: page.snapshotId,
+      sourceGeneration: 1, triggerLinkRef: page.elements[0].elementRef,
+      expectedDestination: root,
+    });
+    expect(originalNativeOperatorRequest("open_requested_popup", scope, null,
+      undefined, undefined, undefined, attempt)).toEqual({
+        operation: "open_requested_popup", actor: scope.actor, sessionId: scope.sessionId,
+        workspaceRoot: scope.workspaceRoot, browserSessionId: session, url: root,
+      });
+    expect(originalNativeOperatorRequest("open_requested_popup", { ...scope, browserId: "5".repeat(48) },
+      null, undefined, undefined, undefined, attempt)).toBeNull();
+    expect(originalNativeOperatorRequest("open_requested_popup", scope, null)).toBeNull();
+    for (const changed of [
+      { ...triggerReceipt, nativeTerminal: "UNKNOWN" },
+      { ...triggerReceipt, policyDecision: "denied" },
+      { ...triggerReceipt, effectState: "Observed" },
+      { ...triggerReceipt, autoRetry: true },
+      { ...triggerReceipt, browserSessionId: "9".repeat(48) },
+      { ...triggerReceipt, engine: "inert_native_text" },
+      { ...triggerReceipt, toolId: "forged" },
+    ]) {
+      expect(pendingOriginalPopupAttempt(original, link ?? null, root, changed)).toBeNull();
+    }
+  });
+
+  it("exports closed popup child and FORM POST transport digests without private URL or body", () => {
+    const raw = boundedNativeReceiptEvidence({
+      requestId: "9".repeat(48), operation: "submit", browserSessionId: session,
+      terminal: "unknown", effectState: "Unknown", policyDecision: "allowed",
+      retry: "NEVER_REPLAY", autoRetry: false,
+      nativeFormTransport: {
+        method: "POST", destinationSha256: "b".repeat(64),
+        bodySha256: "c".repeat(64), bodyBytes: 72,
+        body: "private-form-secret", destination: "https://example.org/unsafe?secret=never",
+      },
+    });
+    expect(raw).toContain('"method": "POST"');
+    expect(raw).toContain('"bodyBytes": 72');
+    expect(raw).toContain(`"browserSessionId": "${session}"`);
+    expect(raw).not.toMatch(/private-form-secret|unsafe\?|secret=never|"body":/);
+    expect(boundedNativeReceiptEvidence({
+      requestId: "9".repeat(48), operation: "open_requested_popup",
+      browserSessionId: "7".repeat(48), requestedUrl: "https://popup.example.org/?secret=NO",
+    })).not.toContain("secret=NO");
+  });
+
+  it("requires a new popup child token, genuine OS approval and matching one-use receipt scope", () => {
+    const prepared = {
+      token: "6".repeat(48), requestId: "7".repeat(48),
+      operation: "open_requested_popup" as const, requiresApproval: true,
+      browserSessionId: "8".repeat(48), engine: "confined_webview2_read_only_unaccepted",
+    };
+    const receipt = {
+      toolId: "tf.browser_operation.v1", requestId: prepared.requestId,
+      actor: scope.actor, sessionId: scope.sessionId, operation: "open_requested_popup" as const,
+      browserSessionId: prepared.browserSessionId, engine: prepared.engine,
+      terminal: "pending", effectState: "Unknown", policyDecision: "allowed",
+      reasonCode: "confined-native-appcontainer-ready-broker-serving", autoRetry: false,
+    };
+    expect(preparedNativeOperatorMatches(prepared, "open_requested_popup", session)).toBe(true);
+    expect(nativeOperatorReceiptMatches(receipt, prepared, "open_requested_popup", scope)).toBe(true);
+    for (const forged of [
+      { ...prepared, browserSessionId: session },
+      { ...prepared, engine: "inert_native_text" },
+      { ...prepared, requiresApproval: false },
+      { ...prepared, operation: "open_confined" as const },
+      { ...prepared, requestId: "bad" },
+    ]) expect(preparedNativeOperatorMatches(forged, "open_requested_popup", session)).toBe(false);
+    for (const forged of [
+      { ...receipt, browserSessionId: session },
+      { ...receipt, requestId: "9".repeat(48) },
+      { ...receipt, sessionId: "other-chat" },
+      { ...receipt, actor: "different-owner" },
+      { ...receipt, autoRetry: true },
+      { ...receipt, engine: "inert_native_text" },
+    ]) expect(nativeOperatorReceiptMatches(forged, prepared, "open_requested_popup", scope)).toBe(false);
+    expect(preparedNativeOperatorMatches({ ...prepared, operation: "submit", browserSessionId: session },
+      "submit", session)).toBe(true);
+    expect(preparedNativeOperatorMatches({ ...prepared, operation: "trigger_page_popup", browserSessionId: session },
+      "trigger_page_popup", session)).toBe(true);
+    expect(preparedNativeOperatorMatches({ ...prepared, operation: "trigger_page_popup",
+      browserSessionId: session, engine: "inert_native_text" }, "trigger_page_popup", session)).toBe(false);
   });
 });

@@ -33,6 +33,7 @@ mod host {
     };
     use std::path::{Path, PathBuf};
     use std::ptr::null_mut;
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
@@ -96,6 +97,7 @@ mod host {
     const PRODUCTION_DOM_MAX_REQUESTS: u64 = 16;
     const PRODUCTION_DOM_MAX_CHECKS: u64 = 256;
     const PRODUCTION_DOM_DEADLINE: Duration = Duration::from_secs(3);
+    const PRODUCTION_POPUP_LIFETIME: Duration = Duration::from_secs(30);
     // A full-page unbounded image or CDP data URL must NEVER cross the pipe.
     // This is a small native viewport PNG evidence capture, not a PDF/export.
     const PRODUCTION_SCREENSHOT_BYTES_LIMIT: usize = 64 * 1024;
@@ -324,6 +326,38 @@ mod host {
           || destination.origin !== source.origin || destination.port !== ''
           || source.port !== '' || destination.username !== ''
           || destination.password !== '' || destination.href === source.href)
+        return {dispatched:false,targetHref:null};
+      this.state.changed = true;
+      node.click();
+      return {dispatched:true,targetHref};
+    }"#;
+    // A SEPARATELY approved original-node gesture can ask WebView2 for a
+    // new window, but NewWindowRequested is always synchronously vetoed.
+    // This cannot create any network grant, browser window or inherited UDF.
+    // Only OpenRequestedPopup may later consume the captured native intent
+    // after its own independent central authorization and TF3 re-policy.
+    const DOM_EXACT_POPUP_CLICK_JS: &str = r#"function(slot) {
+      if (this.observer.takeRecords().length) this.state.changed = true;
+      if (this.state.changed) return {dispatched:false,targetHref:null};
+      const node = this.nodes[slot];
+      if (!node || !node.isConnected || node.ownerDocument !== document
+          || node.tagName !== 'A' || node.disabled === true
+          || !node.getClientRects().length
+          || !node.hasAttribute('target')
+          || node.getAttribute('target').toLowerCase() !== '_blank'
+          || node.hasAttribute('download') || node.hasAttribute('ping'))
+        return {dispatched:false,targetHref:null};
+      const targetHref = node.href;
+      if (!targetHref || targetHref.length > 2048
+          || targetHref.includes('?') || targetHref.includes('#'))
+        return {dispatched:false,targetHref:null};
+      const destination = new URL(targetHref);
+      const source = new URL(document.location.href);
+      if (source.protocol !== 'https:' || destination.protocol !== 'https:'
+          || source.port !== '' || destination.port !== ''
+          || destination.username !== '' || destination.password !== ''
+          || destination.pathname !== '/' || destination.search !== ''
+          || destination.hash !== '' || destination.href !== targetHref)
         return {dispatched:false,targetHref:null};
       this.state.changed = true;
       node.click();
@@ -1246,6 +1280,164 @@ mod host {
         reqwest::Url::parse(raw).is_ok_and(|target| target.query().is_none())
     }
 
+    /// A page popup never inherits a WebView, profile, host object or storage
+    /// permission. WebView2 receives SetHandled(true) *before* we cache this
+    /// bounded intent. A separately approved TF4 OpenRequestedPopup may query
+    /// and consume it once over the existing authenticated native pipe.
+    #[derive(Clone, Debug)]
+    struct NativePopupIntent {
+        id: String,
+        source_url: String,
+        destination: String,
+        page_generation: u64,
+        recorded_at: Instant,
+    }
+
+    // Floor to whole milliseconds: a sub-millisecond remainder is denied,
+    // never rounded up or renewed by capture. recorded_at is the original arm.
+    fn popup_remaining_lifetime_ms(started: Instant, now: Instant) -> Option<u64> {
+        let elapsed = now.checked_duration_since(started)?;
+        let remaining = PRODUCTION_POPUP_LIFETIME.checked_sub(elapsed)?.as_millis();
+        if remaining == 0 || remaining > 30_000 {
+            return None;
+        }
+        Some(remaining as u64)
+    }
+
+    // Private host-local correlation. An event alone is not a capability:
+    // only a consumed PopupClick and its matching CDP result can finalize it.
+    #[derive(Default)]
+    struct PopupExpectation {
+        arm: Option<PopupArm>,
+        candidate: Option<NativePopupIntent>,
+    }
+
+    struct PopupArm {
+        approval_id: String,
+        generation: u64,
+        started: Instant,
+        destination_digest: Option<String>,
+    }
+
+    impl PopupExpectation {
+        fn arm(&mut self, approval_id: &str, generation: u64) {
+            self.candidate = None;
+            self.arm = Some(PopupArm {
+                approval_id: approval_id.to_owned(),
+                generation,
+                started: Instant::now(),
+                destination_digest: None,
+            });
+        }
+
+        fn revoke(&mut self) {
+            self.arm = None;
+            self.candidate = None;
+        }
+
+        fn finish(&mut self, approval_id: &str, digest: Option<String>) {
+            if let Some(arm) = self.arm.as_mut() {
+                if arm.approval_id == approval_id
+                    && arm.started.elapsed() <= PRODUCTION_POPUP_LIFETIME
+                {
+                    if let Some(digest) = digest {
+                        if self.candidate.as_ref().is_none_or(|event| {
+                            format!("{:x}", Sha256::digest(event.destination.as_bytes())) == digest
+                        }) {
+                            arm.destination_digest = Some(digest);
+                            return;
+                        }
+                    }
+                }
+            }
+            self.revoke();
+        }
+
+        fn consume(&mut self) -> Option<NativePopupIntent> {
+            let arm = self.arm.take()?;
+            let candidate = self.candidate.take()?;
+            if arm.started.elapsed() > PRODUCTION_POPUP_LIFETIME
+                || candidate.page_generation != arm.generation
+                || arm.destination_digest.as_deref()
+                    != Some(
+                        format!("{:x}", Sha256::digest(candidate.destination.as_bytes())).as_str(),
+                    )
+            {
+                return None;
+            }
+            Some(candidate)
+        }
+    }
+
+    fn popup_destination_supported(raw: &str) -> bool {
+        production_broker_url(raw)
+            && reqwest::Url::parse(raw).is_ok_and(|url| {
+                url.as_str() == raw
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            })
+    }
+
+    fn register_blocked_popup(
+        slot: &Mutex<PopupExpectation>,
+        session: &str,
+        source_url: &str,
+        initial_url: &str,
+        destination: &str,
+        page_generation: u64,
+    ) -> bool {
+        if source_url != initial_url
+            || page_generation != 1
+            || !popup_destination_supported(destination)
+        {
+            return false;
+        }
+        let Ok(mut current) = slot.lock() else {
+            return false;
+        };
+        let Some(arm) = current.arm.as_ref() else {
+            return false;
+        };
+        if arm.generation != page_generation
+            || arm.started.elapsed() > PRODUCTION_POPUP_LIFETIME
+            || current.candidate.is_some()
+        {
+            return false;
+        }
+        let destination_digest = format!("{:x}", Sha256::digest(destination.as_bytes()));
+        if arm
+            .destination_digest
+            .as_ref()
+            .is_some_and(|expected| expected != &destination_digest)
+        {
+            current.revoke();
+            return false;
+        }
+        let mut fresh = [0u8; 16];
+        if getrandom::fill(&mut fresh).is_err() {
+            return false;
+        }
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(format!(
+                "{session}\0{source_url}\0{destination}\0{page_generation}\0{}\0{:x?}",
+                arm.approval_id, fresh
+            ))
+        );
+        // The host alone creates this identity; no page content, renderer
+        // selector, caller id or URL equality can mint an approval.
+        let recorded_at = arm.started;
+        current.candidate = Some(NativePopupIntent {
+            id: digest,
+            source_url: source_url.to_owned(),
+            destination: destination.to_owned(),
+            page_generation,
+            recorded_at,
+        });
+        true
+    }
+
     // Separate one-use claims allow either COM event ordering without opening
     // a second document request or navigation. Only the trusted readiness
     // acknowledgement arms these claims, immediately before Navigate.
@@ -1261,6 +1453,22 @@ mod host {
         Document,
         Passive(&'static [&'static str]),
     }
+    impl ProductionResource {
+        // This class is derived from the *native WebView2 ResourceContext*
+        // admission outcome, never from a page-supplied header or a URL-only
+        // extension. The parent still independently re-authorizes the exact
+        // destination against its preconsented manifest.
+        fn wire_class(self) -> &'static str {
+            match self {
+                Self::Document => "document",
+                Self::Passive(mime) if mime.first() == Some(&"text/css") => "stylesheet",
+                Self::Passive(mime) if mime.first().is_some_and(|m| m.starts_with("image/")) => {
+                    "image"
+                }
+                Self::Passive(_) => "font",
+            }
+        }
+    }
 
     impl ProductionNetworkAdmission {
         fn navigation(&self, raw: &str, original: &str) -> bool {
@@ -1275,8 +1483,15 @@ mod host {
             raw: &str,
             original: &str,
             context: COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
+            source: COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS,
         ) -> Option<ProductionResource> {
-            if !self.armed.load(Ordering::Acquire) || method != "GET" {
+            // Exact native source, not a mask containing DOCUMENT. Reject
+            // shared/service workers, missing and future/combined kinds
+            // before burning any one-use document or parent resource grant.
+            if source != COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT
+                || !self.armed.load(Ordering::Acquire)
+                || method != "GET"
+            {
                 return None;
             }
             if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT {
@@ -1440,38 +1655,33 @@ mod host {
             .create_new(true)
             .write(true)
             .open(&probe)
-            .map_err(|e| {
-                trace.error("udf.probe.create.failed", &io_error(&e));
-                e
+            .inspect_err(|e| {
+                trace.error("udf.probe.create.failed", &io_error(e));
             })?;
         trace.record("udf.probe.create.ok", "UDF probe file created");
         let result = (|| {
             trace.record("udf.probe.write.begin", "writing UDF probe bytes");
             file.write_all(b"clack acceptance access probe\n")
-                .map_err(|e| {
-                    trace.error("udf.probe.write.failed", &io_error(&e));
-                    e
+                .inspect_err(|e| {
+                    trace.error("udf.probe.write.failed", &io_error(e));
                 })?;
             trace.record("udf.probe.write.ok", "UDF probe bytes written");
             trace.record("udf.probe.flush.begin", "flushing UDF probe bytes");
-            file.flush().map_err(|e| {
-                trace.error("udf.probe.flush.failed", &io_error(&e));
-                e
+            file.flush().inspect_err(|e| {
+                trace.error("udf.probe.flush.failed", &io_error(e));
             })?;
             trace.record("udf.probe.flush.ok", "UDF probe bytes flushed");
             trace.record("udf.probe.read.begin", "reading UDF probe bytes");
-            fs::read(&probe).map_err(|e| {
-                trace.error("udf.probe.read.failed", &io_error(&e));
-                e
+            fs::read(&probe).inspect_err(|e| {
+                trace.error("udf.probe.read.failed", &io_error(e));
             })?;
             trace.record("udf.probe.read.ok", "UDF probe bytes read");
             Ok::<(), io::Error>(())
         })();
         drop(file);
         trace.record("udf.probe.remove.begin", "removing UDF probe file");
-        let cleanup = fs::remove_file(&probe).map_err(|e| {
-            trace.error("udf.probe.remove.failed", &io_error(&e));
-            e
+        let cleanup = fs::remove_file(&probe).inspect_err(|e| {
+            trace.error("udf.probe.remove.failed", &io_error(e));
         });
         if cleanup.is_ok() {
             trace.record("udf.probe.remove.ok", "UDF probe file removed");
@@ -1932,6 +2142,37 @@ mod host {
         ordinal: u32,
         form_index: u32,
         form_ordinal: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentPopupCaptureRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        check_sequence: u64,
+        page_generation: u64,
+        expected_url: String,
+    }
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildPopupCaptureReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        check_sequence: u64,
+        page_generation: u64,
+        state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        intent_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_sha256: Option<String>,
+        // Required on CAPTURED; absent on DENIED. Parent must fail closed
+        // on a missing, zero or out-of-range value for a captured intent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remaining_lifetime_ms: Option<u64>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -2512,6 +2753,9 @@ mod host {
             {
                 return Ok(None);
             }
+            "popup-click" if no_text && no_option && no_form && no_delta => {
+                "popup-click".to_owned()
+            }
             "type" if no_option && no_form && no_delta => {
                 let text = request
                     .text
@@ -2678,6 +2922,21 @@ mod host {
         raw: &str,
         expected_url: &str,
     ) -> Result<(bool, Option<String>), &'static str> {
+        parse_dom_activation_response_mode(raw, expected_url, false)
+    }
+
+    fn parse_dom_popup_activation_response(
+        raw: &str,
+        expected_url: &str,
+    ) -> Result<(bool, Option<String>), &'static str> {
+        parse_dom_activation_response_mode(raw, expected_url, true)
+    }
+
+    fn parse_dom_activation_response_mode(
+        raw: &str,
+        expected_url: &str,
+        popup: bool,
+    ) -> Result<(bool, Option<String>), &'static str> {
         if raw.is_empty() || raw.len() > 4096 {
             return Err("action-com-response-unknown");
         }
@@ -2721,7 +2980,7 @@ mod host {
             reqwest::Url::parse(expected_url).map_err(|_| "action-com-response-unknown")?;
         if target.scheme() != "https"
             || source.scheme() != "https"
-            || target.origin() != source.origin()
+            || (!popup && target.origin() != source.origin())
             || target.username() != ""
             || target.password().is_some()
             || source.port_or_known_default() != Some(443)
@@ -2729,7 +2988,8 @@ mod host {
             || target.as_str().bytes().any(|b| b == b'?' || b == b'#')
             || target.query().is_some()
             || target.fragment().is_some()
-            || target == source
+            || (!popup && target == source)
+            || (popup && (target.path() != "/" || target.as_str() != raw_target))
         {
             // The DOM click may already have dispatched. Never recast an
             // unknown action as a definitely denied/no-effect gesture.
@@ -3221,6 +3481,8 @@ mod host {
         method: &'static str,
         url: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
+        resource_class: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         page_generation: Option<u64>,
     }
 
@@ -3274,6 +3536,7 @@ mod host {
         url: String,
         session: String,
         page_generation: u64,
+        resource_class: Option<&'static str>,
         production_ready: Option<ProductionReady>,
     }
     /// This handshake is a child claim, never the authority. The parent must
@@ -3592,7 +3855,7 @@ mod host {
     ) {
         // The callback remains on WebView2's UI COM apartment. No CDP
         // debugging endpoint, remote debugger or external process exists.
-        let pending = Arc::new(Mutex::new(Some(done)));
+        let pending = Rc::new(RefCell::new(Some(done)));
         let completed_pending = pending.clone();
         let completion =
             CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |hr, output| {
@@ -3601,11 +3864,9 @@ mod host {
                 } else {
                     Ok(output.to_string())
                 };
-                if let Ok(mut guard) = completed_pending.lock() {
-                    if let Some(done) = guard.take() {
-                        drop(guard);
-                        done(checked);
-                    }
+                let done = completed_pending.borrow_mut().take();
+                if let Some(done) = done {
+                    done(checked);
                 }
                 Ok(())
             }));
@@ -3618,11 +3879,9 @@ mod host {
         }
         .is_err()
         {
-            if let Ok(mut guard) = pending.lock() {
-                if let Some(done) = guard.take() {
-                    drop(guard);
-                    done(Err("observation-identity-unavailable"));
-                }
+            let done = pending.borrow_mut().take();
+            if let Some(done) = done {
+                done(Err("observation-identity-unavailable"));
             }
         }
     }
@@ -3942,6 +4201,12 @@ mod host {
             .map_err(|_| "observation-timeout")?
     }
 
+    struct DomRecheckMode {
+        debug_replace_heading: bool,
+        activate_exact_click: bool,
+        activate_popup_click: bool,
+    }
+
     fn recheck_dom_on_ui(
         app: &tauri::AppHandle,
         expected_url: &str,
@@ -3949,10 +4214,16 @@ mod host {
         reference: NativeDomNodeRef,
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
-        debug_replace_heading: bool,
-        activate_exact_click: bool,
+        mode: DomRecheckMode,
     ) -> Result<(bool, Option<String>), &'static str> {
-        if debug_replace_heading && activate_exact_click {
+        let DomRecheckMode {
+            debug_replace_heading,
+            activate_exact_click,
+            activate_popup_click,
+        } = mode;
+        if (debug_replace_heading && (activate_exact_click || activate_popup_click))
+            || (activate_exact_click && activate_popup_click)
+        {
             return Err("action-mode-conflict");
         }
         #[cfg(not(debug_assertions))]
@@ -4003,7 +4274,9 @@ mod host {
                             let callback_generation = current_generation.clone();
                             let callback_stats = stats.clone();
                             let callback_expected = expected.clone();
-                            let declaration = if activate_exact_click {
+                            let declaration = if activate_popup_click {
+                                DOM_EXACT_POPUP_CLICK_JS
+                            } else if activate_exact_click {
                                 DOM_EXACT_CLICK_JS
                             } else if debug_replace_heading {
                                 #[cfg(debug_assertions)]
@@ -4021,7 +4294,7 @@ mod host {
                                 "objectId": reference.root_object_id,
                                 "functionDeclaration": declaration,
                                 "arguments": [{ "value": reference.slot }],
-                                "returnByValue": activate_exact_click,
+                                "returnByValue": activate_exact_click || activate_popup_click,
                                 "silent": true,
                                 "awaitPromise": false,
                                 "generatePreview": false
@@ -4039,11 +4312,19 @@ mod host {
                                         // resulting source change as a stale
                                         // *pre*-dispatch reference. Failure
                                         // to get a closed ACK is UNKNOWN.
-                                        if activate_exact_click {
-                                            return parse_dom_activation_response(
-                                                &remote?,
-                                                &callback_expected,
-                                            );
+                                        if activate_exact_click || activate_popup_click {
+                                            let raw = remote?;
+                                            return if activate_popup_click {
+                                                parse_dom_popup_activation_response(
+                                                    &raw,
+                                                    &callback_expected,
+                                                )
+                                            } else {
+                                                parse_dom_activation_response(
+                                                    &raw,
+                                                    &callback_expected,
+                                                )
+                                            };
                                         }
                                         let mut source = PWSTR::null();
                                         if unsafe { callback_core.Source(&mut source) }.is_err() {
@@ -4088,18 +4369,28 @@ mod host {
             .map_err(|_| "recheck-timeout")?
     }
 
+    struct ExactControlAction {
+        action: String,
+        text: Option<String>,
+        option_slot: Option<usize>,
+        delta_y: Option<i32>,
+    }
+
     fn exact_control_action_on_ui(
         app: &tauri::AppHandle,
         expected_url: &str,
         request_generation: u64,
         reference: NativeDomNodeRef,
-        action: String,
-        text: Option<String>,
-        option_slot: Option<usize>,
-        delta_y: Option<i32>,
+        control: ExactControlAction,
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
     ) -> Result<bool, &'static str> {
+        let ExactControlAction {
+            action,
+            text,
+            option_slot,
+            delta_y,
+        } = control;
         if stats.broken.load(Ordering::Acquire)
             || stats.pending.load(Ordering::Acquire) != 0
             || current_generation.load(Ordering::Acquire) != request_generation
@@ -4318,18 +4609,33 @@ mod host {
             .map_err(|_| "form-capture-timeout")?
     }
 
+    // Native owner context shared by one sealed control turn. None of these
+    // fields are supplied by the child frame being validated.
+    struct DomControlScope<'a> {
+        app: &'a tauri::AppHandle,
+        session: &'a str,
+        popup_slot: &'a Mutex<PopupExpectation>,
+        page_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+        initial_url: &'a str,
+    }
+
     fn service_parent_form_capture_frame(
         frame: &[u8],
         write: &mut File,
-        app: &tauri::AppHandle,
-        session: &str,
+        scope: DomControlScope<'_>,
         latest_observation_id: u64,
         last_check_sequence: &mut u64,
         identities: &NativeDomIdentity,
-        page_generation: Arc<AtomicU64>,
-        stats: Arc<BrokerStats>,
-        initial_url: &str,
     ) -> Result<(), &'static str> {
+        let DomControlScope {
+            app,
+            session,
+            page_generation,
+            stats,
+            initial_url,
+            ..
+        } = scope;
         let request: ParentDomFormCaptureRequest =
             serde_json::from_slice(frame).map_err(|_| "form-capture-request-invalid")?;
         let check = json!({
@@ -4412,15 +4718,19 @@ mod host {
     fn service_parent_screenshot_frame(
         frame: &[u8],
         write: &mut File,
-        app: &tauri::AppHandle,
-        session: &str,
+        scope: DomControlScope<'_>,
         latest_observation_id: u64,
         last_check_sequence: &mut u64,
         identities: &NativeDomIdentity,
-        page_generation: Arc<AtomicU64>,
-        stats: Arc<BrokerStats>,
-        initial_url: &str,
     ) -> Result<(), &'static str> {
+        let DomControlScope {
+            app,
+            session,
+            page_generation,
+            stats,
+            initial_url,
+            ..
+        } = scope;
         let request: ParentDomScreenshotRequest =
             serde_json::from_slice(frame).map_err(|_| "screenshot-request-invalid")?;
         if request.version != 2
@@ -4487,15 +4797,19 @@ mod host {
     fn service_parent_dom_recheck_frame(
         frame: &[u8],
         write: &mut File,
-        app: &tauri::AppHandle,
-        session: &str,
+        scope: DomControlScope<'_>,
         last_observation_id: u64,
         last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
-        page_generation: Arc<AtomicU64>,
-        stats: Arc<BrokerStats>,
-        initial_url: &str,
     ) -> Result<(), &'static str> {
+        let DomControlScope {
+            app,
+            session,
+            page_generation,
+            stats,
+            initial_url,
+            ..
+        } = scope;
         let (request, reference) = validate_dom_recheck_request(
             frame,
             session,
@@ -4535,8 +4849,11 @@ mod host {
                 reference,
                 page_generation.clone(),
                 stats.clone(),
-                debug_replace_heading,
-                false,
+                DomRecheckMode {
+                    debug_replace_heading,
+                    activate_exact_click: false,
+                    activate_popup_click: false,
+                },
             )
             .map(|result| result.0)
             .unwrap_or(false)
@@ -4567,16 +4884,20 @@ mod host {
     fn service_parent_dom_action_frame(
         frame: &[u8],
         write: &mut File,
-        app: &tauri::AppHandle,
-        session: &str,
+        scope: DomControlScope<'_>,
         last_observation_id: u64,
         last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
         used_approval_ids: &mut HashSet<String>,
-        page_generation: Arc<AtomicU64>,
-        stats: Arc<BrokerStats>,
-        initial_url: &str,
     ) -> Result<(), &'static str> {
+        let DomControlScope {
+            app,
+            session,
+            popup_slot,
+            page_generation,
+            stats,
+            initial_url,
+        } = scope;
         let (request, reference) = validate_dom_action_request(
             frame,
             session,
@@ -4593,6 +4914,11 @@ mod host {
         // observation and sequence must not re-authorize a consumed ID.
         consume_dom_approval_id(used_approval_ids, &request.approval_id)?;
         let payload_sha256 = validated_dom_action_payload_digest(&request)?;
+        // Any subsequent action revokes an earlier unconsumed popup grant.
+        popup_slot
+            .lock()
+            .map_err(|_| "popup-expectation-lock")?
+            .revoke();
         let option = if request.action == "select" {
             request
                 .option_index
@@ -4622,12 +4948,13 @@ mod host {
         let (state, target_url_sha256) = match reference {
             None => ("STALE", None),
             Some(reference)
-                if !(request.action == "click" && identities.may_click(&reference)
+                if !(matches!(request.action.as_str(), "click" | "popup-click")
+                    && identities.may_click(&reference)
                     || request.action == "submit"
                         && form
                             .as_ref()
                             .is_some_and(|form| identities.may_submit(&reference, form))
-                    || request.action != "click"
+                    || !matches!(request.action.as_str(), "click" | "popup-click")
                         && request.action != "submit"
                         && identities.may_control(
                             &request.action,
@@ -4638,7 +4965,13 @@ mod host {
                 ("DENIED_TARGET", None)
             }
             Some(reference) => {
-                let outcome = if request.action == "click" {
+                if request.action == "popup-click" {
+                    popup_slot
+                        .lock()
+                        .map_err(|_| "popup-expectation-lock")?
+                        .arm(&request.approval_id, request.page_generation);
+                }
+                let outcome = if matches!(request.action.as_str(), "click" | "popup-click") {
                     recheck_dom_on_ui(
                         app,
                         initial_url,
@@ -4646,8 +4979,11 @@ mod host {
                         reference,
                         page_generation,
                         stats,
-                        false,
-                        true,
+                        DomRecheckMode {
+                            debug_replace_heading: false,
+                            activate_exact_click: request.action == "click",
+                            activate_popup_click: request.action == "popup-click",
+                        },
                     )
                 } else {
                     exact_control_action_on_ui(
@@ -4655,14 +4991,16 @@ mod host {
                         initial_url,
                         request.page_generation,
                         reference,
-                        request.action.clone(),
-                        request.text.clone(),
-                        if request.action == "submit" {
-                            form.as_ref().map(|retained_form| retained_form.slot)
-                        } else {
-                            option.as_ref().map(|ref_option| ref_option.slot)
+                        ExactControlAction {
+                            action: request.action.clone(),
+                            text: request.text.clone(),
+                            option_slot: if request.action == "submit" {
+                                form.as_ref().map(|retained_form| retained_form.slot)
+                            } else {
+                                option.as_ref().map(|ref_option| ref_option.slot)
+                            },
+                            delta_y: request.delta_y,
                         },
-                        request.delta_y,
                         page_generation,
                         stats,
                     )
@@ -4677,7 +5015,10 @@ mod host {
                     // it to an effect acknowledgement before POST/GET-write
                     // authority and independent effect proof exist.
                     Ok((true, _)) if request.action == "submit" => ("UNKNOWN", None),
-                    Ok((true, digest)) if request.action != "click" || digest.is_some() => {
+                    Ok((true, digest))
+                        if !matches!(request.action.as_str(), "click" | "popup-click")
+                            || digest.is_some() =>
+                    {
                         ("DISPATCHED", digest)
                     }
                     Ok((false, _)) if request.action == "submit" => ("DENIED_TARGET", None),
@@ -4686,6 +5027,19 @@ mod host {
                 }
             }
         };
+        if request.action == "popup-click" {
+            popup_slot
+                .lock()
+                .map_err(|_| "popup-expectation-lock")?
+                .finish(
+                    &request.approval_id,
+                    if state == "DISPATCHED" {
+                        target_url_sha256.clone()
+                    } else {
+                        None
+                    },
+                );
+        }
         if identities.observation_id == request.observation_id {
             identities.invalidate(request.observation_id, request.page_generation);
         }
@@ -4719,15 +5073,11 @@ mod host {
     fn service_parent_dom_control(
         read: &mut File,
         write: &mut File,
-        app: &tauri::AppHandle,
-        session: &str,
+        scope: DomControlScope<'_>,
         last_observation_id: &mut u64,
         last_check_sequence: &mut u64,
         identities: &mut NativeDomIdentity,
         used_approval_ids: &mut HashSet<String>,
-        page_generation: Arc<AtomicU64>,
-        stats: Arc<BrokerStats>,
-        initial_url: &str,
     ) -> Result<(), &'static str> {
         let frame = broker_read_frame(read, PRODUCTION_DOM_DEADLINE)
             .map_err(|_| "observation-request-invalid")?;
@@ -4743,59 +5093,54 @@ mod host {
             return service_parent_dom_recheck_frame(
                 &frame,
                 write,
-                app,
-                session,
+                scope,
                 *last_observation_id,
                 last_check_sequence,
                 identities,
-                page_generation,
-                stats,
-                initial_url,
             );
         }
         if discriminator.get("kind").and_then(|v| v.as_str()) == Some("act-element") {
             return service_parent_dom_action_frame(
                 &frame,
                 write,
-                app,
-                session,
+                scope,
                 *last_observation_id,
                 last_check_sequence,
                 identities,
                 used_approval_ids,
-                page_generation,
-                stats,
-                initial_url,
             );
         }
         if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-form") {
             return service_parent_form_capture_frame(
                 &frame,
                 write,
-                app,
-                session,
+                scope,
                 *last_observation_id,
                 last_check_sequence,
                 identities,
-                page_generation,
-                stats,
-                initial_url,
             );
+        }
+        if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-popup") {
+            return service_parent_popup_capture_frame(&frame, write, scope, last_check_sequence);
         }
         if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-screenshot") {
             return service_parent_screenshot_frame(
                 &frame,
                 write,
-                app,
-                session,
+                scope,
                 *last_observation_id,
                 last_check_sequence,
                 identities,
-                page_generation,
-                stats,
-                initial_url,
             );
         }
+        let DomControlScope {
+            app,
+            session,
+            page_generation,
+            stats,
+            initial_url,
+            ..
+        } = scope;
         let request: ParentDomRequest =
             serde_json::from_slice(&frame).map_err(|_| "observation-request-invalid")?;
         if request.version != 2
@@ -4875,6 +5220,80 @@ mod host {
         Ok(())
     }
 
+    fn service_parent_popup_capture_frame(
+        frame: &[u8],
+        write: &mut File,
+        scope: DomControlScope<'_>,
+        last_check_sequence: &mut u64,
+    ) -> Result<(), &'static str> {
+        let DomControlScope {
+            session,
+            popup_slot,
+            page_generation,
+            stats,
+            initial_url,
+            ..
+        } = scope;
+        let request: ParentPopupCaptureRequest =
+            serde_json::from_slice(frame).map_err(|_| "popup-capture-request-invalid")?;
+        if request.version != 2
+            || request.kind != "capture-popup"
+            || request.session != session
+            || request.check_sequence == 0
+            || request.check_sequence > PRODUCTION_DOM_MAX_CHECKS
+            || request.check_sequence != last_check_sequence.saturating_add(1)
+            || request.page_generation == 0
+            || request.page_generation != page_generation.load(Ordering::Acquire)
+            || !popup_destination_supported(&request.expected_url)
+        {
+            return Err("popup-capture-owner-or-target-denied");
+        }
+        *last_check_sequence = request.check_sequence;
+        // Never return an intent on a still-pending resource, stale native
+        // document or broker failure; the consumed slot cannot be replayed.
+        let capture = if !stats.broken.load(Ordering::Acquire)
+            && stats.pending.load(Ordering::Acquire) == 0
+        {
+            popup_slot.lock().ok().and_then(|mut slot| slot.consume())
+        } else {
+            None
+        };
+        let accepted = capture
+            .filter(|candidate| {
+                candidate.page_generation == request.page_generation
+                    && candidate.source_url == initial_url
+                    && candidate.destination == request.expected_url
+                    && page_generation.load(Ordering::Acquire) == request.page_generation
+            })
+            .and_then(|candidate| {
+                let remaining = popup_remaining_lifetime_ms(candidate.recorded_at, Instant::now())?;
+                Some((candidate, remaining))
+            });
+        let reply = ChildPopupCaptureReply {
+            version: 2,
+            kind: "popup-capture",
+            session,
+            check_sequence: request.check_sequence,
+            page_generation: request.page_generation,
+            state: if accepted.is_some() {
+                "CAPTURED"
+            } else {
+                "DENIED"
+            },
+            intent_id: accepted.as_ref().map(|(v, _)| v.id.clone()),
+            destination: accepted.as_ref().map(|(v, _)| v.destination.clone()),
+            source_sha256: accepted
+                .as_ref()
+                .map(|(v, _)| format!("{:x}", Sha256::digest(v.source_url.as_bytes()))),
+            remaining_lifetime_ms: accepted.as_ref().map(|(_, remaining)| *remaining),
+        };
+        let bytes = serde_json::to_vec(&reply).map_err(|_| "popup-capture-reply-invalid")?;
+        if bytes.is_empty() || bytes.len() > 4096 {
+            return Err("popup-capture-reply-bounds");
+        }
+        broker_write_frame(write, &bytes).map_err(|_| "popup-capture-reply-pipe")
+    }
+
     // The host offers an exclusive control slot; the parent can only decline
     // or claim that exact slot. The host reads one v2 command only after the
     // claim, never while an outstanding v1 GET expects its exact parent reply.
@@ -4896,47 +5315,44 @@ mod host {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    struct DomControlState<'a> {
+        last_observation_id: &'a mut u64,
+        last_check_sequence: &'a mut u64,
+        identities: &'a mut NativeDomIdentity,
+        used_approval_ids: &'a mut HashSet<String>,
+    }
+
     fn service_parent_control_turn(
         read: &mut File,
         write: &mut File,
-        app: &tauri::AppHandle,
-        session: &str,
+        scope: DomControlScope<'_>,
         turn_id: u64,
-        last_observation_id: &mut u64,
-        last_check_sequence: &mut u64,
-        identities: &mut NativeDomIdentity,
-        used_approval_ids: &mut HashSet<String>,
-        page_generation: Arc<AtomicU64>,
-        stats: Arc<BrokerStats>,
-        initial_url: &str,
+        state: DomControlState<'_>,
     ) -> Result<(), &'static str> {
-        if stats.broken.load(Ordering::Acquire) || stats.pending.load(Ordering::Acquire) != 0 {
+        if scope.stats.broken.load(Ordering::Acquire)
+            || scope.stats.pending.load(Ordering::Acquire) != 0
+        {
             return Err("control-turn-not-idle");
         }
         let offer = ChildControlTurnOffer {
             version: 2,
             kind: "control-turn-offer",
-            session,
+            session: scope.session,
             turn_id,
         };
         let bytes = serde_json::to_vec(&offer).map_err(|_| "control-turn-offer-invalid")?;
         broker_write_frame(write, &bytes).map_err(|_| "control-turn-offer-pipe-failed")?;
         let choice = broker_read_frame(read, PRODUCTION_DOM_DEADLINE)
             .map_err(|_| "control-turn-choice-timeout-or-pipe-failed")?;
-        if validate_control_turn_choice(&choice, session, turn_id)? {
+        if validate_control_turn_choice(&choice, scope.session, turn_id)? {
             service_parent_dom_control(
                 read,
                 write,
-                app,
-                session,
-                last_observation_id,
-                last_check_sequence,
-                identities,
-                used_approval_ids,
-                page_generation,
-                stats,
-                initial_url,
+                scope,
+                state.last_observation_id,
+                state.last_check_sequence,
+                state.identities,
+                state.used_approval_ids,
             )?;
         }
         Ok(())
@@ -5357,16 +5773,27 @@ mod host {
     /// The separately owned parent first attests the real dependent broker
     /// descriptor and BOTH original browser/renderer process handles. Only
     /// then can the monitor dispatch this one UI-apartment operation.
-    fn dispatch_grouped_phase_a_action(
-        app: &tauri::AppHandle,
-        fault: BrokerFault,
-        expected_document_url: String,
+    struct GroupedFixtureCompletion {
         trace: Arc<StartupTrace>,
         stats: Arc<BrokerStats>,
         page_generation: Arc<AtomicU64>,
         phase: Arc<PhaseA>,
         completed: Arc<AtomicBool>,
+    }
+
+    fn dispatch_grouped_phase_a_action(
+        app: &tauri::AppHandle,
+        fault: BrokerFault,
+        expected_document_url: String,
+        completion: GroupedFixtureCompletion,
     ) -> Result<(), String> {
+        let GroupedFixtureCompletion {
+            trace,
+            stats,
+            page_generation,
+            phase,
+            completed,
+        } = completion;
         if !fault.grouped_dependent_action() {
             return Err("not a grouped fixture action".into());
         }
@@ -5564,12 +5991,15 @@ mod host {
         fault: BrokerFault,
         old_generation: u64,
         native_status: Option<u16>,
-        generation: Arc<AtomicU64>,
-        phase: Arc<PhaseA>,
-        stats: Arc<BrokerStats>,
-        trace: Arc<StartupTrace>,
-        completed: Arc<AtomicBool>,
+        completion: GroupedFixtureCompletion,
     ) {
+        let GroupedFixtureCompletion {
+            trace,
+            stats,
+            page_generation: generation,
+            phase,
+            completed,
+        } = completion;
         let current = generation.load(Ordering::Acquire);
         if !fault.grouped_stale()
             || native_status != Some(502)
@@ -5729,9 +6159,8 @@ mod host {
             "broker.pipes.begin",
             "opening inherited anonymous pipe handles",
         );
-        let (mut broker_read, mut broker_write) = broker_pipes().map_err(|e| {
-            trace.error("broker.pipes.failed", &e);
-            e
+        let (mut broker_read, mut broker_write) = broker_pipes().inspect_err(|e| {
+            trace.error("broker.pipes.failed", e);
         })?;
         trace.record(
             "broker.pipes.ok",
@@ -5759,6 +6188,9 @@ mod host {
         // controlled navigation stays on epoch 1 regardless of event order.
         let page_generation = Arc::new(AtomicU64::new(1));
         let network_admission = Arc::new(ProductionNetworkAdmission::default());
+        // One private denied WebView2 popup intent per host owner. This is a
+        // short-lived capability observation, never an independent ledger.
+        let popup_slot = Arc::new(Mutex::new(PopupExpectation::default()));
         let root = args.root.clone();
         let pid = std::process::id();
         let port = args.fixture_port;
@@ -5782,6 +6214,7 @@ mod host {
                 let worker_initial_url = document_url.clone();
                 let worker_generation = page_generation.clone();
                 let worker_network_admission = network_admission.clone();
+                let worker_popup_slot = popup_slot.clone();
                 let worker_phase_a = phase_a.clone();
                 let worker_grouped_completed = grouped_completed.clone();
                 let handle = app.handle().clone();
@@ -5807,15 +6240,11 @@ mod host {
                                     if let Err(reason) = service_parent_dom_control(
                                         &mut broker_read,
                                         &mut broker_write,
-                                        &handle,
-                                        &worker_session,
+                                        DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
                                         &mut last_observation_id,
                                         &mut last_check_sequence,
                                         &mut native_dom_identity,
                                         &mut used_dom_approval_ids,
-                                        worker_generation.clone(),
-                                        worker_stats.clone(),
-                                        &worker_initial_url,
                                     ) {
                                         worker_stats.errors.fetch_add(1, Ordering::Relaxed);
                                         worker_stats.broken.store(true, Ordering::Release);
@@ -5872,16 +6301,9 @@ mod host {
                                         if let Err(reason) = service_parent_control_turn(
                                             &mut broker_read,
                                             &mut broker_write,
-                                            &handle,
-                                            &worker_session,
+                                            DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
                                             id,
-                                            &mut last_observation_id,
-                                            &mut last_check_sequence,
-                                            &mut native_dom_identity,
-                                            &mut used_dom_approval_ids,
-                                            worker_generation.clone(),
-                                            worker_stats.clone(),
-                                            &worker_initial_url,
+                                            DomControlState { last_observation_id: &mut last_observation_id, last_check_sequence: &mut last_check_sequence, identities: &mut native_dom_identity, used_approval_ids: &mut used_dom_approval_ids },
                                         ) {
                                             worker_stats.errors.fetch_add(1, Ordering::Relaxed);
                                             worker_stats.broken.store(true, Ordering::Release);
@@ -5896,15 +6318,11 @@ mod host {
                                             let result = service_parent_dom_control(
                                                 &mut broker_read,
                                                 &mut broker_write,
-                                                &handle,
-                                                &worker_session,
+                                                DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
                                                 &mut last_observation_id,
                                                 &mut last_check_sequence,
                                                 &mut native_dom_identity,
                                                 &mut used_dom_approval_ids,
-                                                worker_generation.clone(),
-                                                worker_stats.clone(),
-                                                &worker_initial_url,
                                             );
                                             if let Err(reason) = result {
                                                 worker_stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -6020,6 +6438,7 @@ mod host {
                             request_id: ticket.id,
                             method: "GET",
                             url: &ticket.url,
+                            resource_class: ticket.resource_class,
                             page_generation: worker_production.then_some(ticket.page_generation),
                         };
                         let mut finished_early = false;
@@ -6189,9 +6608,7 @@ mod host {
                                 if reply_fault.grouped_stale() && ticket.id == 2 {
                                     finish_grouped_stale_on_ui(
                                         &reply_app, reply_fault, reply_old_epoch, installed_status,
-                                        reply_generation.clone(), reply_phase_a.clone(),
-                                        reply_stats.clone(), reply_trace.clone(),
-                                        reply_grouped_completed.clone(),
+                                        GroupedFixtureCompletion { page_generation: reply_generation.clone(), phase: reply_phase_a.clone(), stats: reply_stats.clone(), trace: reply_trace.clone(), completed: reply_grouped_completed.clone() },
                                     );
                                 }
                                 if let Some(sender) = com_sender {
@@ -6443,9 +6860,8 @@ mod host {
                     }
                 })
                 .build()
-                .map_err(|e| {
-                    init_trace.error("broker.webview.create.failed", &error_chain(&e));
-                    e
+                .inspect_err(|e| {
+                    init_trace.error("broker.webview.create.failed", &error_chain(e));
                 })?;
                 init_trace.record("broker.webview.created", "hidden WebView2 shell initialized");
 
@@ -6462,6 +6878,7 @@ mod host {
                 let callback_fault = fault;
                 let callback_generation = page_generation.clone();
                 let callback_network_admission = network_admission.clone();
+                let callback_popup_slot = popup_slot.clone();
                 let callback_phase_a = phase_a.clone();
                 let callback_observer = setup_observer.clone();
                 let counter = Arc::new(AtomicU64::new(0));
@@ -6500,6 +6917,11 @@ mod host {
                             // TF3 approvals and bounded page identities.
                             let popup_stats = callback_stats.clone();
                             let popup_trace = callback_trace.clone();
+                            let popup_core = core.clone();
+                            let popup_url = callback_url.clone();
+                            let popup_session = callback_session.clone();
+                            let popup_generation = callback_generation.clone();
+                            let popup_slot = callback_popup_slot.clone();
                             let new_window = NewWindowRequestedEventHandler::create(Box::new(
                                 move |_, args| {
                                     let Some(args) = args else {
@@ -6509,6 +6931,23 @@ mod host {
                                     if unsafe { args.SetHandled(true) }.is_err() {
                                         production_fatal_feature_veto(
                                             &popup_trace, &popup_stats, "production.popup.veto-failed");
+                                    }
+                                    let mut requested = PWSTR::null();
+                                    let mut current = PWSTR::null();
+                                    let admitted = unsafe { args.Uri(&mut requested) }.is_ok()
+                                        && unsafe { popup_core.Source(&mut current) }.is_ok()
+                                        && register_blocked_popup(
+                                            &popup_slot, &popup_session,
+                                            &take_pwstr(current), &popup_url,
+                                            &take_pwstr(requested),
+                                            popup_generation.load(Ordering::Acquire),
+                                        );
+                                    if admitted {
+                                        popup_trace.record("production.popup.intent-captured",
+                                            "new-window vetoed; one original-page intent available to authenticated parent only");
+                                    } else {
+                                        popup_trace.record("production.popup.intent-denied",
+                                            "new-window vetoed without a reusable destination capability");
                                     }
                                     Ok(())
                                 },
@@ -6791,11 +7230,24 @@ mod host {
                                     return broker_deny_on_ui(&args, &event_env, 502, &event_trace, &event_stats);
                                 }
                                 let production_resource = if event_production {
+                                    // Keep interception of ALL source kinds:
+                                    // excluding workers from the filter would
+                                    // not deny them. Query the native event
+                                    // interface and install a denial on failure.
+                                    let Ok(args2) = args.cast::<ICoreWebView2WebResourceRequestedEventArgs2>() else {
+                                        event_trace.record("production.resource.source-unavailable", "native request source interface unavailable");
+                                        return broker_deny_on_ui(&args, &event_env, 502, &event_trace, &event_stats);
+                                    };
+                                    let mut source = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_NONE;
+                                    if unsafe { args2.RequestedSourceKind(&mut source) }.is_err() {
+                                        event_trace.record("production.resource.source-unavailable", "native request source query failed");
+                                        return broker_deny_on_ui(&args, &event_env, 502, &event_trace, &event_stats);
+                                    }
                                     let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL;
                                     if unsafe { args.ResourceContext(&mut context) }.is_err() {
                                         return broker_deny_on_ui(&args, &event_env, 502, &event_trace, &event_stats);
                                     }
-                                    let Some(admitted) = event_admission.resource(&method, &uri, &event_document_url, context) else {
+                                    let Some(admitted) = event_admission.resource(&method, &uri, &event_document_url, context, source) else {
                                         event_trace.record("production.resource.context-denied", "GET outside initial document/passive context authority");
                                         return broker_deny_on_ui(&args, &event_env, 403, &event_trace, &event_stats);
                                     };
@@ -6834,7 +7286,7 @@ mod host {
                                         "http://127.0.0.1:{}/{}/broker/{}",
                                         callback_port, expected_type, callback_session
                                     )) || (id == 3 && (callback_fault != BrokerFault::MultiPendingShutdown || uri != expected_second))
-                                        || id > 3 || id < 2
+                                        || !(2..=3).contains(&id)
                                     {
                                         event_stats.broken.store(true, Ordering::Release);
                                         event_phase_a.note("unexpected-grouped-dependent-rejected");
@@ -7047,6 +7499,7 @@ mod host {
                                     url: uri,
                                     session: callback_session.clone(),
                                     page_generation: request_generation,
+                                    resource_class: production_resource.map(ProductionResource::wire_class),
                                     production_ready: None,
                                 }).is_err() {
                                     event_stats.denied.fetch_add(1, Ordering::Relaxed);
@@ -7076,6 +7529,7 @@ mod host {
                             callback_ready_tx.try_send(BrokerTicket {
                                 id: 0, url: callback_url.clone(),
                                 session: callback_session_for_ready.clone(), page_generation: 1,
+                                resource_class: None,
                                 production_ready: Some(ready),
                             }).map_err(|_| windows::core::Error::new(
                                 windows::core::HRESULT(0x80004005u32 as i32),
@@ -7100,9 +7554,8 @@ mod host {
                         callback_stats.broken.store(true, Ordering::Release);
                         callback_trace.error("broker.hook.failed", &format!("HRESULT {}", error.code().0));
                     }
-                }).map_err(|e| {
+                }).inspect_err(|e| {
                     init_trace.error("broker.hook.dispatch.failed", &e.to_string());
-                    e
                 })?;
 
                 let monitor_trace = init_trace.clone();
@@ -7166,9 +7619,7 @@ mod host {
                                     "independent exact parent request and live browser/renderer original HANDLEs attested");
                                 if let Err(reason) = dispatch_grouped_phase_a_action(
                                     &app_handle, fault, monitor_fixture_document_url.clone(),
-                                    monitor_trace.clone(), monitor_stats.clone(),
-                                    monitor_generation.clone(), monitor_phase_a.clone(),
-                                    monitor_grouped_completed.clone(),
+                                    GroupedFixtureCompletion { trace: monitor_trace.clone(), stats: monitor_stats.clone(), page_generation: monitor_generation.clone(), phase: monitor_phase_a.clone(), completed: monitor_grouped_completed.clone() },
                                 ) {
                                     monitor_stats.broken.store(true, Ordering::Release);
                                     monitor_trace.error("broker.phase-a.grouped.dispatch-failed", &reason);
@@ -7382,9 +7833,8 @@ mod host {
             ),
         );
         trace.record("identity.token.begin", "querying current process token");
-        let token = own_token().map_err(|e| {
-            trace.error("identity.token.failed", &e);
-            e
+        let token = own_token().inspect_err(|e| {
+            trace.error("identity.token.failed", e);
         })?;
         trace.record(
             "identity.token.ok",
@@ -7529,18 +7979,16 @@ mod host {
                     }
                 })
                 .build()
-                .map_err(|e| {
-                    setup_trace.error("webview.controller.failed", &error_chain(&e));
-                    e
+                .inspect_err(|e| {
+                    setup_trace.error("webview.controller.failed", &error_chain(e));
                 })?;
                 setup_trace.record("webview.controller.ok", "hidden WebView2 controller created");
                 // Initial about:blank does not necessarily dispatch an ordinary
                 // navigation-completed event. The controller exists here; send
                 // the fixed HTML immediately through the real WebView2 engine.
                 setup_trace.record("webview.eval.begin", "sending fixed HTML into controller");
-                webview.eval(&inject_html).map_err(|e| {
-                    setup_trace.error("webview.eval.failed", &error_chain(&e));
-                    e
+                webview.eval(&inject_html).inspect_err(|e| {
+                    setup_trace.error("webview.eval.failed", &error_chain(e));
                 })?;
                 setup_trace.record("webview.eval.ok", "fixed HTML dispatched to controller");
                 let app = app.handle().clone();
@@ -7828,7 +8276,7 @@ mod host {
                 format!("https://127.0.0.1:1234/document/broker/{NONCE}"),
                 format!("http://127.0.0.1:1234/document/broker/{NONCE}?extra=1"),
                 format!("http://127.0.0.1:1235/document/broker/{NONCE}"),
-                format!("http://127.0.0.1:1234/document/broker/other"),
+                "http://127.0.0.1:1234/document/broker/other".to_owned(),
                 format!("http://example.com:1234/document/broker/{NONCE}"),
             ] {
                 assert!(
@@ -9637,6 +10085,245 @@ mod host {
         }
 
         #[test]
+        fn production_popup_gesture_requires_exact_retained_blank_anchor_and_closed_destination() {
+            let script = DOM_EXACT_POPUP_CLICK_JS;
+            let dispatch = script.find("node.click();").unwrap();
+            let burn = script
+                .find("this.state.changed = true;\n      node.click();")
+                .unwrap();
+            for required in [
+                "this.observer.takeRecords().length",
+                "node.isConnected",
+                "node.ownerDocument !== document",
+                "node.tagName !== 'A'",
+                "node.getAttribute('target').toLowerCase() !== '_blank'",
+                "!node.hasAttribute('target')",
+                "node.hasAttribute('download')",
+                "node.hasAttribute('ping')",
+                "destination.protocol !== 'https:'",
+                "destination.pathname !== '/'",
+                "destination.search !== ''",
+                "destination.hash !== ''",
+                "destination.href !== targetHref",
+            ] {
+                assert!(
+                    script.find(required).is_some_and(|index| index < burn),
+                    "pre-dispatch check missing: {required}"
+                );
+            }
+            assert!(burn < dispatch);
+            assert!(!script.contains("querySelector"));
+            assert!(!script.contains("window.open"));
+            assert!(!script.contains("document.createElement"));
+            let original = "https://source.example/";
+            let target = "https://popup.example/";
+            let raw = serde_json::json!({"result":{"type":"object","value":{
+                "dispatched":true,"targetHref":target
+            }}})
+            .to_string();
+            assert_eq!(
+                parse_dom_popup_activation_response(&raw, original),
+                Ok((
+                    true,
+                    Some(format!("{:x}", Sha256::digest(target.as_bytes())))
+                ))
+            );
+            assert!(
+                parse_dom_activation_response(&raw, original).is_err(),
+                "ordinary click must not inherit popup destination authority"
+            );
+            for denied in [
+                "http://popup.example/",
+                "https://popup.example/path",
+                "https://popup.example/?token=1",
+                "https://user@popup.example/",
+                "javascript:alert(1)",
+            ] {
+                let bad = serde_json::json!({"result":{"type":"object","value":{
+                    "dispatched":true,"targetHref":denied
+                }}})
+                .to_string();
+                assert!(parse_dom_popup_activation_response(&bad, original).is_err());
+            }
+        }
+
+        #[test]
+        fn production_page_popup_intent_is_original_one_use_bounded_and_fail_closed() {
+            let original = "https://example.test/";
+            let target = "https://popup.example.test/";
+            let slot = Mutex::new(PopupExpectation::default());
+            assert!(
+                !register_blocked_popup(&slot, "session", original, original, target, 1),
+                "unsolicited native event cannot grant continuation"
+            );
+            slot.lock().unwrap().arm("approval-1", 1);
+            assert!(!register_blocked_popup(
+                &slot,
+                "session",
+                "https://other.test/",
+                original,
+                target,
+                1
+            ));
+            assert!(!register_blocked_popup(
+                &slot, "session", original, original, target, 2
+            ));
+            for denied in [
+                "http://popup.example.test/",
+                "https://popup.example.test/a",
+                "https://popup.example.test/?x=1",
+                "javascript:alert(1)",
+            ] {
+                assert!(!register_blocked_popup(
+                    &slot, "session", original, original, denied, 1
+                ));
+            }
+            assert!(slot.lock().unwrap().candidate.is_none());
+            assert!(register_blocked_popup(
+                &slot, "session", original, original, target, 1
+            ));
+            assert!(!register_blocked_popup(
+                &slot, "session", original, original, target, 1
+            ));
+            slot.lock().unwrap().finish(
+                "approval-1",
+                Some(format!("{:x}", Sha256::digest(target.as_bytes()))),
+            );
+            let consumed = slot.lock().unwrap().consume().unwrap();
+            assert_eq!(consumed.destination, target);
+            assert_eq!(consumed.source_url, original);
+            assert_eq!(consumed.page_generation, 1);
+            assert_eq!(consumed.id.len(), 64);
+            assert!(slot.lock().unwrap().consume().is_none());
+        }
+
+        #[test]
+        fn production_popup_remaining_lifetime_is_original_and_never_rounded_up() {
+            let started = Instant::now();
+            assert_eq!(popup_remaining_lifetime_ms(started, started), Some(30_000));
+            assert_eq!(
+                popup_remaining_lifetime_ms(started, started + Duration::from_secs(12)),
+                Some(18_000)
+            );
+            assert_eq!(
+                popup_remaining_lifetime_ms(started, started + Duration::from_millis(29_999)),
+                Some(1)
+            );
+            assert_eq!(
+                popup_remaining_lifetime_ms(started, started + Duration::from_micros(29_999_001)),
+                None
+            );
+            assert_eq!(
+                popup_remaining_lifetime_ms(started, started + PRODUCTION_POPUP_LIFETIME),
+                None
+            );
+            assert_eq!(
+                popup_remaining_lifetime_ms(started, started + Duration::from_secs(31)),
+                None
+            );
+            assert_eq!(
+                popup_remaining_lifetime_ms(started + Duration::from_secs(1), started),
+                None
+            );
+            for remaining in [Some(18_000), None] {
+                let reply = ChildPopupCaptureReply {
+                    version: 2,
+                    kind: "popup-capture",
+                    session: "session",
+                    check_sequence: 1,
+                    page_generation: 1,
+                    state: if remaining.is_some() {
+                        "CAPTURED"
+                    } else {
+                        "DENIED"
+                    },
+                    intent_id: remaining.map(|_| "a".repeat(64)),
+                    destination: remaining.map(|_| "https://example.test/".to_owned()),
+                    source_sha256: remaining.map(|_| "b".repeat(64)),
+                    remaining_lifetime_ms: remaining,
+                };
+                let value = serde_json::to_value(reply).unwrap();
+                assert_eq!(
+                    value.get("remainingLifetimeMs").and_then(|v| v.as_u64()),
+                    remaining
+                );
+                assert_eq!(
+                    value.get("remainingLifetimeMs").is_some(),
+                    remaining.is_some()
+                );
+            }
+        }
+
+        #[test]
+        fn production_popup_expectation_requires_matching_dispatch_in_either_order() {
+            let original = "https://example.test/";
+            let target = "https://popup.example.test/";
+            let digest = format!("{:x}", Sha256::digest(target.as_bytes()));
+            let slot = Mutex::new(PopupExpectation::default());
+            for event_first in [true, false] {
+                slot.lock().unwrap().arm("approval", 1);
+                if !event_first {
+                    slot.lock()
+                        .unwrap()
+                        .finish("approval", Some(digest.clone()));
+                }
+                assert!(register_blocked_popup(
+                    &slot, "session", original, original, target, 1
+                ));
+                if event_first {
+                    slot.lock()
+                        .unwrap()
+                        .finish("approval", Some(digest.clone()));
+                }
+                assert_eq!(slot.lock().unwrap().consume().unwrap().destination, target);
+                assert!(!register_blocked_popup(
+                    &slot, "session", original, original, target, 1
+                ));
+            }
+            for failure in [None, Some("wrong-digest".to_owned())] {
+                slot.lock().unwrap().arm("approval", 1);
+                assert!(register_blocked_popup(
+                    &slot, "session", original, original, target, 1
+                ));
+                slot.lock().unwrap().finish("approval", failure);
+                assert!(slot.lock().unwrap().consume().is_none());
+                assert!(!register_blocked_popup(
+                    &slot, "session", original, original, target, 1
+                ));
+            }
+            slot.lock().unwrap().arm("approval", 1);
+            assert!(register_blocked_popup(
+                &slot, "session", original, original, target, 1
+            ));
+            assert!(
+                slot.lock().unwrap().consume().is_none(),
+                "unconfirmed event is burned"
+            );
+            slot.lock()
+                .unwrap()
+                .finish("approval", Some(digest.clone()));
+            assert!(slot.lock().unwrap().consume().is_none());
+            slot.lock().unwrap().arm("approval", 1);
+            slot.lock()
+                .unwrap()
+                .finish("approval", Some(digest.clone()));
+            slot.lock().unwrap().arm.as_mut().unwrap().started =
+                Instant::now() - PRODUCTION_POPUP_LIFETIME - Duration::from_secs(1);
+            assert!(!register_blocked_popup(
+                &slot, "session", original, original, target, 1
+            ));
+            assert!(slot.lock().unwrap().consume().is_none());
+            slot.lock().unwrap().arm("approval", 1);
+            assert!(register_blocked_popup(
+                &slot, "session", original, original, target, 1
+            ));
+            slot.lock().unwrap().finish("approval", Some(digest));
+            slot.lock().unwrap().arm.as_mut().unwrap().started =
+                Instant::now() - PRODUCTION_POPUP_LIFETIME - Duration::from_secs(1);
+            assert!(slot.lock().unwrap().consume().is_none());
+        }
+
+        #[test]
         fn production_popup_download_permission_vetoes_die_on_missing_args_or_hresult() {
             let source = include_str!("clack-browser-host.rs");
             let handlers = [
@@ -9738,8 +10425,15 @@ mod host {
             let css = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET;
             let image = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
             let font = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT;
-            let resource =
-                |method, uri, context| admission.resource(method, uri, original, context);
+            let resource = |method, uri, context| {
+                admission.resource(
+                    method,
+                    uri,
+                    original,
+                    context,
+                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT,
+                )
+            };
             assert_eq!(resource("GET", original, doc), None);
             admission.armed.store(true, Ordering::Release);
             assert_eq!(resource("GET", "https://example.test/site.css", css), None);
@@ -9798,6 +10492,62 @@ mod host {
             assert_eq!(resource("GET", "https://example.test/pixel.png", css), None);
             assert_eq!(
                 resource("GET", "https://example.test/font.woff2", image),
+                None
+            );
+        }
+
+        #[test]
+        fn production_network_admission_denies_non_document_request_sources_before_claim() {
+            let original = "https://example.test/start";
+            let admission = ProductionNetworkAdmission::default();
+            admission.armed.store(true, Ordering::Release);
+            let doc = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT;
+            let image = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE;
+            let document_source = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT;
+            let denied_sources = [
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_NONE,
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER,
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER,
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(3),
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(5),
+                COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS(8),
+            ];
+            for source in denied_sources {
+                assert_eq!(
+                    admission.resource("GET", original, original, doc, source),
+                    None
+                );
+            }
+            assert!(!admission.document_claimed.load(Ordering::Acquire));
+            assert_eq!(
+                admission.resource("GET", original, original, doc, document_source),
+                Some(ProductionResource::Document)
+            );
+            for source in denied_sources {
+                assert_eq!(
+                    admission.resource(
+                        "GET",
+                        "https://example.test/pixel.png",
+                        original,
+                        image,
+                        source
+                    ),
+                    None
+                );
+            }
+            assert!(matches!(
+                admission.resource(
+                    "GET",
+                    "https://example.test/pixel.png",
+                    original,
+                    image,
+                    document_source
+                ),
+                Some(ProductionResource::Passive(_))
+            ));
+            assert_eq!(
+                admission.resource("GET", original, original, doc, document_source),
                 None
             );
         }
@@ -10553,16 +11303,20 @@ mod host {
                 request_id: 7,
                 method: "GET",
                 url: "https://example.test/resource",
+                resource_class: Some("image"),
                 page_generation: Some(3),
             };
             let production = serde_json::to_value(&request).unwrap();
             assert_eq!(production["pageGeneration"], 3);
+            assert_eq!(production["resourceClass"], "image");
             let acceptance = serde_json::to_value(&BrokerRequest {
+                resource_class: None,
                 page_generation: None,
                 ..request
             })
             .unwrap();
             assert!(acceptance.get("pageGeneration").is_none());
+            assert!(acceptance.get("resourceClass").is_none());
             let ack = serde_json::to_value(BrokerComCompletion {
                 version: 1,
                 session: NONCE,

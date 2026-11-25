@@ -43,6 +43,9 @@ param(
     # Independent actual WebView2 programmatic exact-node click/navigation
     # acceptance document. Does not alter the historical recheck fixture.
     [switch] $MinimalClickDocument,
+    # One scriptless original <a target="_blank"> that the native host MUST
+    # veto and capture; it grants no external window or navigation authority.
+    [switch] $MinimalPopupDocument,
     # Physical screenshot privacy-negative: one static HTML document with
     # deliberately synthetic password/hidden fields, no external resources.
     # Kept separate from the prior positive read-only and click fixtures.
@@ -75,6 +78,7 @@ if ($Action -eq 'Help') {
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -PendingDocumentDelayMilliseconds 2500 (one explicitly signaled pending HTTPS / GET for the new cancellation-only test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalRecheckDocument (one static no-subresource HTML page for the separate read-only COM recheck test)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalClickDocument (two bounded static pages for the separate live COM click navigation probe)'
+    Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalPopupDocument (one scriptless native popup intent; never an authorized child)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalSensitiveDocument (one static synthetic credential-control screenshot-denial probe)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalOriginalFormDocument (one static original hidden-only FORM/submitter capture, no POST)'
     Write-Output '.\scripts\Run-Tf4OwnedHttpsFixture.ps1 -Action Serve -MinimalOriginalFormDocument -InteractiveControls (one static named-control FORM capture, no POST)'
@@ -196,7 +200,7 @@ $routes.Add('/page.js', @{ Type = 'application/javascript'; Body = $utf8.GetByte
 $routes.Add('/pixel.png', @{ Type = 'image/png'; Body = $pixelBytes })
 $routes.Add('/font.woff2', @{ Type = 'font/woff2'; Body = $fontBytes })
 if ($MinimalRecheckDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalPopupDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
         throw '-MinimalRecheckDocument cannot combine with CSS redirect or pending-document delay.'
     }
     $minimalHtml = @'
@@ -214,7 +218,7 @@ if ($MinimalRecheckDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($minimalHtml) })
 }
 if ($MinimalClickDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalPopupDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
         throw '-MinimalClickDocument cannot combine with other fixture modes.'
     }
     $clickHtml = @'
@@ -241,8 +245,25 @@ if ($MinimalClickDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($clickHtml) })
     $routes.Add('/clicked', @{ Type = 'text/html'; Body = $utf8.GetBytes($afterHtml) })
 }
+if ($MinimalPopupDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
+        throw '-MinimalPopupDocument cannot combine with other fixture modes.'
+    }
+    $popupHtml = @'
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:,">
+<title>TF4 scriptless page popup capture</title></head><body>
+<main><h1>Original confined opener</h1>
+<a href="https://127.0.0.1/" target="_blank" rel="noopener noreferrer">Request one native popup</a>
+<button type="button" disabled>Never activated</button></main></body></html>
+'@
+    $routes.Clear()
+    $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($popupHtml) })
+}
 if ($MinimalSensitiveDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalPopupDocument -or $MinimalOriginalFormDocument -or $SubmittingFormDocument) {
         throw '-MinimalSensitiveDocument cannot combine with other fixture modes.'
     }
     # The value is synthetic; even this fixture's controlled original bytes
@@ -265,7 +286,7 @@ if ($MinimalSensitiveDocument) {
     $routes.Add('/', @{ Type = 'text/html'; Body = $utf8.GetBytes($sensitiveHtml) })
 }
 if ($MinimalOriginalFormDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalSensitiveDocument -or $SubmittingFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalRecheckDocument -or $MinimalClickDocument -or $MinimalPopupDocument -or $MinimalSensitiveDocument -or $SubmittingFormDocument) {
         throw '-MinimalOriginalFormDocument cannot combine with other fixture modes.'
     }
     $originalFormHtml = @'
@@ -319,7 +340,7 @@ if ($InteractiveControls -and -not $MinimalOriginalFormDocument) {
     throw '-InteractiveControls requires -MinimalOriginalFormDocument.'
 }
 if ($SubmittingFormDocument) {
-    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalRecheckDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument) {
+    if ($CssRedirect -or $PendingDocumentDelayMilliseconds -ne 0 -or $MinimalClickDocument -or $MinimalPopupDocument -or $MinimalRecheckDocument -or $MinimalSensitiveDocument -or $MinimalOriginalFormDocument) {
         throw '-SubmittingFormDocument cannot combine with other fixture modes.'
     }
     $formHtml = @'
@@ -627,7 +648,7 @@ try {
         ' maxHeaderBytes=8192 maxBodyBytes=65536' +
         ' pendingDocumentDelayMs=' + $PendingDocumentDelayMilliseconds)
     Write-Output ('CSS=' + $(if ($CssRedirect) { 'one bounded same-origin 302 to /style.css' } else { 'direct /page.css' }))
-    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalSensitiveDocument) { 'one_synthetic_sensitive_control_denial' } elseif ($MinimalOriginalFormDocument) { 'one_original_hidden_form_capture_no_post' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } elseif ($SubmittingFormDocument) { 'one_bounded_real_post_form' } else { 'original_multiresource' }))
+    Write-Output ('DOCUMENT_MODE=' + $(if ($MinimalRecheckDocument) { 'one_static_no_subresource_html' } elseif ($MinimalSensitiveDocument) { 'one_synthetic_sensitive_control_denial' } elseif ($MinimalOriginalFormDocument) { 'one_original_hidden_form_capture_no_post' } elseif ($MinimalClickDocument) { 'two_static_exact_click_navigation' } elseif ($MinimalPopupDocument) { 'one_scriptless_vetoed_native_popup' } elseif ($SubmittingFormDocument) { 'one_bounded_real_post_form' } else { 'original_multiresource' }))
 
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     while ($clock.Elapsed.TotalSeconds -lt $MaxDurationSeconds -and

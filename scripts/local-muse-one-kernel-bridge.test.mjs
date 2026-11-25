@@ -113,7 +113,7 @@ function scenario({ arm = `TCPARMED ${PID} 11434 4 1 0\n`,
     ['clocks',{sampleCount:3,remoteAnchorMonoUs:100000,
       remoteAnchorUnixUs:1794196108268000,uncertaintyUs:10000}],
   ]);
-  const bridge = createOneMuseKernelBridge({sshKey:'C:\\approved\\id',
+  const bridge = createOneMuseKernelBridge({sshKey:path.join(HERE,'offline-fake-ssh-key'),
     workdir:HERE,start,remoteExec,onOperatorStep,armTimeoutMs:300});
   return {bridge,journal,receipts,calls,children,stages:()=>({data,ready,importer,forwarded})};
 }
@@ -288,7 +288,7 @@ test('actual Node import-kernel receives synthetic FIFO EOF and writes durable k
       return {kernelCompletions:s.kernelCompletions,loss:s.dropped+s.sourceLoss,
         pending:s.activeObservations,durable:s.ok && !s.failed && !s.sourceFailed};
     }};
-    const bridge=createOneMuseKernelBridge({sshKey:'C:\\approved\\id',
+    const bridge=createOneMuseKernelBridge({sshKey:path.join(HERE,'offline-fake-ssh-key'),
       workdir:path.join(HERE,'..'),start,remoteExec,armTimeoutMs:2000});
     const receipts=new Map([
       ['mapping',{ollamaPid:PID}],

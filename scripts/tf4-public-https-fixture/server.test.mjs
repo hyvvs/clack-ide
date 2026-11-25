@@ -10,10 +10,10 @@ import { summarizeOracle } from './verify.mjs';
 const nonce = 'tf4-owned-test-0123456789abcdef';
 const token = 'a'.repeat(64);
 const credential = 'test-synthetic-credential-value-very-long';
-async function setup(run) {
+async function setup(run, fixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), 'clack-tf4-owned-fixture-'));
   const handler = createFixtureHandler({ root, runNonce: nonce, oracleToken: token,
-    syntheticCredential: credential, crossOrigin: 'https://owned-other.example/' });
+    syntheticCredential: credential, crossOrigin: 'https://owned-other.example/', ...fixtureOptions });
   const server = createServer(handler);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -29,6 +29,8 @@ test('independent server oracle, original page fixture and denial boundaries', a
     assert.equal((await req('/')).status, 200);
     const page = await (await req('/')).text();
     assert.match(page, /id="exact-submitter"/);
+    assert.match(page, /id="exact-popup"[^>]*href="\/"[^>]*target="_blank"[^>]*rel="noopener"/,
+      'popup fixture must request an original native blank-target link, not execute page JavaScript');
     assert.match(page, /id="exact-form"[^>]*method="post"[^>]*enctype="application\/x-www-form-urlencoded"[^>]*target="_self"/,
       'positive fixture must obey the fixed native original-FORM contract');
     assert.match(page, /id="replace-original"/);
@@ -71,6 +73,11 @@ test('one accepted form per nonce, durable replay rejection, wrong-body denial',
     assert.equal(oracle.events.filter(e => e.disposition === 'replay-denied').length, 2);
     assert.equal(oracle.events.find(e => e.disposition === 'one-write-accepted').bodyBytes,
       Buffer.byteLength(body));
+    const proof = summarizeOracle(oracle, nonce, 'https://fixture-owned.example');
+    assert.equal(proof.formPostAttempts, 5);
+    assert.equal(proof.formAccepted, 1);
+    assert.equal(proof.replayDenied, 2);
+    assert.equal(proof.legacyUnlinkedWriteOutcomes, 0);
   });
 });
 test('exact upload scope, bounded payload, no replay or unintended writes', async () => {
@@ -114,6 +121,7 @@ test('restart preserves one-use claims and observer distinguishes remote HTTP fr
       const proof = summarizeOracle(record, nonce, 'https://fixture-owned.example');
       assert.equal(proof.formAccepted, 1);
       assert.equal(proof.replayDenied, 1);
+      assert.equal(proof.recordedPostAttempts, 2);
       assert.equal(proof.acceptedWriteEvidence[0].bodySha256.length, 64);
       assert.equal(proof.nativeApprovalOrOriginalNodeCausalityProven, false);
       assert.ok(!JSON.stringify(proof).includes(credential));
@@ -138,6 +146,84 @@ test('client abort during delayed request does not erase independent remote obse
   });
 });
 
+test('held FORM is independently committed before any reply, then survives client disconnect', async () => {
+  await setup(async req => {
+    const controller = new AbortController();
+    const path = `/case/${nonce}/form`;
+    const options = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `nonce=${nonce}&commit=once` };
+    const observe = async () => summarizeOracle(await (await req('/__oracle/receipts', {
+      headers: { authorization: `Bearer ${token}` },
+    })).json(), nonce, 'https://fixture-owned.example');
+    let replied = false;
+    const pending = req(path, { ...options, signal: controller.signal }).then(
+      () => { replied = true; return 'reply'; }, () => 'disconnected');
+    try {
+      const deadline = Date.now() + 3000;
+      let proof;
+      do {
+        proof = await observe();
+        if (proof.formAccepted === 1) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      } while (Date.now() < deadline);
+      assert.equal(proof.formAccepted, 1);
+      assert.equal(proof.recordedPostAttempts, 1);
+      assert.equal(proof.acceptedWriteEvidence[0].responseHoldMs, 30000);
+      assert.equal(replied, false);
+      controller.abort();
+      assert.equal(await pending, 'disconnected');
+      const disconnectDeadline = Date.now() + 3000;
+      do {
+        proof = await observe();
+        if (proof.heldResponseEvidence.length) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      } while (Date.now() < disconnectDeadline);
+      assert.equal(proof.heldResponseEvidence.length, 1);
+      assert.equal(proof.heldResponseEvidence[0].disposition, 'held-response-disconnected');
+      assert.equal(proof.heldResponseEvidence[0].attemptId, proof.acceptedWriteEvidence[0].attemptId);
+      assert.equal(proof.formAccepted, 1);
+      assert.equal(proof.recordedPostAttempts, 1);
+      assert.equal(proof.replayDenied, 0);
+      assert.equal((await req(path, options)).status, 409);
+      proof = await observe();
+      assert.equal(proof.formAccepted, 1);
+      assert.equal(proof.recordedPostAttempts, 2);
+      assert.equal(proof.replayDenied, 1);
+    } finally { controller.abort(); await pending; }
+  }, { formResponseHoldMs: 30000 });
+});
+
+test('bounded hold releases normally; malformed and unrelated POSTs count without leaking inputs', async () => {
+  await setup(async req => {
+    const path = `/case/${nonce}/form`;
+    const options = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `nonce=${nonce}&commit=once` };
+    assert.equal((await req(path + '?secret=PRIVATE_QUERY', options)).status, 400);
+    assert.equal((await req('/PRIVATE_PATH', options)).status, 404);
+    const started = performance.now();
+    assert.equal((await req(path, options)).status, 201);
+    assert.ok(performance.now() - started >= 80);
+    const record = await (await req('/__oracle/receipts', {
+      headers: { authorization: `Bearer ${token}` },
+    })).json();
+    const proof = summarizeOracle(record, nonce, 'https://fixture-owned.example');
+    assert.equal(proof.recordedPostAttempts, 3);
+    assert.equal(proof.formPostAttempts, 2);
+    assert.equal(proof.otherPostAttempts, 1);
+    assert.equal(proof.formAccepted, 1);
+    assert.equal(proof.replayDenied, 0);
+    assert.equal(proof.heldResponseEvidence.length, 1);
+    assert.equal(proof.heldResponseEvidence[0].disposition, 'held-response-release');
+    assert.ok(!JSON.stringify(record).includes('PRIVATE_QUERY'));
+    assert.ok(!JSON.stringify(record).includes('PRIVATE_PATH'));
+    assert.ok(!JSON.stringify(record).includes(options.body));
+    const accepted = record.events.find(e => e.disposition === 'one-write-accepted');
+    assert.throws(() => summarizeOracle({ ...record, events: record.events.filter(
+      e => !(e.disposition === 'post-ingress' && e.attemptId === accepted.attemptId)) },
+      nonce, 'https://fixture-owned.example'), /oracle-write-ingress-mismatch/);
+  }, { formResponseHoldMs: 100 });
+});
+
 test('invalid cross-origin and nonce configuration fails before listener creation', () => {
   const root = mkdtempSync(join(tmpdir(), 'clack-tf4-invalid-fixture-'));
   try {
@@ -151,5 +237,9 @@ test('invalid cross-origin and nonce configuration fails before listener creatio
     }
     assert.throws(() => createFixtureHandler({ root, runNonce: '../other', oracleToken: token,
       syntheticCredential: credential }), /fixture-configuration-invalid/);
+    for (const bad of [-1, 30001, 1.5, NaN, '100']) {
+      assert.throws(() => createFixtureHandler({ root, runNonce: nonce, oracleToken: token,
+        syntheticCredential: credential, formResponseHoldMs: bad }), /fixture-configuration-invalid/);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

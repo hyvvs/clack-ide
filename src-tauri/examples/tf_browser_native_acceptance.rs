@@ -30,6 +30,7 @@ fn request(root: &str, operation: TfBrowserOperation) -> TfBrowserRequest {
         text: None,
         timeout_ms: None,
         max_bytes: None,
+        resource_manifest: None,
     }
 }
 #[tokio::main]

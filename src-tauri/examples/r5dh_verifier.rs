@@ -35,7 +35,8 @@ struct VerificationWire {
 #[serde(deny_unknown_fields)]
 struct AgentWire {
     output: u64,
-    context: u64,
+    #[serde(rename = "context")]
+    _context: u64,
     #[serde(rename = "toolNames")]
     tool_names: Vec<String>,
 }
@@ -152,7 +153,7 @@ fn acceptance_confirmed_agent_variant_match(
         || body["options"]["num_predict"] != contract.agent.output
         || !body["options"]["num_ctx"].as_u64().is_some_and(|ctx|
             contract.calibration.candidates.contains(&ctx) && ctx > contract.agent.output)
-        || !body["tools"].as_array().is_some_and(|tools| !tools.is_empty())
+        || body["tools"].as_array().is_none_or(|tools| tools.is_empty())
     {
         return false;
     }

@@ -20,6 +20,7 @@ pub struct Observed<T> {
     pub observed_at: u64,
 }
 
+#[cfg(windows)]
 impl<T> Observed<T> {
     fn new(value: T, source: &'static str, observed_at: u64) -> Self {
         Self {
@@ -45,6 +46,7 @@ pub struct NativeGpuObservation {
     pub cuda_hardware_capable: Option<Observed<bool>>,
 }
 
+#[cfg(windows)]
 impl NativeGpuObservation {
     fn empty() -> Self {
         Self {
@@ -126,7 +128,7 @@ mod windows_telemetry {
             )
         } != 0
             || !(2..=2048).contains(&size)
-            || size % 2 != 0
+            || !size.is_multiple_of(2)
         {
             return None;
         }
@@ -165,7 +167,7 @@ mod windows_telemetry {
                 &mut bytes,
             );
         }
-        if bytes < 8 || bytes > 4 * 1024 * 1024 {
+        if !(8..=4 * 1024 * 1024).contains(&bytes) {
             return None;
         }
         // Aligned storage: Windows requires native structure alignment.
@@ -203,13 +205,15 @@ mod windows_telemetry {
         (count > 0 && count <= 65_536).then_some(count)
     }
 
-    pub(super) fn cpu() -> (
+    type CpuObservation = (
         Option<Observed<String>>,
         Option<Observed<String>>,
         Option<Observed<usize>>,
         Option<usize>,
         &'static str,
-    ) {
+    );
+
+    pub(super) fn cpu() -> CpuObservation {
         let now = millis();
         let logical = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize;
         let logical = (logical > 0 && logical <= 65_536).then_some(logical);
@@ -550,10 +554,7 @@ mod windows_telemetry {
                     merged[0].total_vram_bytes.as_ref().unwrap().source,
                     NVIDIA_SMI
                 );
-                assert_eq!(
-                    merged[0].cuda_hardware_capable.as_ref().unwrap().value,
-                    true
-                );
+                assert!(merged[0].cuda_hardware_capable.as_ref().unwrap().value);
             }
             let missing_total =
                 parse_nvidia_csv("0, GPU-123456, NVIDIA GPU, N/A, 5000, 616.92, 12.0");

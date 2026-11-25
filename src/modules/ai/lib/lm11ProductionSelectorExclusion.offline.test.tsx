@@ -1,10 +1,11 @@
 /**
- * LM11 T01: ordinary production model-selection exclusion, entirely in memory.
+ * LM11 T01: five ordinary production model-selection exclusion tests in memory,
+ * plus one separately evidence-bound historical assertion.
  *
  * This uses the real, non-feature TypeScript registry/selection functions and
  * the real ModelDropdown renderer. The only mocks adapt Zustand hooks to SSR
- * and expose the normally closed dropdown contents. No acceptance fixture,
- * Tauri host, native command, provider, Store, AppData or network is contacted.
+ * and expose the normally closed dropdown contents. Ordinary tests contact no
+ * acceptance fixture, Tauri host, native command, provider, Store, AppData or network.
  * A deliberately attached in-memory model is a POSITIVE DETECTION CONTROL,
  * never a claim that it was present in normal production preferences.
  */
@@ -83,6 +84,16 @@ import { groupFabricPickerModels, ModelDropdown } from "@/modules/ai/components/
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore } from "@/modules/ai/store/chatStore";
 
+// Ordinary CI does not possess the original Windows Stores. The existing
+// scripts/lm11-production-selector-exclusion.mjs harness supplies the exact
+// BEFORE path; the ordered historical runners do likewise. For a standalone
+// evidence-only Vitest invocation, set CLACK_LM11_T01_EVIDENCE=1 and
+// CLACK_LM11_T01_BEFORE_PATH to the authorized original absolute inventory,
+// then run this file with -t "enumerates REAL production and legacy".
+// Explicit evidence mode without its input MUST fail, never report a skip.
+const historicalEvidenceRequested = process.env.CLACK_LM11_T01_EVIDENCE !== undefined ||
+  process.env.CLACK_LM11_T01_BEFORE_PATH !== undefined;
+
 const fixtureDigest = `sha256:${createHash("sha256")
   .update("CLACK-LM11-SYNTHETIC-NO-MODEL-20261119-v1")
   .digest("hex")}`;
@@ -99,6 +110,18 @@ const control = attachManagedLocalGguf(untouched, {
 function productionStoresWithVerifiedBeforeHashes() {
   const beforePath = process.env.CLACK_LM11_T01_BEFORE_PATH;
   if (!beforePath) throw new Error("T01 blocked: prime's exact T15 BEFORE hash inventory required");
+  const cases = path.resolve("src-tauri/target/lm11-b01-b03-authenticated-webview-20261119/cases");
+  if (process.platform !== "win32" || !path.isAbsolute(beforePath) ||
+      path.basename(beforePath) !== "production-before.json" ||
+      !/^fidelity-audit-[0-9]{17}-[a-f0-9]{12}$/.test(path.basename(path.dirname(beforePath))) ||
+      path.dirname(path.dirname(beforePath)).toLowerCase() !== cases.toLowerCase()) {
+    throw new Error("T01 blocked: exact owned Windows T15 BEFORE inventory required");
+  }
+  const inventory = lstatSync(beforePath);
+  if (!inventory.isFile() || inventory.isSymbolicLink() || inventory.size === 0 ||
+      realpathSync(beforePath).toLowerCase() !== path.resolve(beforePath).toLowerCase()) {
+    throw new Error("T01 blocked: original BEFORE inventory missing or redirected");
+  }
   const source = JSON.parse(readFileSync(beforePath, "utf8")) as {
     phase?: string;
     source?: string;
@@ -128,10 +151,15 @@ function productionStoresWithVerifiedBeforeHashes() {
   ];
   return roots.map(({ key, directory }) => {
     const file = path.join(directory, "terax-settings.json");
-    const record = source.fileOrRegistryEntries?.find((row) =>
+    const records = source.fileOrRegistryEntries?.filter((row) =>
       row.kind === "file" && row.key === `${key}/terax-settings.json`);
+    const record = records?.length === 1 ? records[0] : undefined;
+    if (!record || !/^[0-9a-f]{64}$/.test(record.sha256) ||
+        !Number.isSafeInteger(record.size) || record.size < 0) {
+      throw new Error("T01 blocked: exact unique production/legacy Store hash required");
+    }
     const leaf = lstatSync(file);
-    if (!record || !leaf.isFile() || leaf.isSymbolicLink() ||
+    if (!leaf.isFile() || leaf.isSymbolicLink() ||
         realpathSync(file).toLowerCase() !== path.resolve(file).toLowerCase() ||
         leaf.size !== record.size) {
       throw new Error("T01 blocked: exact production/legacy Store is changed or redirected");
@@ -282,6 +310,10 @@ describe("LM11 T01: ordinary, non-feature production selector exclusion", () => 
     // The test never invokes updateSelfHostedProfiles or any disk persistence.
   });
 
+});
+
+if (historicalEvidenceRequested) {
+  describe("LM11 T01: historical evidence-bound selector exclusion", () => {
   it("enumerates REAL production and legacy persisted IDs through normal selectors without ever registering synthetic fixture", () => {
     // The parent CLI already verified both hash-bound Stores; independently
     // reverify before the offline test reads each original JSON registration.
@@ -371,4 +403,7 @@ describe("LM11 T01: ordinary, non-feature production selector exclusion", () => 
     // Assert counts only: no production IDs or URLs in failure output.
     expect(checked === 2 && rawIdsObserved >= 0).toBe(true);
   });
-});
+  });
+} else {
+  console.info("LM11 T01 HISTORICAL_ACCEPTANCE=NOT_RUN (requires authorized original Windows T15 BEFORE inventory and matching Stores; run the evidence harness separately)");
+}

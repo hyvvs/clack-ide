@@ -14,8 +14,9 @@
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use super::tf_browser_runtime::{
     BrokerResourceReceipt, BrowserRuntimeSession, BrowserRuntimeStart, NativeFormIntent,
-    NativeScreenshotCapture,
+    NativePopupIntent, NativeScreenshotCapture,
 };
+use super::tf_browser_runtime::BrowserResourceCapability;
 use super::tf_web::{self, TfWebDnsEvidence, TfWebOperation, TfWebRequest, TfWebState};
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use crate::modules::secrets::{self, SecretsState};
@@ -84,9 +85,9 @@ static APPROVAL_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Sema
 fn confined_runtime_packaged() -> bool {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     {
-        return PINNED_NATIVE_HOST_SHA256.is_some_and(|digest| {
+        PINNED_NATIVE_HOST_SHA256.is_some_and(|digest| {
             digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
-        });
+        })
     }
     #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
     {
@@ -103,6 +104,10 @@ pub enum TfBrowserOperation {
     OpenConfined,
     /// Explicit app-owned isolated tab, never a WebView2 popup or model tool.
     OpenConfinedTab,
+    /// A WebView2 popup *already vetoed* by the original confined host.
+    /// Requires the one-use native popup intent and fresh visible consent;
+    /// reuses OpenConfinedTab's independent AppContainer/UDF child launcher.
+    OpenRequestedPopup,
     /// Internal application-owned native observation, deliberately absent
     /// from current model tool registration until full TF4 acceptance.
     ObserveConfined,
@@ -115,6 +120,10 @@ pub enum TfBrowserOperation {
     /// trusted application owner; deliberately NOT registered as a model tool.
     CloseConfined,
     Click,
+    /// Explicitly consented original retained <a target="_blank"> gesture.
+    /// It may only create a vetoed native popup intent; launching the child
+    /// independently requires OpenRequestedPopup and fresh central consent.
+    TriggerPagePopup,
     Type,
     Clear,
     Select,
@@ -140,6 +149,7 @@ impl TfBrowserOperation {
             Self::Open
                 | Self::OpenConfined
                 | Self::OpenConfinedTab
+                | Self::OpenRequestedPopup
                 | Self::Navigate
                 | Self::ClickLink
                 | Self::Back
@@ -148,13 +158,17 @@ impl TfBrowserOperation {
     fn opens_session(self) -> bool {
         matches!(
             self,
-            Self::Open | Self::OpenConfined | Self::OpenConfinedTab
+            Self::Open | Self::OpenConfined | Self::OpenConfinedTab | Self::OpenRequestedPopup
         )
+    }
+    fn opens_child(self) -> bool {
+        matches!(self, Self::OpenConfinedTab | Self::OpenRequestedPopup)
     }
     fn unsupported(self) -> bool {
         matches!(
             self,
             Self::Click
+                | Self::TriggerPagePopup
                 | Self::Type
                 | Self::Clear
                 | Self::Select
@@ -172,6 +186,7 @@ impl TfBrowserOperation {
         matches!(
             self,
             Self::Click
+                | Self::TriggerPagePopup
                 | Self::Type
                 | Self::Clear
                 | Self::Select
@@ -281,7 +296,7 @@ fn read_tag_end(bytes: &[u8], start: usize) -> Option<usize> {
 fn tag_name(tag: &str) -> (String, bool) {
     let raw = tag
         .trim_start()
-        .trim_start_matches(|c: char| c == '/' || c == '!');
+        .trim_start_matches(['/', '!']);
     let closing = tag.trim_start().starts_with('/');
     (
         raw.chars()
@@ -562,8 +577,33 @@ fn consume<'a>(
         if !session_capacity_available(&entries) {
             return Err("browser-session-capacity-exceeded".into());
         }
-        if p.request.operation == TfBrowserOperation::OpenConfinedTab {
+        if p.request.operation.opens_child() {
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            if p.request.operation == TfBrowserOperation::OpenRequestedPopup
+                && p.popup_intent.as_ref().is_none_or(|popup| {
+                    popup.destination != p.url.clone().unwrap_or_default()
+                        || popup.page_generation != 1
+                        || popup.expires_at <= Instant::now()
+                })
+            {
+                return Err("popup-original-intent-not-consumed-before-approval".into());
+            }
             let opener = validate_tab_opener(&entries, &p.request, &p.root, p.revision, false)?;
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            if p.request.operation == TfBrowserOperation::OpenRequestedPopup {
+                let intent = p.popup_intent.as_ref()
+                    .ok_or("popup-original-native-intent-missing")?;
+                let original = entries.sessions.get(&opener)
+                    .ok_or("popup-original-native-opener-expired")?;
+                if intent.id.len() != 64
+                    || !intent.id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                    || intent.source_sha256 != format!(
+                        "{:x}", Sha256::digest(original.snapshot.url.as_bytes())
+                    )
+                {
+                    return Err("popup-original-source-or-intent-identity-changed".into());
+                }
+            }
             entries
                 .sessions
                 .get_mut(&opener)
@@ -703,15 +743,14 @@ fn consume<'a>(
                 return Err("native-transfer-original-consent-page-file-or-origin-stale".into());
             }
         }
-        if p.request.operation == TfBrowserOperation::ClickLink {
-            if p.request.snapshot_id.as_deref() != Some(&session.snapshot.id)
+        if p.request.operation == TfBrowserOperation::ClickLink
+            && (p.request.snapshot_id.as_deref() != Some(&session.snapshot.id)
                 || !session.snapshot.elements.iter().any(|e| {
                     p.request.element_id.as_deref() == Some(e.id.as_str())
                         && Some(e.url.as_str()) == p.url.as_deref()
-                })
-            {
-                return Err("browser-link-evidence-stale".into());
-            }
+                }))
+        {
+            return Err("browser-link-evidence-stale".into());
         }
         if p.request.operation == TfBrowserOperation::Back
             && p.url.as_deref() != session.history.last().map(String::as_str)
@@ -722,13 +761,16 @@ fn consume<'a>(
     }
     let active = Arc::new(Active {
         opens_session: p.request.operation.opens_session(),
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        popup_commit_phase: (p.request.operation == TfBrowserOperation::OpenRequestedPopup)
+            .then(|| AtomicU8::new(NATIVE_CLICK_QUEUED)),
         ..Active::default()
     });
     entries.active.insert(token.to_owned(), active.clone());
     let guard = ActiveGuard {
         state,
         token: token.to_owned(),
-        browser_id: if p.request.operation == TfBrowserOperation::OpenConfinedTab {
+        browser_id: if p.request.operation.opens_child() {
             p.request.browser_session_id.clone()
         } else if p.request.operation.opens_session() {
             None
@@ -822,31 +864,29 @@ pub fn status(
     Ok(TfBrowserStatus {
         available: true,
         exists: item.is_some(),
-        browser_session_id: item.and_then(|_| browser_session_id.map(str::to_owned)),
-        current_url: item.and_then(|s| {
+        browser_session_id: item.and(browser_session_id.map(str::to_owned)),
+        current_url: item.filter(|s| {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-            if s.native.is_some() {
-                None
-            } else {
-                Some(s.snapshot.url.clone())
+            {
+                s.native.is_none()
             }
             #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
             {
-                Some(s.snapshot.url.clone())
+                let _ = s;
+                true
             }
-        }),
-        snapshot_id: item.and_then(|s| {
+        }).map(|s| s.snapshot.url.clone()),
+        snapshot_id: item.filter(|s| {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-            if s.native.is_some() {
-                None
-            } else {
-                Some(s.snapshot.id.clone())
+            {
+                s.native.is_none()
             }
             #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
             {
-                Some(s.snapshot.id.clone())
+                let _ = s;
+                true
             }
-        }),
+        }).map(|s| s.snapshot.id.clone()),
         history_length: item.map_or(0, |s| s.history.len()),
         expires_in_secs: item.map_or(0, |s| {
             s.expires
@@ -891,6 +931,10 @@ pub struct TfBrowserRequest {
     pub workspace_root: String,
     pub browser_session_id: Option<String>,
     pub url: Option<String>,
+    /// Native-only, centrally consented exact passive resource manifest. This
+    /// is NEVER inferred from HTML or allowed on model-facing inert operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_manifest: Option<Vec<BrowserResourceCapability>>,
     /// Native-only exact page owner. Never interpreted as a selector.
     pub page_id: Option<String>,
     pub page_generation: Option<u64>,
@@ -1091,6 +1135,13 @@ enum NativeCommand {
         browser_id: String,
         active: Arc<Active>,
         reply: oneshot::Sender<Result<Tf4ScreenshotEvidence, String>>,
+    },
+    CapturePopup {
+        expected_url: String,
+        reply: oneshot::Sender<Result<Option<NativePopupIntent>, String>>,
+        // The original opener remains reserved until BOTH the approval
+        // future and the serial native actor release this exact capture.
+        _capture_lease: Arc<PopupCaptureReservation>,
     },
     Click {
         token: String,
@@ -1858,6 +1909,8 @@ struct Pending {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     native_action: Option<NativeRetainedAction>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    popup_intent: Option<NativePopupIntent>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     /// Exact *browser-captured* form body, action URL and original Node pair.
     /// Populated before the genuine consent UI; never serialized/model-visible.
     form_intent: Option<NativeFormIntent>,
@@ -1871,6 +1924,10 @@ struct Pending {
 struct Active {
     opens_session: bool,
     cancelled: AtomicBool,
+    // Popup launch and cancellation race at the central commit, not at
+    // native process creation. This phase is separate from DOM actions.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    popup_commit_phase: Option<AtomicU8>,
     /// Linearizes native cancel vs irreversible dispatch. This is a phase
     /// marker on the existing active call, NOT a separate approval token.
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -1884,6 +1941,8 @@ impl Default for Active {
         Self {
             opens_session: false,
             cancelled: AtomicBool::new(false),
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            popup_commit_phase: None,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             native_click_phase: None,
             tf_web_token: Mutex::new(None),
@@ -1899,7 +1958,76 @@ struct Entries {
 }
 #[derive(Default)]
 pub struct TfBrowserState {
-    entries: Mutex<Entries>,
+    entries: Arc<Mutex<Entries>>,
+}
+
+/// Reuses the existing opener busy/native-reserved-action owner. A cancelled
+/// approval future may abandon its reply while the host is still capturing;
+/// the actor's clone retains the lease until that command has terminated.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct PopupCaptureReservation {
+    entries: Arc<Mutex<Entries>>,
+    opener_id: String,
+    token: String,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl PopupCaptureReservation {
+    // This lock linearizes capture admission against pending-token removal
+    // by cancel/reap. Once admitted, the actor retains the busy lease until
+    // the native command terminates, even if the caller abandons its reply.
+    fn admit(&self, expected_url: &str) -> Result<(), String> {
+        let entries = self.entries.lock().map_err(|_| "browser-state-unavailable")?;
+        let pending = entries.pending.get(&self.token).ok_or("popup-capture-pending-revoked")?;
+        if pending.request.operation != TfBrowserOperation::OpenRequestedPopup
+            || !pending.approving || pending.approved || pending.popup_intent.is_some()
+            || pending.expires <= Instant::now() || pending.revision.is_none()
+            || pending.url.as_deref() != Some(expected_url)
+            || pending.request.browser_session_id.as_deref() != Some(self.opener_id.as_str())
+        {
+            return Err("popup-capture-pending-stale".into());
+        }
+        validate_tab_opener(&entries, &pending.request, &pending.root, pending.revision, true)?;
+        if entries.sessions.get(&self.opener_id).and_then(|s| s.native_reserved_action.as_deref())
+            != Some(self.token.as_str()) {
+            return Err("popup-capture-reservation-revoked".into());
+        }
+        Ok(())
+    }
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl Drop for PopupCaptureReservation {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            if let Some(opener) = entries.sessions.get_mut(&self.opener_id) {
+                if opener.native_reserved_action.as_deref() == Some(self.token.as_str()) {
+                    opener.native_reserved_action = None;
+                    opener.busy = false;
+                }
+            }
+        }
+    }
+}
+/// Abandoning the UI approval future burns its pending popup authority. The
+/// native actor independently retains PopupCaptureReservation until the actual
+/// capture completes; dropping this guard must never free that actor's lease.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+struct PopupApprovalAbandonGuard {
+    entries: Arc<Mutex<Entries>>,
+    token: String,
+}
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl Drop for PopupApprovalAbandonGuard {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            if entries.pending.get(&self.token).is_some_and(|pending| {
+                pending.request.operation == TfBrowserOperation::OpenRequestedPopup
+                    && pending.approving
+                    && !pending.approved
+            }) {
+                entries.pending.remove(&self.token);
+            }
+        }
+    }
 }
 
 fn millis() -> u64 {
@@ -2014,6 +2142,103 @@ fn validate_tab_opener(
     Err("tab-opener-confined-owner-required".into())
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn validate_popup_child_scope(
+    entries: &Entries,
+    p: &Pending,
+    active: &Arc<Active>,
+    token: &str,
+    registry: &WorkspaceRegistry,
+) -> Result<(), String> {
+    let intent = p
+        .popup_intent
+        .as_ref()
+        .ok_or("popup-original-native-intent-missing")?;
+    if p.request.operation != TfBrowserOperation::OpenRequestedPopup
+        || !p.approved
+        || p.approving
+        || p.revision.is_none()
+        || p.expires <= Instant::now()
+        || intent.expires_at <= Instant::now()
+        || intent.page_generation != 1
+        || Some(intent.destination.as_str()) != p.url.as_deref()
+        || intent.id.len() != 64
+        || !intent.id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("popup-original-intent-expired-or-scope-changed".into());
+    }
+    if !active.opens_session
+        || active.cancelled.load(Ordering::Acquire)
+        || active.popup_commit_phase.as_ref().is_none_or(|phase| {
+            phase.load(Ordering::Acquire) != NATIVE_CLICK_QUEUED
+        })
+        || entries.active.get(token).is_none_or(|stored| !Arc::ptr_eq(stored, active))
+        || entries.sessions.len() >= MAX_SESSIONS
+        || p.browser_id.as_ref().is_none_or(|id| entries.sessions.contains_key(id))
+        || scope(
+            &p.request.actor,
+            &p.request.session_id,
+            &p.request.workspace_root,
+            registry,
+        )? != p.root
+    {
+        return Err("popup-child-central-reservation-revoked".into());
+    }
+    let opener = validate_tab_opener(entries, &p.request, &p.root, p.revision, true)?;
+    let source = &entries
+        .sessions
+        .get(&opener)
+        .ok_or("popup-original-opener-expired")?
+        .snapshot
+        .url;
+    if intent.source_sha256 != format!("{:x}", Sha256::digest(source.as_bytes())) {
+        return Err("popup-original-source-or-intent-identity-changed".into());
+    }
+    // Scope checks include filesystem canonicalization. Do not let time
+    // spent validating the workspace extend either approval deadline.
+    if intent.expires_at <= Instant::now() || p.expires <= Instant::now() {
+        return Err("popup-original-intent-expired-or-scope-changed".into());
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn commit_popup_child(active: &Active) -> bool {
+    active.popup_commit_phase.as_ref().is_some_and(|phase| {
+        phase.compare_exchange(
+            NATIVE_CLICK_QUEUED,
+            NATIVE_CLICK_DISPATCH_COMMITTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_ok()
+    })
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn popup_child_cancelled(active: &Active) -> bool {
+    active.popup_commit_phase.as_ref().is_some_and(|phase| {
+        phase.load(Ordering::Acquire) == NATIVE_CLICK_CANCELLED
+    })
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+async fn await_popup_child_commit(
+    gate: Option<oneshot::Receiver<()>>,
+    stopped: &mut watch::Receiver<bool>,
+) -> bool {
+    let Some(gate) = gate else {
+        return true;
+    };
+    if *stopped.borrow() {
+        return false;
+    }
+    tokio::select! {
+        biased;
+        _ = stopped.changed() => false,
+        result = gate => result.is_ok() && !*stopped.borrow(),
+    }
+}
+
 // Called under the session lock. A child cannot be opened concurrently with
 // root close: the root is reserved by consume for the entire tab launch.
 fn remove_owned_session_tree(
@@ -2107,6 +2332,8 @@ fn native_retained_action_from_request(
 ) -> Result<NativeRetainedAction, String> {
     match req.operation {
         TfBrowserOperation::Click if req.text.is_none() => Ok(NativeRetainedAction::Click),
+        TfBrowserOperation::TriggerPagePopup if req.text.is_none() =>
+            Ok(NativeRetainedAction::PopupClick),
         TfBrowserOperation::Type => {
             let value = req.text.as_deref().ok_or("native-type-text-required")?;
             if !super::tf_browser_runtime::valid_native_type_text(value) {
@@ -2156,11 +2383,21 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
     {
         return Err("browser-bounds-denied".into());
     }
+    if req.resource_manifest.is_some()
+        && !matches!(
+            req.operation,
+            TfBrowserOperation::OpenConfined | TfBrowserOperation::OpenConfinedTab
+                | TfBrowserOperation::OpenRequestedPopup
+        )
+    {
+        return Err("browser-resource-manifest-native-open-only".into());
+    }
     match req.operation {
         TfBrowserOperation::Open
         | TfBrowserOperation::OpenConfined
-        | TfBrowserOperation::OpenConfinedTab => {
-            if (req.operation == TfBrowserOperation::OpenConfinedTab)
+        | TfBrowserOperation::OpenConfinedTab
+        | TfBrowserOperation::OpenRequestedPopup => {
+            if req.operation.opens_child()
                 != req.browser_session_id.is_some()
                 || req.url.is_none()
                 || req.page_id.is_some()
@@ -2175,7 +2412,9 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
             valid_nav_url(req.url.as_deref().unwrap())?;
             if matches!(
                 req.operation,
-                TfBrowserOperation::OpenConfined | TfBrowserOperation::OpenConfinedTab
+                TfBrowserOperation::OpenConfined
+                    | TfBrowserOperation::OpenConfinedTab
+                    | TfBrowserOperation::OpenRequestedPopup
             ) {
                 let target =
                     Url::parse(req.url.as_deref().unwrap()).map_err(|_| "confined-url-invalid")?;
@@ -2193,6 +2432,11 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                     || target.path() != "/"
                 {
                     return Err("confined-initial-https-root-only".into());
+                }
+                if let Some(resources) = req.resource_manifest.as_deref() {
+                    super::tf_browser_runtime::validate_resource_manifest(
+                        target.as_str(), resources
+                    ).map_err(str::to_owned)?;
                 }
             }
         }
@@ -2313,13 +2557,14 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
         operation if operation.native_action() => {
             if req.url.is_some()
                 || req.selector.is_some()
-                || (operation == TfBrowserOperation::Click && req.text.is_some())
+                || (matches!(operation, TfBrowserOperation::Click | TfBrowserOperation::TriggerPagePopup)
+                    && req.text.is_some())
                 || req.page_id.as_deref().is_none_or(|s| !valid_id(s))
                 || req.page_generation.is_none_or(|g| g == 0)
                 || req.snapshot_id.as_deref().is_none_or(|s| !valid_id(s))
                 || req.element_id.as_deref().is_none_or(|s| !valid_id(s))
             {
-                return Err(if operation == TfBrowserOperation::Click {
+                return Err(if matches!(operation, TfBrowserOperation::Click | TfBrowserOperation::TriggerPagePopup) {
                     "native-click-exact-target-required"
                 } else {
                     "native-action-exact-target-required"
@@ -2362,7 +2607,9 @@ pub fn prepare(
     ensure_request_shape(&req)?;
     if matches!(
         req.operation,
-        TfBrowserOperation::OpenConfined | TfBrowserOperation::OpenConfinedTab
+        TfBrowserOperation::OpenConfined
+            | TfBrowserOperation::OpenConfinedTab
+            | TfBrowserOperation::OpenRequestedPopup
     ) && !confined_runtime_packaged()
     {
         return Err("confined-browser-not-packaged-or-security-unaccepted".into());
@@ -2394,7 +2641,7 @@ pub fn prepare(
         if !session_capacity_available(&entries) {
             return Err("browser-session-capacity-exceeded".into());
         }
-        let revision = if req.operation == TfBrowserOperation::OpenConfinedTab {
+        let revision = if req.operation.opens_child() {
             let opener = validate_tab_opener(&entries, &req, &root, None, false)?;
             Some(
                 entries
@@ -2626,6 +2873,7 @@ pub fn prepare(
             && matches!(
                 req.operation,
                 TfBrowserOperation::Click
+                    | TfBrowserOperation::TriggerPagePopup
                     | TfBrowserOperation::Type
                     | TfBrowserOperation::Clear
                     | TfBrowserOperation::Select
@@ -2643,6 +2891,7 @@ pub fn prepare(
         if matches!(
             req.operation,
             TfBrowserOperation::Click
+                | TfBrowserOperation::TriggerPagePopup
                 | TfBrowserOperation::Type
                 | TfBrowserOperation::Clear
                 | TfBrowserOperation::Select
@@ -2755,8 +3004,10 @@ pub fn prepare(
             req.operation,
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::OpenConfinedTab
+                | TfBrowserOperation::OpenRequestedPopup
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::TriggerPagePopup
                 | TfBrowserOperation::Type
                 | TfBrowserOperation::Clear
                 | TfBrowserOperation::Select
@@ -2778,8 +3029,10 @@ pub fn prepare(
             req.operation,
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::OpenConfinedTab
+                | TfBrowserOperation::OpenRequestedPopup
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::TriggerPagePopup
                 | TfBrowserOperation::Type
                 | TfBrowserOperation::Clear
                 | TfBrowserOperation::Select
@@ -2819,6 +3072,8 @@ pub fn prepare(
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             native_action,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            popup_intent: None,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             form_intent: None,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             screenshot_scope,
@@ -2849,6 +3104,7 @@ pub fn approve_headless(token: &str, state: &TfBrowserState) -> Result<(), Strin
         p.request.operation,
         TfBrowserOperation::OpenConfined
             | TfBrowserOperation::OpenConfinedTab
+            | TfBrowserOperation::OpenRequestedPopup
             | TfBrowserOperation::ObserveConfined
     ) || p.request.operation.native_action()
     {
@@ -2901,6 +3157,17 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
     let Some(active) = active else {
         return Ok(false);
     };
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if let Some(phase) = active.popup_commit_phase.as_ref() {
+        if phase.compare_exchange(
+            NATIVE_CLICK_QUEUED,
+            NATIVE_CLICK_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_err() {
+            return Ok(false);
+        }
+    }
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     if active.native_click_phase.is_some() {
         // Once the actor commits irreversible dispatch, cancellation cannot
@@ -2973,8 +3240,10 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
             p.request.operation,
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::OpenConfinedTab
+                | TfBrowserOperation::OpenRequestedPopup
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::TriggerPagePopup
                 | TfBrowserOperation::Type
                 | TfBrowserOperation::Clear
                 | TfBrowserOperation::Select
@@ -2996,8 +3265,10 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
             p.request.operation,
             TfBrowserOperation::OpenConfined
                 | TfBrowserOperation::OpenConfinedTab
+                | TfBrowserOperation::OpenRequestedPopup
                 | TfBrowserOperation::ObserveConfined
                 | TfBrowserOperation::Click
+                | TfBrowserOperation::TriggerPagePopup
                 | TfBrowserOperation::Type
                 | TfBrowserOperation::Clear
                 | TfBrowserOperation::Select
@@ -3198,7 +3469,9 @@ async fn execute_confined_native(
     let (p, active, _guard) = consume(token, registry, state)?;
     if !matches!(
         p.request.operation,
-        TfBrowserOperation::OpenConfined | TfBrowserOperation::OpenConfinedTab
+        TfBrowserOperation::OpenConfined
+            | TfBrowserOperation::OpenConfinedTab
+            | TfBrowserOperation::OpenRequestedPopup
     ) {
         return Err("confined-native-request-type-changed".into());
     }
@@ -3242,20 +3515,37 @@ async fn execute_confined_native(
         session_id: p.request.session_id.clone(),
         workspace_root: p.root.clone(),
         initial_url: p.url.clone().ok_or("confined-initial-url-missing")?,
+        // A same-origin passive GET is not an implicit effect grant. Until
+        // the central TF4 UI binds an exact manifest, only the original
+        // approved document can leave the broker.
+        resource_manifest: p.request.resource_manifest.clone().unwrap_or_default(),
         private_parent,
         host_executable,
         host_sha256: pinned.to_owned(),
     };
+    let popup = p.request.operation == TfBrowserOperation::OpenRequestedPopup;
     if active.cancelled.load(Ordering::Acquire) {
         receipt.terminal = "cancelled";
         receipt.reason_code = "confined-cancelled-before-launch".into();
         receipt.uncertainty = "no-browser-created";
+        if popup {
+            receipt.browser_session_id = None;
+        }
         receipt.ended_at = millis();
         return Ok(receipt);
     }
+    // Recheck the consumed central reservation on the actual blocking launch
+    // worker, not merely before scheduling it. No registry/state lock is
+    // held while creating the isolated native process.
+    let launch_popup = popup.then(|| (p.clone(), active.clone(), token.to_owned()));
     let launch_app = app.clone();
     let launch = tauri::async_runtime::spawn_blocking(move || {
         let registry = launch_app.state::<WorkspaceRegistry>();
+        if let Some((pending, active, token)) = launch_popup {
+            let state = launch_app.state::<TfBrowserState>();
+            let entries = state.entries.lock().map_err(|_| "browser-state-unavailable")?;
+            validate_popup_child_scope(&entries, &pending, &active, &token, &registry)?;
+        }
         BrowserRuntimeSession::launch(start, &registry)
     })
     .await
@@ -3263,7 +3553,10 @@ async fn execute_confined_native(
     let mut browser = match launch {
         Ok(browser) => browser,
         Err(reason) => {
-            receipt.terminal = "failed";
+            receipt.terminal = if popup && popup_child_cancelled(&active) { "cancelled" } else { "failed" };
+            if popup {
+                receipt.browser_session_id = None;
+            }
             receipt.reason_code = reason;
             receipt.uncertainty = "native-launch-rejected-before-resource-service";
             receipt.ended_at = millis();
@@ -3271,7 +3564,17 @@ async fn execute_confined_native(
         }
     };
     let mut cancelled = active.cancel_watch.subscribe();
-    let readiness = if *cancelled.borrow() {
+    let popup_ready_scope = if popup {
+        state.entries.lock().map_err(|_| "browser-state-unavailable".to_owned())
+            .and_then(|entries| validate_popup_child_scope(&entries, &p, &active, token, registry))
+    } else {
+        Ok(())
+    };
+    let popup_deadline = p.popup_intent.as_ref().filter(|_| popup)
+        .map(|intent| p.expires.min(intent.expires_at));
+    let readiness = if let Err(reason) = popup_ready_scope {
+        Err(reason)
+    } else if *cancelled.borrow() {
         Err("confined-native-cancelled-during-launch".to_owned())
     } else {
         tokio::select! {
@@ -3280,16 +3583,25 @@ async fn execute_confined_native(
                 let _ = changed;
                 Err("confined-native-cancelled-during-readiness".to_owned())
             }
+            _ = async {
+                match popup_deadline {
+                    Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => Err("popup-original-intent-expired-during-readiness".to_owned()),
         }
     };
     if let Err(reason) = readiness {
         let teardown = browser.shutdown();
-        receipt.terminal = if active.cancelled.load(Ordering::Acquire) {
+        receipt.terminal = if active.cancelled.load(Ordering::Acquire) || (popup && popup_child_cancelled(&active)) {
             "cancelled"
         } else {
             "failed"
         };
         receipt.reason_code = reason;
+        if popup {
+            receipt.browser_session_id = None;
+        }
         receipt.uncertainty = if teardown.is_ok() {
             "native-readiness-failed-owned-job-drained"
         } else {
@@ -3316,10 +3628,23 @@ async fn execute_confined_native(
     let service_app = app.clone();
     let owner_alive = Arc::new(AtomicBool::new(true));
     let running = owner_alive.clone();
+    let (mut popup_commit_tx, popup_commit_rx) = if popup {
+        let (tx, rx) = oneshot::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let task = tauri::async_runtime::spawn(async move {
         // Runs on every normal exit and on panic/unwind; a dead actor must
         // never keep granting fresh actions from an old semantic snapshot.
         let _liveness = NativeOwnerLivenessGuard(running);
+        // Readiness attests the zero-network AppContainer and may enqueue a
+        // native document request. Until the exact central commit signals
+        // this gate, no TF3 dispatch or native control command is serviced.
+        if !await_popup_child_commit(popup_commit_rx, &mut stopped).await {
+            return browser.shutdown()
+                .map_err(|_| "confined-native-job-udf-cleanup-unverified".into());
+        }
         let deadline = tokio::time::Instant::now() + SESSION_TTL;
         let mut terminal = Ok(());
         // A dispatch acknowledgment is not the final click terminal. The
@@ -3444,6 +3769,23 @@ async fn execute_confined_native(
                                             terminal = Err(
                                                 "confined-native-form-capture-uncertain".into(),
                                             );
+                                            break;
+                                        }
+                                    }
+                                }
+                                NativeCommand::CapturePopup { expected_url, reply, _capture_lease } => {
+                                    if !reply.is_closed() {
+                                        if let Err(reason) = _capture_lease.admit(&expected_url) {
+                                            let _ = reply.send(Err(reason));
+                                            continue;
+                                        }
+                                        let captured = browser
+                                            .capture_popup_in_control_turn(&expected_url)
+                                            .await;
+                                        let failed = captured.is_err();
+                                        let _ = reply.send(captured);
+                                        if failed {
+                                            terminal = Err("confined-native-popup-capture-uncertain".into());
                                             break;
                                         }
                                     }
@@ -3860,7 +4202,7 @@ async fn execute_confined_native(
             terminal
         }
     });
-    let native = NativeBackground {
+    let mut native = Some(NativeBackground {
         stop,
         task: Some(task),
         owner_alive,
@@ -3868,61 +4210,106 @@ async fn execute_confined_native(
         turn_requester,
         snapshot,
         receipts,
-    };
+    });
     let id = p
         .browser_id
         .clone()
         .ok_or("confined-native-id-unavailable")?;
-    let mut entries = state
-        .entries
-        .lock()
-        .map_err(|_| "browser-state-unavailable")?;
-    if entries.sessions.len() >= MAX_SESSIONS
-        || active.cancelled.load(Ordering::Acquire)
-        || !registry.is_authorized(&p.root)
-        || (p.request.operation == TfBrowserOperation::OpenConfinedTab
-            && validate_tab_opener(&entries, &p.request, &p.root, p.revision, true).is_err())
-    {
-        // The background task is dropped here; its stop signal revokes the
-        // owner and kill-on-close Job, never admitting a stale session.
-        receipt.terminal = "failed";
-        receipt.reason_code = "confined-native-session-revoked-before-commit".into();
+    let original_url = p.url.clone().ok_or("confined-native-url-unavailable")?;
+    let snapshot_id = nonce()?;
+    let committed = {
+        let mut entries = state.entries.lock().map_err(|_| "browser-state-unavailable")?;
+        let eligible = if popup {
+            validate_popup_child_scope(&entries, &p, &active, token, registry).and_then(|()| {
+                if p.expires <= Instant::now()
+                    || p.popup_intent.as_ref().is_none_or(|intent| intent.expires_at <= Instant::now()) {
+                    return Err("popup-original-intent-expired-before-commit".into());
+                }
+                if !commit_popup_child(&active) {
+                    return Err("popup-child-central-commit-revoked".into());
+                }
+                Ok(())
+            })
+        } else if entries.sessions.len() < MAX_SESSIONS
+                && !active.cancelled.load(Ordering::Acquire)
+                && registry.is_authorized(&p.root)
+                && (!p.request.operation.opens_child()
+                    || validate_tab_opener(&entries, &p.request, &p.root, p.revision, true).is_ok())
+        {
+            Ok(())
+        } else {
+            Err("confined-native-session-revoked-before-commit".into())
+        };
+        if let Err(reason) = eligible {
+            Err(reason)
+        } else {
+            entries.sessions.insert(
+                id.clone(),
+                BrowserSession {
+                    opener_id: if p.request.operation.opens_child() {
+                        p.request.browser_session_id.clone()
+                    } else {
+                        None
+                    },
+                    actor: p.request.actor.clone(),
+                    session_id: p.request.session_id.clone(),
+                    root: p.root.clone(),
+                    snapshot: Snapshot {
+                        id: snapshot_id,
+                        url: original_url,
+                        body: String::new(),
+                        content_sha256: String::new(),
+                        elements: Vec::new(),
+                        content_type: None,
+                        status_code: None,
+                        bytes_received: None,
+                        bytes_retained: 0,
+                        truncated: false,
+                    },
+                    history: Vec::new(),
+                    revision: 1,
+                    busy: false,
+                    native_reserved_action: None,
+                    expires: Instant::now() + SESSION_TTL,
+                    native: native.take(),
+                },
+            );
+            // The insertion and signal share this lock: no observer, close
+            // or other operation can interleave before the gate is released.
+            if let Some(gate) = popup_commit_tx.take() {
+                if gate.send(()).is_err() {
+                    native = entries.sessions.remove(&id)
+                        .and_then(|mut session| session.native.take());
+                    Err("popup-child-service-owner-lost-before-commit".into())
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            }
+        }
+    };
+    if let Err(reason) = committed {
+        drop(popup_commit_tx.take());
+        receipt.terminal = if popup && popup_child_cancelled(&active) { "cancelled" } else { "failed" };
+        receipt.reason_code = reason;
         receipt.uncertainty = "UNKNOWN-native-session-commit-race";
+        if popup {
+            receipt.browser_session_id = None;
+            // Join the denied actor outside the authority mutex. Dropping
+            // the gate cannot authorize service, even if cleanup times out.
+            if let Some(mut rejected) = native.take() {
+                rejected.stop.send_replace(true);
+                if let Some(join) = rejected.task.take() {
+                    if matches!(tokio::time::timeout(Duration::from_secs(7), join).await, Ok(Ok(Ok(())))) {
+                        receipt.uncertainty = "popup-child-not-serviced-owned-job-drained";
+                    }
+                }
+            }
+        }
         receipt.ended_at = millis();
         return Ok(receipt);
     }
-    let original_url = p.url.clone().ok_or("confined-native-url-unavailable")?;
-    entries.sessions.insert(
-        id.clone(),
-        BrowserSession {
-            opener_id: if p.request.operation == TfBrowserOperation::OpenConfinedTab {
-                p.request.browser_session_id.clone()
-            } else {
-                None
-            },
-            actor: p.request.actor.clone(),
-            session_id: p.request.session_id.clone(),
-            root: p.root.clone(),
-            snapshot: Snapshot {
-                id: nonce()?,
-                url: original_url,
-                body: String::new(),
-                content_sha256: String::new(),
-                elements: Vec::new(),
-                content_type: None,
-                status_code: None,
-                bytes_received: None,
-                bytes_retained: 0,
-                truncated: false,
-            },
-            history: Vec::new(),
-            revision: 1,
-            busy: false,
-            native_reserved_action: None,
-            expires: Instant::now() + SESSION_TTL,
-            native: Some(native),
-        },
-    );
     receipt.terminal = "pending";
     receipt.reason_code = "confined-native-appcontainer-ready-broker-serving".into();
     receipt.policy_decision = "allowed";
@@ -4676,6 +5063,7 @@ pub async fn execute(
     match p.request.operation {
         TfBrowserOperation::OpenConfined
         | TfBrowserOperation::OpenConfinedTab
+        | TfBrowserOperation::OpenRequestedPopup
         | TfBrowserOperation::ObserveConfined => {
             // Direct/headless callers have no authenticated installed-app
             // digest, approval context or verified lifecycle owner. No
@@ -5093,12 +5481,95 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         p.approving = true;
         p.clone()
     };
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    let _popup_abandon = (pending.request.operation == TfBrowserOperation::OpenRequestedPopup)
+        .then(|| PopupApprovalAbandonGuard {
+            entries: app.state::<TfBrowserState>().entries.clone(),
+            token: token.clone(),
+        });
     // SUBMIT is the only native effect requiring sensitive successful-control
     // bytes. Fetch the ORIGINAL retained FORM+submitter over the existing
     // serialized host pipe *before* showing the genuine consent dialog.
     // Nothing comes from request.text, a selector, or model-supplied bytes.
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     let mut pending = pending;
+    // A page-requested popup is not an application-created tab. Inspect the
+    // already-vetoed one-use native intent BEFORE asking for consent, under
+    // the original opener's exclusive host turn. The captured destination is
+    // then part of this exact central pending token, never a launch grant.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if pending.request.operation == TfBrowserOperation::OpenRequestedPopup {
+        let (sender, requester, source_sha256, capture_lease) = {
+            let authority = app.state::<TfBrowserState>();
+            let mut entries = authority.entries.lock().map_err(|_| "browser-state-unavailable")?;
+            let current = entries.pending.get(&token).ok_or("popup-pending-consent-lost")?;
+            let opener_id = validate_tab_opener(
+                &entries, &current.request, &current.root, current.revision, false
+            )?;
+            let opener = entries.sessions.get(&opener_id)
+                .ok_or("popup-original-opener-expired")?;
+            let source_sha256 = format!("{:x}", Sha256::digest(opener.snapshot.url.as_bytes()));
+            let owner = opener.native.as_ref()
+                .ok_or("popup-original-native-opener-unavailable")?;
+            if !current.approving || current.approved || current.popup_intent.is_some()
+                || !owner.owner_alive.load(Ordering::Acquire)
+            {
+                return Err("popup-capture-owner-or-token-stale".into());
+            }
+            let sender = owner.command_tx.clone();
+            let requester = owner.turn_requester.clone();
+            let opener = entries.sessions.get_mut(&opener_id)
+                .ok_or("popup-original-opener-expired")?;
+            opener.busy = true;
+            opener.native_reserved_action = Some(token.clone());
+            let capture_lease = Arc::new(PopupCaptureReservation {
+                entries: authority.entries.clone(),
+                opener_id,
+                token: token.clone(),
+            });
+            (sender, requester, source_sha256, capture_lease)
+        };
+        let expected_url = pending.url.clone().ok_or("popup-destination-required")?;
+        let (reply, received) = oneshot::channel();
+        tokio::time::timeout(Duration::from_secs(3), sender.send(
+            NativeCommand::CapturePopup {
+                expected_url: expected_url.clone(), reply,
+                _capture_lease: capture_lease.clone(),
+            }
+        )).await.map_err(|_| "popup-capture-queue-timeout")?
+            .map_err(|_| "popup-capture-queue-closed")?;
+        requester.request();
+        let captured = tokio::time::timeout(Duration::from_secs(18), received)
+            .await.map_err(|_| "popup-capture-timeout")?
+            .map_err(|_| "popup-original-owner-stopped")??
+            .ok_or("popup-no-matching-native-page-request")?;
+        if captured.destination != expected_url || captured.page_generation != 1
+            || captured.source_sha256 != source_sha256 {
+            return Err("popup-captured-destination-or-generation-changed".into());
+        }
+        let authority = app.state::<TfBrowserState>();
+        let mut entries = authority.entries.lock().map_err(|_| "browser-state-unavailable")?;
+        let opener_id = validate_tab_opener(
+            &entries, &pending.request, &pending.root, pending.revision, true
+        )?;
+        if entries.sessions.get(&opener_id)
+            .and_then(|session| session.native_reserved_action.as_deref())
+            != Some(token.as_str())
+        {
+            return Err("popup-capture-original-opener-reservation-changed".into());
+        }
+        let current = entries.pending.get_mut(&token).ok_or("popup-pending-consent-lost")?;
+        if !current.approving || current.approved || current.request_id != pending.request_id
+            || current.request != pending.request || current.revision != pending.revision
+            || current.popup_intent.is_some()
+        {
+            return Err("popup-capture-central-scope-changed".into());
+        }
+        current.popup_intent = Some(captured.clone());
+        pending.popup_intent = Some(captured);
+        drop(entries);
+        drop(capture_lease);
+    }
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     if pending.request.operation == TfBrowserOperation::Submit {
         let (sender, requester, target, action) = {
@@ -5190,6 +5661,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         pending.request.operation,
         TfBrowserOperation::OpenConfined
             | TfBrowserOperation::OpenConfinedTab
+            | TfBrowserOperation::OpenRequestedPopup
             | TfBrowserOperation::ObserveConfined
     ) || pending.request.operation.native_action()
         || {
@@ -5209,10 +5681,14 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             "Start one isolated AppContainer/WebView2 HTTPS session. No native page gesture is authorized by this approval.",
         TfBrowserOperation::OpenConfinedTab =>
             "Open one separate Clack-owned isolated browser session from the exact existing opener. Fresh AppContainer and UDF; no shared cookies, popup, external browser or page gesture. Destination GET may have remote effects.",
+        TfBrowserOperation::OpenRequestedPopup =>
+            "Authorize ONE page-requested popup that the original WebView2 host already vetoed. The exact original host's one-use intent, session, source page epoch, opener revision and destination are bound; launch a NEW independent Clack-owned zero-capability AppContainer and isolated storage. No window/content/permission inheritance. Destination GET can have remote effects; outcome is not assumed read-only.",
         TfBrowserOperation::ObserveConfined =>
             "Read one bounded redacted semantic DOM snapshot from this existing isolated session. No page action is authorized.",
         TfBrowserOperation::Click =>
             "Execute exactly ONE exact retained DOM Node click after the page, snapshot, element, actor, workspace, origin and UNKNOWN effect classification are rechecked. The click can trigger an external effect; dispatch alone is not proof of completion. It cannot be replayed.",
+        TfBrowserOperation::TriggerPagePopup =>
+            "Authorize ONE exact retained original <a target=_blank> activation under the original confined page. The native host must veto NewWindowRequested before capturing its exact one-use destination. This gesture may have external effects, and does NOT authorize opening a new tab. A separate OpenRequestedPopup central approval and destination TF3 re-policy are mandatory. Never replay.",
         TfBrowserOperation::Type =>
             "Insert EXACT approved short printable text into ONE retained non-password text control. Input handlers may have external effects; no automatic replay.",
         TfBrowserOperation::Clear =>
@@ -5241,7 +5717,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
     let native_target_details = if pending.request.operation == TfBrowserOperation::Screenshot
         && pending.screenshot_scope.is_some()
     {
-        let scope = pending.screenshot_scope.as_ref().unwrap();
+        let scope = pending.screenshot_scope.as_ref().ok_or("browser-screenshot-scope-missing")?;
         let file_key = format!("{:x}", Sha256::digest(token.as_bytes()));
         format!(
             "\nExact authenticated page: {} / generation {}\nSnapshot identity: {}\nSource HTTPS origin: {}\nSelected TF2 workspace evidence destination: tf4-browser-screenshot-{}.png\nImage evidence may contain sensitive on-screen content. Authorize only if this workspace is trusted. The model/browser is not granted read access by this approval.\n",
@@ -5264,7 +5740,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         TfBrowserOperation::Download | TfBrowserOperation::Upload
     ) && pending.transfer_scope.is_some()
     {
-        let scope = pending.transfer_scope.as_ref().unwrap();
+        let scope = pending.transfer_scope.as_ref().ok_or("browser-transfer-scope-missing")?;
         let output_key = format!("{:x}", Sha256::digest(token.as_bytes()));
         let file_info = if let Some(file) = scope.upload_file.as_ref() {
             format!(
@@ -5304,6 +5780,8 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             .ok_or("native-action-approved-parameters-missing")?
         {
             NativeRetainedAction::Click => "No additional parameters".to_owned(),
+            NativeRetainedAction::PopupClick =>
+                "Exact retained <a target=_blank> only; host vets HTTPS root destination, vetoes NewWindowRequested, and NEVER launches a child without separate authorization".to_owned(),
             NativeRetainedAction::Type(text) => format!(
                 "EXACT text bytes withheld for privacy ({} UTF-8 bytes, SHA-256 {:x})",
                 text.len(),
@@ -5339,7 +5817,34 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
     };
     #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
     let native_target_details = String::new();
-    let tab_details = if pending.request.operation == TfBrowserOperation::OpenConfinedTab {
+    let resource_details = pending.request.resource_manifest.as_deref().map_or_else(
+        String::new,
+        |resources| {
+            let mut details = String::from(
+                "\nEach exact passive GET below may cause server effects; authorize only once per destination:\n"
+            );
+            for resource in resources {
+                details.push_str(&format!(
+                    "  {:?}, at most {} bytes: {}\n",
+                    resource.class, resource.max_bytes, resource.url
+                ));
+            }
+            details
+        },
+    );
+    let popup_details = if pending.request.operation == TfBrowserOperation::OpenRequestedPopup {
+        #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+        {
+            let captured = pending.popup_intent.as_ref()
+                .ok_or("popup-original-intent-required-before-consent")?;
+            format!("\nVetoed original native popup intent: {}\nOriginal page generation: {}\nOriginal page URL SHA-256: {}\nExact native requested destination: {}\nThis captured intent is one-use and is not itself permission.\n",
+                captured.id, captured.page_generation, captured.source_sha256,
+                captured.destination)
+        }
+        #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+        { String::new() }
+    } else { String::new() };
+    let tab_details = if pending.request.operation.opens_child() {
         format!(
             "\nExact opener: {} / revision {}\nNew isolated session: {}\nDestination: {}\n",
             pending
@@ -5355,11 +5860,11 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         String::new()
     };
     let summary = format!(
-        "Clack {} — allow once?\n\nRequest: {}\nActor: {}\nSession: {}\nWorkspace: {}\nOperation: {:?}\nTarget host: {}\n{}\n{}",
+        "Clack {} — allow once?\n\nRequest: {}\nActor: {}\nSession: {}\nWorkspace: {}\nOperation: {:?}\nTarget host: {}\n{}{}{}{}\n{}",
         if native_confined { "confined native browser scoped operation" } else { "inert-document network navigation" },
         pending.request_id, pending.request.actor, pending.request.session_id,
         pending.root.display(), pending.request.operation, host,
-        format!("{native_target_details}{tab_details}"),
+        native_target_details, tab_details, popup_details, resource_details,
         native_purpose,
     );
     let dialog_app = app.clone();
@@ -5388,6 +5893,12 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         let _ = cancel(&token, &state, &web_state);
         return Err("browser-native-approval-denied".into());
     }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if pending.request.operation == TfBrowserOperation::OpenRequestedPopup
+        && pending.popup_intent.as_ref().is_none_or(|intent| intent.expires_at <= Instant::now())
+    {
+        return Err("popup-one-use-original-intent-expired-during-consent".into());
+    }
     let registry = app.state::<WorkspaceRegistry>();
     let root = scope(
         &pending.request.actor,
@@ -5401,7 +5912,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         .lock()
         .map_err(|_| "browser-state-unavailable")?;
     reap(&mut entries);
-    if pending.request.operation == TfBrowserOperation::OpenConfinedTab {
+    if pending.request.operation.opens_child() {
         validate_tab_opener(&entries, &pending.request, &root, pending.revision, false)?;
     }
     let live = entries
@@ -5420,7 +5931,8 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         || {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             {
-                live.form_intent != pending.form_intent
+                live.popup_intent != pending.popup_intent
+                    || live.form_intent != pending.form_intent
                     || live.screenshot_scope != pending.screenshot_scope
                     || live.credential_scope != pending.credential_scope
                     || live.transfer_scope != pending.transfer_scope
@@ -5469,7 +5981,11 @@ pub async fn tf_browser_execute(
             .get(&token)
             .map(|p| p.request.operation);
         match confined_operation {
-            Some(TfBrowserOperation::OpenConfined | TfBrowserOperation::OpenConfinedTab) => {
+            Some(
+                TfBrowserOperation::OpenConfined
+                | TfBrowserOperation::OpenConfinedTab
+                | TfBrowserOperation::OpenRequestedPopup
+            ) => {
                 return execute_confined_native(&token, &app, &registry, &state).await;
             }
             Some(TfBrowserOperation::ObserveConfined) => {
@@ -5911,6 +6427,7 @@ mod tests {
             workspace_root: root.to_string_lossy().into_owned(),
             browser_session_id: None,
             url: None,
+            resource_manifest: None,
             page_id: None,
             page_generation: None,
             snapshot_id: None,
@@ -5963,6 +6480,141 @@ mod tests {
         );
         (id, sid, link)
     }
+    #[test]
+    fn requested_popup_and_trigger_are_separate_exact_scoped_native_consents() {
+        let (dir, _, state, _) = setup();
+        let (opener, _, _) = fake_session(dir.path(), &state);
+        let mut popup = req(dir.path(), TfBrowserOperation::OpenRequestedPopup);
+        popup.browser_session_id = Some(opener.clone());
+        popup.url = Some("https://popup.example.org/".into());
+        assert!(ensure_request_shape(&popup).is_ok());
+        assert!(popup.operation.opens_child());
+        assert!(popup.operation.approval_required());
+        assert!(!popup.operation.native_action());
+        assert!(popup.operation.network());
+        popup.url = Some("https://popup.example.org/unauthorized".into());
+        assert!(ensure_request_shape(&popup).is_err());
+        popup.url = Some("https://popup.example.org/".into());
+        popup.browser_session_id = None;
+        assert!(ensure_request_shape(&popup).is_err());
+
+        let mut gesture = req(dir.path(), TfBrowserOperation::TriggerPagePopup);
+        gesture.browser_session_id = Some(opener);
+        gesture.page_id = Some(nonce().unwrap());
+        gesture.page_generation = Some(1);
+        gesture.snapshot_id = Some(nonce().unwrap());
+        gesture.element_id = Some(nonce().unwrap());
+        assert!(ensure_request_shape(&gesture).is_ok());
+        assert!(gesture.operation.native_action());
+        assert!(gesture.operation.approval_required());
+        assert!(!gesture.operation.network());
+        assert_eq!(native_retained_action_from_request(&gesture).unwrap(),
+            NativeRetainedAction::PopupClick);
+        gesture.url = Some("https://popup.example.org/".into());
+        assert!(ensure_request_shape(&gesture).is_err());
+        gesture.url = None;
+        gesture.text = Some("window.open".into());
+        assert!(ensure_request_shape(&gesture).is_err());
+        gesture.text = None;
+        gesture.selector = Some("a[target=_blank]".into());
+        assert!(ensure_request_shape(&gesture).is_err());
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn popup_child_commit_scope_denies_expired_intent_and_stale_reservation() {
+        let (dir, registry, state, _) = setup();
+        let (opener, _, _) = fake_session(dir.path(), &state);
+        // Build a pending transaction through the ordinary inert prepare path,
+        // then exercise the private revalidation helper. This test never
+        // grants consent to or fabricates a live native process owner.
+        let mut request = req(dir.path(), TfBrowserOperation::Open);
+        request.url = Some("https://popup.example.org/".into());
+        let prepared = prepare(request, &registry, &state).unwrap();
+        let mut entries = state.entries.lock().unwrap();
+        let mut p = entries.pending.remove(&prepared.token).unwrap();
+        p.approved = true;
+        p.request.operation = TfBrowserOperation::OpenRequestedPopup;
+        p.request.browser_session_id = Some(opener.clone());
+        p.revision = Some(1);
+        entries.sessions.get_mut(&opener).unwrap().busy = true;
+        p.popup_intent = Some(NativePopupIntent {
+            id: "a".repeat(64),
+            destination: p.url.clone().unwrap(),
+            page_generation: 1,
+            source_sha256: format!("{:x}", Sha256::digest(entries.sessions[&opener].snapshot.url.as_bytes())),
+            expires_at: Instant::now(),
+        });
+        let active = Arc::new(Active {
+            opens_session: true,
+            popup_commit_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        entries.active.insert(prepared.token.clone(), active.clone());
+        let check = |entries: &Entries, pending: &Pending| {
+            validate_popup_child_scope(entries, pending, &active, &prepared.token, &registry)
+        };
+        assert_eq!(check(&entries, &p).unwrap_err(), "popup-original-intent-expired-or-scope-changed");
+        p.popup_intent.as_mut().unwrap().expires_at = Instant::now() + Duration::from_secs(25);
+        p.expires = Instant::now();
+        assert_eq!(check(&entries, &p).unwrap_err(), "popup-original-intent-expired-or-scope-changed");
+        p.expires = Instant::now() + Duration::from_secs(25);
+        p.revision = Some(2);
+        assert_eq!(check(&entries, &p).unwrap_err(), "tab-opener-stale-or-scope-denied");
+        p.revision = Some(1);
+        assert_eq!(check(&entries, &p).unwrap_err(), "tab-opener-confined-owner-required");
+        entries.sessions.get_mut(&opener).unwrap().busy = false;
+        assert_eq!(check(&entries, &p).unwrap_err(), "tab-opener-busy-or-reservation-lost");
+        entries.sessions.get_mut(&opener).unwrap().busy = true;
+        entries.active.remove(&prepared.token);
+        assert_eq!(check(&entries, &p).unwrap_err(), "popup-child-central-reservation-revoked");
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[tokio::test]
+    async fn popup_child_commit_gate_never_serves_before_signal_or_after_revocation() {
+        let (stop, mut stopped) = watch::channel(false);
+        let (tx, rx) = oneshot::channel();
+        let mut waiter = tokio::spawn(async move {
+            await_popup_child_commit(Some(rx), &mut stopped).await
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut waiter).await.is_err());
+        tx.send(()).unwrap();
+        assert!(waiter.await.unwrap());
+        let (tx, rx) = oneshot::channel();
+        drop(tx);
+        assert!(!await_popup_child_commit(Some(rx), &mut stop.subscribe()).await);
+        let (tx, rx) = oneshot::channel();
+        stop.send_replace(true);
+        tx.send(()).unwrap();
+        assert!(!await_popup_child_commit(Some(rx), &mut stop.subscribe()).await);
+        // The ordinary OpenConfined / OpenConfinedTab owner has no gate.
+        assert!(await_popup_child_commit(None, &mut stop.subscribe()).await);
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn popup_child_commit_and_cancel_are_mutually_exclusive() {
+        let (_, _, state, web) = setup();
+        for commit_first in [false, true] {
+            let active = Arc::new(Active {
+                opens_session: true,
+                popup_commit_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+                ..Active::default()
+            });
+            state.entries.lock().unwrap().active.insert("popup".into(), active.clone());
+            if commit_first {
+                assert!(commit_popup_child(&active));
+                assert!(!cancel("popup", &state, &web).unwrap());
+                assert!(!active.cancelled.load(Ordering::Acquire));
+            } else {
+                assert!(cancel("popup", &state, &web).unwrap());
+                assert!(!commit_popup_child(&active));
+                assert!(active.cancelled.load(Ordering::Acquire));
+            }
+        }
+    }
+
     #[test]
     fn confined_tab_requires_exact_opener_and_root_https_destination() {
         let (dir, _, state, _) = setup();
@@ -6033,6 +6685,58 @@ mod tests {
         assert!(!session_capacity_available(&entries));
         entries.active.remove("reserved");
         assert!(session_capacity_available(&entries));
+    }
+
+    #[test]
+    fn exact_passive_manifest_requires_native_visible_open_consent_scope() {
+        use super::super::tf_browser_runtime::{
+            BrowserPassiveClass, BrowserResourceCapability,
+        };
+        let (dir, _, _, _) = setup();
+        let mut req = req(dir.path(), TfBrowserOperation::OpenConfined);
+        req.url = Some("https://example.org/".into());
+        req.resource_manifest = Some(vec![
+            BrowserResourceCapability {
+                url: "https://example.org/site.css".into(),
+                class: BrowserPassiveClass::Stylesheet,
+                max_bytes: 1024,
+            },
+        ]);
+        assert!(ensure_request_shape(&req).is_ok());
+        req.resource_manifest.as_mut().unwrap()[0].url =
+            "https://example.org/account/transfer.css".into();
+        // The exact URL *can* be approved if visibly disclosed; its .css
+        // suffix and GET method alone never confer authority.
+        assert!(ensure_request_shape(&req).is_ok());
+        req.resource_manifest.as_mut().unwrap()[0].url =
+            "https://another.example/site.css".into();
+        assert_eq!(
+            ensure_request_shape(&req).unwrap_err(),
+            "browser-resource-manifest-scope-denied"
+        );
+        req.resource_manifest.as_mut().unwrap()[0].url =
+            "https://example.org/site.css".into();
+        req.resource_manifest.as_mut().unwrap()[0].max_bytes = 0;
+        assert_eq!(
+            ensure_request_shape(&req).unwrap_err(),
+            "browser-resource-manifest-scope-denied"
+        );
+        req.resource_manifest.as_mut().unwrap()[0].max_bytes = 1024;
+        req.operation = TfBrowserOperation::Open;
+        assert_eq!(
+            ensure_request_shape(&req).unwrap_err(),
+            "browser-resource-manifest-native-open-only"
+        );
+        req.operation = TfBrowserOperation::Navigate;
+        assert_eq!(
+            ensure_request_shape(&req).unwrap_err(),
+            "browser-resource-manifest-native-open-only"
+        );
+        req.operation = TfBrowserOperation::OpenConfined;
+        assert!(ensure_request_shape(&req).is_ok());
+        let mut wire = serde_json::to_value(&req).unwrap();
+        wire["resourceManifest"][0]["class"] = serde_json::json!("fetch");
+        assert!(serde_json::from_value::<TfBrowserRequest>(wire).is_err());
     }
 
     #[test]
@@ -6165,6 +6869,122 @@ mod tests {
         assert!(consume(&p.token, &registry, &state).is_err());
         assert!(approve_headless(&p.token, &state).is_err());
     }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn popup_abandoned_approval_burns_pending_without_releasing_actor_capture() {
+        let (dir, registry, state, _) = setup();
+        let (opener_id, _, _) = fake_session(dir.path(), &state);
+        let mut request = req(dir.path(), TfBrowserOperation::Open);
+        request.url = Some("https://example.org/popup".into());
+        let prepared = prepare(request, &registry, &state).unwrap();
+        {
+            let mut entries = state.entries.lock().unwrap();
+            let pending = entries.pending.get_mut(&prepared.token).unwrap();
+            pending.request.operation = TfBrowserOperation::OpenRequestedPopup;
+            pending.approving = true;
+            let opener = entries.sessions.get_mut(&opener_id).unwrap();
+            opener.busy = true;
+            opener.native_reserved_action = Some(prepared.token.clone());
+        }
+        let native_actor = PopupCaptureReservation {
+            entries: state.entries.clone(),
+            opener_id: opener_id.clone(),
+            token: prepared.token.clone(),
+        };
+        drop(PopupApprovalAbandonGuard {
+            entries: state.entries.clone(),
+            token: prepared.token.clone(),
+        });
+        {
+            let entries = state.entries.lock().unwrap();
+            assert!(!entries.pending.contains_key(&prepared.token));
+            assert!(entries.sessions.get(&opener_id).unwrap().busy);
+            assert_eq!(entries.sessions.get(&opener_id).unwrap().native_reserved_action.as_deref(),
+                Some(prepared.token.as_str()));
+        }
+        assert_eq!(native_actor.admit("https://example.org/popup").unwrap_err(),
+            "popup-capture-pending-revoked");
+        drop(native_actor);
+        let entries = state.entries.lock().unwrap();
+        assert!(!entries.sessions.get(&opener_id).unwrap().busy);
+        assert!(entries.sessions.get(&opener_id).unwrap().native_reserved_action.is_none());
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn popup_capture_reservation_survives_cancelled_ui_until_actor_finishes() {
+        let (dir, registry, state, web) = setup();
+        let (opener_id, _, _) = fake_session(dir.path(), &state);
+        let mut request = req(dir.path(), TfBrowserOperation::Open);
+        request.url = Some("https://example.org/popup".into());
+        let prepared = prepare(request, &registry, &state).unwrap();
+        {
+            let mut entries = state.entries.lock().unwrap();
+            let opener = entries.sessions.get_mut(&opener_id).unwrap();
+            opener.busy = true;
+            opener.native_reserved_action = Some(prepared.token.clone());
+            entries.pending.get_mut(&prepared.token).unwrap().request.operation =
+                TfBrowserOperation::OpenRequestedPopup;
+        }
+        let ui = Arc::new(PopupCaptureReservation {
+            entries: state.entries.clone(),
+            opener_id: opener_id.clone(),
+            token: prepared.token.clone(),
+        });
+        let native_actor = ui.clone();
+        drop(ui);
+        assert!(state.entries.lock().unwrap().sessions.get(&opener_id).unwrap().busy);
+        // Cancellation consumes the pending approval, but must not grant a
+        // second opener command while native capture is still in flight.
+        assert!(cancel(&prepared.token, &state, &web).unwrap());
+        assert_eq!(native_actor.admit("https://example.org/popup").unwrap_err(), "popup-capture-pending-revoked");
+        assert!(!state.entries.lock().unwrap().pending.contains_key(&prepared.token));
+        assert!(state.entries.lock().unwrap().sessions.get(&opener_id).unwrap().busy);
+        drop(native_actor);
+        let entries = state.entries.lock().unwrap();
+        let opener = entries.sessions.get(&opener_id).unwrap();
+        assert!(!opener.busy);
+        assert!(opener.native_reserved_action.is_none());
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn popup_capture_actor_denies_expired_rebound_and_replayed_pending() {
+        let (dir, registry, state, _) = setup();
+        let (opener_id, _, _) = fake_session(dir.path(), &state);
+        let mut request = req(dir.path(), TfBrowserOperation::Open);
+        request.url = Some("https://example.org/".into());
+        let prepared = prepare(request, &registry, &state).unwrap();
+        {
+            let mut entries = state.entries.lock().unwrap();
+            let opener = entries.sessions.get_mut(&opener_id).unwrap();
+            opener.busy = true;
+            opener.native_reserved_action = Some(prepared.token.clone());
+            let pending = entries.pending.get_mut(&prepared.token).unwrap();
+            pending.request.operation = TfBrowserOperation::OpenRequestedPopup;
+            pending.request.browser_session_id = Some(opener_id.clone());
+            pending.revision = Some(1);
+            pending.approving = true;
+        }
+        let lease = PopupCaptureReservation {
+            entries: state.entries.clone(), opener_id: opener_id.clone(), token: prepared.token.clone(),
+        };
+        assert_eq!(lease.admit("https://different.example.org/").unwrap_err(), "popup-capture-pending-stale");
+        {
+            let mut entries = state.entries.lock().unwrap();
+            entries.sessions.get_mut(&opener_id).unwrap().revision = 2;
+        }
+        assert_eq!(lease.admit("https://example.org/").unwrap_err(), "tab-opener-stale-or-scope-denied");
+        {
+            let mut entries = state.entries.lock().unwrap();
+            entries.sessions.get_mut(&opener_id).unwrap().revision = 1;
+            entries.pending.get_mut(&prepared.token).unwrap().expires = Instant::now();
+        }
+        assert_eq!(lease.admit("https://example.org/").unwrap_err(), "popup-capture-pending-stale");
+        state.entries.lock().unwrap().pending.remove(&prepared.token);
+        assert_eq!(lease.admit("https://example.org/").unwrap_err(), "popup-capture-pending-revoked");
+    }
+
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[test]
     fn native_cancel_tracks_consumed_active_token_without_reissuing_approval() {
@@ -6713,6 +7533,7 @@ mod tests {
         // the inert text browser or bypass the native approval gate.
         for op in [
             TfBrowserOperation::Click,
+            TfBrowserOperation::TriggerPagePopup,
             TfBrowserOperation::Type,
             TfBrowserOperation::Clear,
             TfBrowserOperation::Select,
@@ -6755,6 +7576,7 @@ mod tests {
     fn native_retained_operations_are_exact_scope_only_with_closed_parameters() {
         let (dir, _, _, _) = setup();
         for (operation, text, expected) in [
+            (TfBrowserOperation::TriggerPagePopup, None, NativeRetainedAction::PopupClick),
             (
                 TfBrowserOperation::Type,
                 Some("hello"),
@@ -6985,7 +7807,7 @@ mod tests {
             .insert(outer.clone(), active.clone());
         assert!(cancel(&outer, &state, &web).unwrap());
         assert!(active.cancelled.load(Ordering::SeqCst));
-        assert!(tf_web::cancel(&prepared.token, &web).unwrap() == false);
+        assert!(!tf_web::cancel(&prepared.token, &web).unwrap());
     }
 
     #[test]

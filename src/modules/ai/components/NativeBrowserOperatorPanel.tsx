@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import type { BrowserSessionSummary } from "@/modules/ai/lib/browserRuntimeStatus";
 import { invoke } from "@tauri-apps/api/core";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 /** Explicit human-operated native acceptance surface. This is NOT a model
  * tool or a second approval system: every request uses the existing TF4
@@ -10,12 +10,15 @@ type NativeOperation =
   | "open_confined"
   | "observe_confined"
   | "click"
+  | "trigger_page_popup"
+  | "open_requested_popup"
   | "type"
   | "clear"
   | "select"
   | "check"
   | "uncheck"
   | "scroll"
+  | "submit"
   | "close_confined";
 type Prepared = {
   token: string;
@@ -25,7 +28,7 @@ type Prepared = {
   browserSessionId: string | null;
   engine: string;
 };
-type NativeElement = { elementRef: string; role: string };
+type NativeElement = { elementRef: string; role: string; fieldType?: "submit" };
 export type NativePage = {
   browserSessionId: string;
   pageId: string;
@@ -50,6 +53,12 @@ type NativeReceipt = {
   effectState: string;
   retry?: string;
   autoRetry?: boolean;
+  nativeFormTransport?: {
+    method: string;
+    destinationSha256: string;
+    bodySha256: string;
+    bodyBytes: number;
+  };
   nativePage?: unknown;
   nativeEffectEvidence?: {
     brokerRequestId: number;
@@ -65,7 +74,7 @@ const NATIVE_ENGINE = "confined_webview2_read_only_unaccepted";
 const exactHandle = (raw: unknown): raw is string =>
   typeof raw === "string" && /^[a-f\d]{48}$/i.test(raw);
 const nativeMutation = (operation: NativeOperation): boolean =>
-  ["click", "type", "clear", "select", "check", "uncheck", "scroll"].includes(
+  ["click", "trigger_page_popup", "type", "clear", "select", "check", "uncheck", "scroll", "submit"].includes(
     operation,
   );
 
@@ -85,6 +94,7 @@ export function nativeOperatorRoleAllowed(
 ): boolean {
   switch (operation) {
     case "click":
+    case "trigger_page_popup":
       return role === "link";
     case "type":
     case "clear":
@@ -176,6 +186,9 @@ export function closedNativePage(
     )
       return null;
     elements.push({ elementRef: item.elementRef, role: item.role });
+    if (item.role === "button" && item.fieldType === "submit") {
+      elements[elements.length - 1].fieldType = "submit";
+    }
   }
   return {
     browserSessionId: expectedSession,
@@ -185,6 +198,154 @@ export function closedNativePage(
     origin: page.origin,
     elements,
   };
+}
+
+/** The projection carries original opaque FORM/submitter references but does
+ * not assert their DOM relationship. Native CaptureForm rechecks the actual
+ * original DOM nodes and exposes the POST scope in the genuine OS dialog. */
+export function originalNativeSubmitPair(
+  page: NativePage | null,
+  formRef: string,
+  submitterRef: string,
+): boolean {
+  return !!page && exactHandle(page.pageId) && exactHandle(page.snapshotId) &&
+    Number.isSafeInteger(page.pageGeneration) && page.pageGeneration >= 1 &&
+    exactHandle(formRef) && exactHandle(submitterRef) && formRef !== submitterRef &&
+    page.elements.some((element) => element.elementRef === formRef && element.role === "form") &&
+    page.elements.some((element) => element.elementRef === submitterRef &&
+      element.role === "button" && element.fieldType === "submit");
+}
+
+export type NativePopupAttempt = {
+  openerId: string;
+  sourcePageId: string;
+  sourceSnapshotId: string;
+  sourceGeneration: number;
+  sourceOrigin: string;
+  triggerLinkRef: string;
+  expectedDestination: string;
+};
+
+/** This is an observed *attempt*, NOT a native popup intent ID. Native must
+ * capture and match the already-vetoed original intent after fresh consent. */
+export function pendingOriginalPopupAttempt(
+  page: NativePage | null,
+  link: NativeElement | null,
+  expectedDestination: string,
+  receipt: NativeReceipt,
+): NativePopupAttempt | null {
+  if (page?.pageGeneration !== 1 || !link || link.role !== "link" ||
+      !page.elements.some((item) => item.elementRef === link.elementRef && item.role === "link") ||
+      !exactHandle(page.browserSessionId) || !exactHandle(page.pageId) ||
+      !exactHandle(page.snapshotId) || !exactHandle(link.elementRef) ||
+      confinedRootUrl(expectedDestination) !== expectedDestination ||
+      receipt.operation !== "trigger_page_popup" ||
+      receipt.toolId !== "tf.browser_operation.v1" ||
+      receipt.engine !== NATIVE_ENGINE ||
+      receipt.browserSessionId !== page.browserSessionId ||
+      receipt.policyDecision !== "allowed" ||
+      receipt.nativeTerminal !== "DISPATCHED" ||
+      receipt.canonicalTerminal !== "UNKNOWN" ||
+      receipt.effectState !== "Unknown" ||
+      receipt.retry !== "NEVER_REPLAY" || receipt.autoRetry !== false) return null;
+  return {
+    openerId: page.browserSessionId, sourcePageId: page.pageId,
+    sourceSnapshotId: page.snapshotId, sourceGeneration: page.pageGeneration,
+    sourceOrigin: page.origin, triggerLinkRef: link.elementRef,
+    expectedDestination,
+  };
+}
+
+/** Prepare accepts the *opener* and expected destination, not a fabricated
+ * popup-intent token or the page's DOM references. Native owns that binding. */
+export function originalNativeOperatorRequest(
+  operation: NativeOperation,
+  scope: { actor: string; sessionId: string; workspaceRoot: string; browserId: string | null },
+  page: NativePage | null,
+  element?: NativeElement,
+  parameters?: string,
+  url?: string,
+  popup?: NativePopupAttempt | null,
+): Record<string, unknown> | null {
+  if (!scope.actor || !scope.sessionId || !scope.workspaceRoot) return null;
+  const base = {
+    operation, actor: scope.actor, sessionId: scope.sessionId,
+    workspaceRoot: scope.workspaceRoot,
+  };
+  if (operation === "open_confined") {
+    const root = confinedRootUrl(url ?? "");
+    return root ? { ...base, url: root } : null;
+  }
+  if (!exactHandle(scope.browserId)) return null;
+  if (operation === "open_requested_popup") {
+    return popup && popup.openerId === scope.browserId &&
+      popup.sourceGeneration === 1 && exactHandle(popup.sourcePageId) &&
+      exactHandle(popup.sourceSnapshotId) && exactHandle(popup.triggerLinkRef) &&
+      confinedRootUrl(popup.expectedDestination) === popup.expectedDestination
+      ? { ...base, browserSessionId: scope.browserId, url: popup.expectedDestination }
+      : null;
+  }
+  if (!nativeMutation(operation)) {
+    return { ...base, browserSessionId: scope.browserId };
+  }
+  if (!page || page.browserSessionId !== scope.browserId ||
+      !element || !exactHandle(element.elementRef) ||
+      !page.elements.some((item) => item.elementRef === element.elementRef && item.role === element.role) ||
+      !exactHandle(page.pageId) || !exactHandle(page.snapshotId) ||
+      !Number.isSafeInteger(page.pageGeneration) || page.pageGeneration < 1) return null;
+  if (operation === "submit") {
+    if (!originalNativeSubmitPair(page, parameters ?? "", element.elementRef)) return null;
+  } else if (!nativeOperatorRoleAllowed(operation, element.role)) return null;
+  if (operation === "trigger_page_popup" &&
+      (page.pageGeneration !== 1 || confinedRootUrl(url ?? "") !== url)) return null;
+  if ((operation === "type" && !boundedNativeTestText(parameters ?? "")) ||
+      (operation === "select" && (!exactHandle(parameters) ||
+        parameters === element.elementRef || !page.elements.some(
+          (item) => item.elementRef === parameters && item.role === "option"))) ||
+      (operation === "scroll" && parameters !== "up" && parameters !== "down") ||
+      (["click", "trigger_page_popup", "clear", "check", "uncheck"].includes(operation) &&
+        parameters !== undefined)) return null;
+  return {
+    ...base, browserSessionId: scope.browserId, pageId: page.pageId,
+    pageGeneration: page.pageGeneration, snapshotId: page.snapshotId,
+    elementId: element.elementRef,
+    ...(parameters !== undefined ? { text: parameters } : {}),
+  };
+}
+
+/** The native opener is input to a popup request, but the returned prepared
+ * browserSessionId is a newly reserved child. Do not compare the two as tabs. */
+export function preparedNativeOperatorMatches(
+  prepared: Prepared,
+  operation: NativeOperation,
+  originalBrowserId: string | null,
+): boolean {
+  const opensSession = operation === "open_confined" || operation === "open_requested_popup";
+  return exactHandle(prepared.token) && exactHandle(prepared.requestId) &&
+    prepared.operation === operation && prepared.engine === NATIVE_ENGINE &&
+    prepared.requiresApproval === (operation !== "close_confined") &&
+    (opensSession
+      ? exactHandle(prepared.browserSessionId) &&
+        (operation !== "open_requested_popup" || prepared.browserSessionId !== originalBrowserId)
+      : prepared.browserSessionId === originalBrowserId && exactHandle(originalBrowserId));
+}
+
+export function nativeOperatorReceiptMatches(
+  receipt: NativeReceipt,
+  prepared: Prepared,
+  operation: NativeOperation,
+  scope: { actor: string; sessionId: string; browserId: string | null },
+): boolean {
+  const opensSession = operation === "open_confined" || operation === "open_requested_popup";
+  return receipt.toolId === "tf.browser_operation.v1" &&
+    receipt.requestId === prepared.requestId && receipt.actor === scope.actor &&
+    receipt.sessionId === scope.sessionId && receipt.operation === operation &&
+    receipt.engine === NATIVE_ENGINE && receipt.autoRetry === false &&
+    (opensSession
+      ? exactHandle(prepared.browserSessionId) &&
+        receipt.browserSessionId === prepared.browserSessionId &&
+        (operation !== "open_requested_popup" || receipt.browserSessionId !== scope.browserId)
+      : receipt.browserSessionId === scope.browserId && exactHandle(scope.browserId));
 }
 
 function safeReason(error: unknown): string {
@@ -206,8 +367,9 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     !exactHandle(receipt.requestId) ||
     typeof receipt.operation !== "string" ||
     ![
-      "open_confined", "observe_confined", "click", "type", "clear",
-      "select", "check", "uncheck", "scroll", "close_confined",
+      "open_confined", "observe_confined", "click", "trigger_page_popup",
+      "open_requested_popup", "type", "clear", "select", "check", "uncheck",
+      "scroll", "submit", "close_confined",
     ].includes(receipt.operation)
   ) return null;
   const closed = (item: unknown, allowed: readonly string[]): string =>
@@ -219,9 +381,15 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     rawEvidence && typeof rawEvidence === "object" && !Array.isArray(rawEvidence)
       ? (rawEvidence as Record<string, unknown>)
       : null;
+  const rawTransport = receipt.nativeFormTransport;
+  const formTransport =
+    receipt.operation === "submit" && rawTransport &&
+    typeof rawTransport === "object" && !Array.isArray(rawTransport)
+      ? (rawTransport as Record<string, unknown>) : null;
   const safe = {
     requestId: receipt.requestId,
     operation: receipt.operation,
+    browserSessionId: exactHandle(receipt.browserSessionId) ? receipt.browserSessionId : null,
     terminal: closed(receipt.terminal, ["success", "completed", "pending", "failed", "denied", "unknown", "cancelled"]),
     nativeTerminal: closed(receipt.nativeTerminal, ["DENIED", "STALE", "CANCELLED_BEFORE_DISPATCH", "FAILED_BEFORE_DISPATCH", "DISPATCHED", "CONFIRMED", "UNKNOWN"]),
     canonicalTerminal: closed(receipt.canonicalTerminal, ["SUCCESS", "FAILED", "CANCELLED", "UNKNOWN"]),
@@ -242,6 +410,14 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
         ? evidence?.observedPageGeneration : null,
     resultingUrlSha256: hash(evidence?.resultingUrlSha256),
     responseSha256: hash(evidence?.responseSha256),
+    originalFormTransport: formTransport ? {
+      method: closed(formTransport.method, ["POST"]),
+      destinationSha256: hash(formTransport.destinationSha256),
+      bodySha256: hash(formTransport.bodySha256),
+      bodyBytes: Number.isSafeInteger(formTransport.bodyBytes) &&
+        Number(formTransport.bodyBytes) >= 0 && Number(formTransport.bodyBytes) <= 65_536
+        ? formTransport.bodyBytes : null,
+    } : null,
   };
   return JSON.stringify(safe, null, 2);
 }
@@ -262,9 +438,16 @@ export function NativeBrowserOperatorPanel({
   const [initialUrl, setInitialUrl] = useState("");
   const [browserId, setBrowserId] = useState<string | null>(null);
   const [page, setPage] = useState<NativePage | null>(null);
+  const [expectedPopupUrl, setExpectedPopupUrl] = useState("");
+  const [popupAttempt, setPopupAttempt] = useState<NativePopupAttempt | null>(null);
+  const [formRef, setFormRef] = useState("");
+  const [submitterRef, setSubmitterRef] = useState("");
   const [testText, setTestText] = useState("");
   const [lastEvidence, setLastEvidence] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Disable the same UI transaction synchronously, before React paints busy.
+  // The native token is still the one-use effect authority.
+  const transactionActive = useRef(false);
   const [result, setResult] = useState("Native browser has not been launched.");
   const nativeSessions = sessions.filter(
     (item) => item.engine === NATIVE_ENGINE,
@@ -275,85 +458,42 @@ export function NativeBrowserOperatorPanel({
     element?: NativeElement,
     parameters?: string,
   ): Promise<void> {
-    if (
-      busy ||
-      !actor ||
-      !sessionId ||
-      !workspaceRoot ||
-      (operation !== "open_confined" && !exactHandle(browserId))
-    )
-      return;
-    const url =
-      operation === "open_confined" ? confinedRootUrl(initialUrl) : null;
-    if (operation === "open_confined" && !url) {
-      setResult(
-        "Enter a HTTPS origin root, with no path, query or credentials.",
-      );
-      return;
-    }
-    if (
-      nativeMutation(operation) &&
-      (!page ||
-        !element ||
-        !nativeOperatorRoleAllowed(operation, element.role) ||
-        !page.elements.some((item) => item.elementRef === element.elementRef))
-    )
-      return;
-    if (
-      (operation === "type" && !boundedNativeTestText(parameters ?? "")) ||
-      (operation === "select" &&
-        (!exactHandle(parameters) ||
-          parameters === element?.elementRef ||
-          !page?.elements.some(
-            (item) => item.elementRef === parameters && item.role === "option",
-          ))) ||
-      (operation === "scroll" &&
-        parameters !== "up" &&
-        parameters !== "down") ||
-      (["click", "clear", "check", "uncheck"].includes(operation) &&
-        parameters !== undefined)
-    ) {
+    if (busy || transactionActive.current) return;
+    const activePage = page;
+    const activeBrowserId = browserId;
+    const request = originalNativeOperatorRequest(
+      operation, { actor, sessionId, workspaceRoot, browserId: activeBrowserId },
+      activePage, element, parameters,
+      operation === "open_confined" ? initialUrl :
+        operation === "trigger_page_popup" ? expectedPopupUrl : undefined,
+      popupAttempt,
+    );
+    if (!request) {
       setResult("Native exact action parameters denied before preparation.");
       return;
     }
+    transactionActive.current = true;
+    const triggeredPopupUrl = operation === "trigger_page_popup" ? expectedPopupUrl : null;
+    // Beginning another operation changes the original opener/snapshot scope.
+    // Never reuse an old trigger attempt, even on denial or transport UNKNOWN.
+    setPopupAttempt(null);
     setBusy(true);
     setLastEvidence(null);
     if (operation === "type") setTestText("");
+    if (nativeMutation(operation)) {
+      setFormRef("");
+      setSubmitterRef("");
+    }
     setResult(
       `Native ${operation.replace(/_/g, " ")} awaiting application authorization…`,
     );
     let preparedToken: string | null = null;
     try {
       const prepared = await invoke<Prepared>("tf_browser_prepare", {
-        request: {
-          operation,
-          actor,
-          sessionId,
-          workspaceRoot,
-          ...(url ? { url } : {}),
-          ...(operation !== "open_confined"
-            ? { browserSessionId: browserId }
-            : {}),
-          ...(nativeMutation(operation) && page && element
-            ? {
-                pageId: page.pageId,
-                pageGeneration: page.pageGeneration,
-                snapshotId: page.snapshotId,
-                elementId: element.elementRef,
-                ...(parameters !== undefined ? { text: parameters } : {}),
-              }
-            : {}),
-        },
+        request,
       });
-      if (
-        !exactHandle(prepared.token) ||
-        !exactHandle(prepared.requestId) ||
-        prepared.operation !== operation ||
-        prepared.engine !== NATIVE_ENGINE ||
-        prepared.requiresApproval !== (operation !== "close_confined") ||
-        (operation !== "open_confined" &&
-          prepared.browserSessionId !== browserId)
-      ) {
+      const isOpen = operation === "open_confined" || operation === "open_requested_popup";
+      if (!preparedNativeOperatorMatches(prepared, operation, activeBrowserId)) {
         throw Error("native-prepared-scope-mismatch");
       }
       preparedToken = prepared.token;
@@ -366,39 +506,56 @@ export function NativeBrowserOperatorPanel({
         token: preparedToken,
       });
       preparedToken = null; // The existing pending token has been burned.
-      if (
-        receipt.toolId !== "tf.browser_operation.v1" ||
-        receipt.requestId !== prepared.requestId ||
-        receipt.actor !== actor ||
-        receipt.sessionId !== sessionId ||
-        receipt.operation !== operation ||
-        receipt.engine !== NATIVE_ENGINE ||
-        (operation !== "open_confined" &&
-          receipt.browserSessionId !== browserId)
-      ) {
+      if (!nativeOperatorReceiptMatches(receipt, prepared, operation,
+        { actor, sessionId, browserId: activeBrowserId })) {
         throw Error("native-effect-receipt-scope-mismatch");
       }
       setLastEvidence(boundedNativeReceiptEvidence(receipt));
-      if (operation === "open_confined") {
+      if (isOpen) {
         if (
           !exactHandle(receipt.browserSessionId) ||
           receipt.terminal !== "pending" ||
-          receipt.policyDecision !== "allowed"
+          receipt.policyDecision !== "allowed" ||
+          receipt.effectState !== "Unknown" ||
+          receipt.autoRetry !== false
         )
           throw Error("native-open-unverified");
         setBrowserId(receipt.browserSessionId);
         setPage(null);
         setResult(
-          "Confined session launched. Observe after the HTTPS document loads; no page action is approved yet.",
+          operation === "open_requested_popup"
+            ? `Separately consented page-requested popup child ${receipt.browserSessionId.slice(0, 10)} launched under the original opener. Independently isolated; document outcome still pending. Observe child before further actions.`
+            : "Confined session launched. Observe after the HTTPS document loads; no page action is approved yet.",
         );
       } else if (operation === "observe_confined") {
-        const found = closedNativePage(receipt.nativePage, browserId as string);
+        const found = closedNativePage(receipt.nativePage, activeBrowserId as string);
         if (receipt.terminal !== "completed" || !found)
           throw Error("native-snapshot-unverified");
         setPage(found);
+        setFormRef("");
+        setSubmitterRef("");
         setResult(
           `Authenticated native snapshot ${found.snapshotId.slice(0, 10)} · ${found.elements.length} bounded elements · ${found.origin}`,
         );
+      } else if (operation === "trigger_page_popup") {
+        const attempted = pendingOriginalPopupAttempt(
+          activePage, element ?? null, triggeredPopupUrl ?? "", receipt,
+        );
+        setPopupAttempt(attempted);
+        setResult(attempted
+          ? "Original-page target=_blank trigger DISPATCHED, effect UNKNOWN. No popup intent ID or child launch is proven. The expected HTTPS root is locked to this attempt; a separate native capture and OS consent must match its original vetoed event. Never replay the trigger."
+          : `Original-page popup trigger not established · ${safeReason(receipt.reasonCode)}. Do not replay an uncertain gesture.`);
+      } else if (operation === "submit") {
+        const transport = receipt.nativeFormTransport;
+        const sent = receipt.nativeTerminal === "DISPATCHED" &&
+          receipt.canonicalTerminal === "UNKNOWN" &&
+          receipt.effectState === "Unknown" &&
+          transport?.method === "POST" &&
+          /^[a-f0-9]{64}$/.test(transport.bodySha256) &&
+          /^[a-f0-9]{64}$/.test(transport.destinationSha256);
+        setResult(sent
+          ? "Original FORM+submitter native POST: TF3 transport receipt observed. Server-side effect UNKNOWN; NEVER REPLAY. Only closed SHA-256 and byte evidence exported."
+          : `Original FORM submission unverified/UNKNOWN · ${safeReason(receipt.reasonCode)}. Never replay a possible write.`);
       } else if (operation === "click") {
         const success =
           receipt.terminal === "success" &&
@@ -421,6 +578,8 @@ export function NativeBrowserOperatorPanel({
       } else {
         setPage(null);
         setBrowserId(null);
+        setFormRef("");
+        setSubmitterRef("");
         setResult(
           receipt.terminal === "completed" && receipt.effectState === "Observed"
             ? "Native Job, profile and UDF closure reported complete."
@@ -442,6 +601,7 @@ export function NativeBrowserOperatorPanel({
       );
       onChanged();
     } finally {
+      transactionActive.current = false;
       setBusy(false);
     }
   }
@@ -465,6 +625,10 @@ export function NativeBrowserOperatorPanel({
           onClick={() => {
             setBrowserId(session.browserSessionId);
             setPage(null);
+            setPopupAttempt(null);
+            setExpectedPopupUrl("");
+            setFormRef("");
+            setSubmitterRef("");
             setResult(
               "Bound to scoped native session. Observe to obtain fresh exact nodes.",
             );
@@ -519,6 +683,21 @@ export function NativeBrowserOperatorPanel({
           Close owned session
         </Button>
       </div>
+      {popupAttempt && browserId === popupAttempt.openerId ? (
+        <section aria-label="Original page popup follow-up" className="space-y-1 rounded border p-2">
+          <p className="font-medium">Stage 2 · original page-requested popup (not an app tab)</p>
+          <p className="text-muted-foreground">
+            Original opener {popupAttempt.openerId.slice(0, 10)} · page {popupAttempt.sourcePageId.slice(0, 10)} · snapshot {popupAttempt.sourceSnapshotId.slice(0, 10)} · generation {popupAttempt.sourceGeneration} · origin {popupAttempt.sourceOrigin}.
+          </p>
+          <p className="text-muted-foreground">
+            Original link {popupAttempt.triggerLinkRef.slice(0, 10)} was dispatched, but the host-vetoed native intent has not been verified in this UI. Expected destination: {popupAttempt.expectedDestination}. Native must capture a fresh matching one-use vetoed intent from this live original opener and display a separate OS approval before launching an isolated child. If the destination or original owner changed, it must deny. No automatic retry.
+          </p>
+          <Button type="button" size="sm" variant="outline" disabled={busy}
+            onClick={() => { void executeOnce("open_requested_popup"); }}>
+            Capture original popup + approve separate child
+          </Button>
+        </section>
+      ) : null}
       {page ? (
         <div className="space-y-1">
           <p className="text-muted-foreground">
@@ -526,6 +705,9 @@ export function NativeBrowserOperatorPanel({
             destinations and values are withheld. Use only your controlled
             test fixture and synthetic, non-secret text. Every action needs
             its own genuine OS approval; UNKNOWN must never be retried.
+          </p>
+          <p className="text-muted-foreground">
+            Original browser {page.browserSessionId.slice(0, 10)} · page {page.pageId.slice(0, 10)} · snapshot {page.snapshotId.slice(0, 10)} · origin {page.origin}.
           </p>
           {page.elements
             .filter((element) => element.role === "link")
@@ -544,6 +726,64 @@ export function NativeBrowserOperatorPanel({
                 Approve exact link {i + 1} · {element.elementRef.slice(0, 8)}
               </Button>
             ))}
+          {page.pageGeneration === 1 && page.elements.some((item) => item.role === "link") ? (
+            <section aria-label="Original page popup trigger" className="space-y-1 rounded border p-2">
+              <p className="font-medium">Stage 1 · original target=_blank page gesture</p>
+              <label className="block text-muted-foreground" htmlFor="tf4-native-popup-destination">
+                Independently known exact expected HTTPS popup origin root (required before triggering)
+              </label>
+              <input id="tf4-native-popup-destination" type="url" value={expectedPopupUrl}
+                autoComplete="off" spellCheck={false} maxLength={2048}
+                disabled={busy} onChange={(event) => setExpectedPopupUrl(event.currentTarget.value)}
+                className="w-full rounded border bg-background px-2 py-1" />
+              <p className="text-muted-foreground">
+                These are opaque original links, not verified target=_blank candidates. Native rejects other roles/targets. The first approval only tries the original gesture and does not authorize a popup. No URL, scripting or fabricated intent is sent with that trigger.
+              </p>
+              {page.elements.filter((item) => item.role === "link").slice(0, 8).map((item, i) => (
+                <Button key={item.elementRef} type="button" size="sm" variant="outline"
+                  disabled={busy || confinedRootUrl(expectedPopupUrl) !== expectedPopupUrl}
+                  onClick={() => { void executeOnce("trigger_page_popup", item); }}>
+                  Trigger original link {i + 1} · {item.elementRef.slice(0, 8)} + approve
+                </Button>
+              ))}
+            </section>
+          ) : null}
+          {page.elements.some((item) => item.role === "form") &&
+            page.elements.some((item) => item.role === "button" && item.fieldType === "submit") ? (
+            <section aria-label="Original native form submit" className="space-y-1 rounded border p-2">
+              <p className="font-medium">Original FORM + submitter · native POST</p>
+              <p className="text-muted-foreground">
+                Choose both independently retained original nodes. This snapshot cannot prove which submitter belongs to which FORM: native will reject a mismatch, re-capture original successful controls and show the exact destination and body digest in its OS dialog before any POST. Remote effect stays UNKNOWN; NEVER REPLAY.
+              </p>
+              <label className="block text-muted-foreground" htmlFor="tf4-original-form">Original FORM node</label>
+              <select id="tf4-original-form" className="w-full rounded border bg-background px-2 py-1"
+                value={formRef} disabled={busy} onChange={(event) => setFormRef(event.currentTarget.value)}>
+                <option value="">Select original FORM</option>
+                {page.elements.filter((item) => item.role === "form").slice(0, 8).map((item, i) => (
+                  <option key={item.elementRef} value={item.elementRef}>FORM {i + 1} · {item.elementRef.slice(0, 10)}</option>
+                ))}
+              </select>
+              <label className="block text-muted-foreground" htmlFor="tf4-original-submitter">Original submit button node</label>
+              <select id="tf4-original-submitter" className="w-full rounded border bg-background px-2 py-1"
+                value={submitterRef} disabled={busy} onChange={(event) => setSubmitterRef(event.currentTarget.value)}>
+                <option value="">Select original submitter</option>
+                {page.elements.filter((item) => item.role === "button" && item.fieldType === "submit")
+                  .slice(0, 8).map((item, i) => (
+                    <option key={item.elementRef} value={item.elementRef}>Submitter {i + 1} · {item.elementRef.slice(0, 10)}</option>
+                  ))}
+              </select>
+              <Button type="button" size="sm" variant="outline"
+                disabled={busy || !originalNativeSubmitPair(page, formRef, submitterRef)}
+                onClick={() => {
+                  const submitter = page.elements.find((item) => item.elementRef === submitterRef);
+                  if (submitter) void executeOnce("submit", submitter, formRef);
+                }}>
+                Submit exact original FORM + submitter + OS approval
+              </Button>
+            </section>
+          ) : (
+            <p className="text-muted-foreground">Original FORM submit unavailable: snapshot lacks an exact retained FORM and a button whose native fieldType is submit. No synthetic submitter or payload will be created.</p>
+          )}
           {page.elements.some((element) => element.role === "textbox") ? (
             <>
               <label className="block text-muted-foreground" htmlFor="tf4-native-test-text">

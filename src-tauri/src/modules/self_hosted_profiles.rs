@@ -37,7 +37,7 @@ fn lock_settings_path(
 ) -> Result<File, String> {
     let parent = path.parent().ok_or("Invalid settings parent directory")?;
     fs::create_dir_all(parent).map_err(|_| "Settings lock directory unavailable")?;
-    let file = OpenOptions::new().read(true).write(true).create(true)
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(parent.join(".terax-settings.json.lock"))
         .map_err(|_| "Native settings interprocess lock unavailable")?;
     loop {
@@ -121,11 +121,10 @@ pub fn self_hosted_profiles_startup_storage_check(app: &AppHandle) -> Result<(),
             .next().is_none()
     } else {true};
     let _file_lock = lock_settings_file(app, || true)?;
-    if first_install && !path.exists() {
-        if self_hosted_atomic_file::replace_settings_file(&path,b"{}",||true)
+    if first_install && !path.exists()
+        && self_hosted_atomic_file::replace_settings_file(&path,b"{}",||true)
             != PhysicalOutcome::Crossed {
-            return Err("Fresh authoritative settings initialization failed".into());
-        }
+        return Err("Fresh authoritative settings initialization failed".into());
     }
     settings_from_disk(app).map(|_| ())
 }
@@ -400,6 +399,7 @@ fn native_eligible(gate: &QualificationCasGate, ticket: &QualificationCasTicket)
 /// The native code checks the same monotonic operation gate immediately
 /// before and after the synchronous OS store.save boundary. A save may have
 /// reached the filesystem even if the subsequent acknowledgement is lost.
+#[cfg(test)]
 fn guarded_native_save_checked(
     live: impl Fn() -> bool, save: impl FnOnce() -> Result<(), String>,
 ) -> &'static str {
@@ -432,8 +432,8 @@ fn examine_qualifying_rows(current: &Value, ticket: &QualificationCasTicket)
         for (field, version) in [("qualificationReceipts", 2), ("measurementRuns", 1)] {
             for row in current["fabric"][field].as_array().into_iter().flatten() {
                 let Some(marker) = row.get(QUAL_MARKER) else { continue };
-                if !marker["operationId"].as_str().is_some_and(|s| !s.is_empty()) ||
-                    !marker["nativeEpoch"].as_str().is_some_and(|s| !s.is_empty()) ||
+                if marker["operationId"].as_str().is_none_or(str::is_empty) ||
+                    marker["nativeEpoch"].as_str().is_none_or(str::is_empty) ||
                     !((marker["phase"] == "pending" && row["version"] == 0) ||
                        (marker["phase"] == "acknowledged" && row["version"] == version)) {
                     return "unknown";

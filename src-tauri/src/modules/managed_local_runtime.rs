@@ -233,7 +233,7 @@ pub fn managed_local_runtime_install_cuda_bundles(
     app: AppHandle, engine_zip_path: String, cuda_dll_zip_path: String,
 ) -> Result<(), String> {
     #[cfg(not(windows))]
-    { let _ = (app, engine_zip_path, cuda_dll_zip_path); return Err("CUDA provisioning is Windows x64 only".into()); }
+    { let _ = (app, engine_zip_path, cuda_dll_zip_path); Err("CUDA provisioning is Windows x64 only".into()) }
     #[cfg(windows)]
     {
         if std::env::consts::ARCH != "x86_64" {
@@ -397,7 +397,7 @@ fn gguf_value(reader: &mut impl Read, ty: u32, depth: u8) -> io::Result<Option<S
     let len = match ty {
         0 | 1 | 7 => 1,
         2 | 3 => 2,
-        4 | 5 | 6 => 4,
+        4..=6 => 4,
         10..=12 => 8,
         8 => return gguf_string(reader).map(Some),
         9 => {
@@ -1008,7 +1008,7 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         .ok_or_else(invalid)?;
     let digest = artifact["digest"].as_str().ok_or_else(invalid)?;
     if !digest.strip_prefix("sha256:").is_some_and(valid_hex)
-        || artifact["id"] != json!(["digest", digest]).to_string()
+        || artifact["id"].as_str() != Some(json!(["digest", digest]).to_string().as_str())
     {
         return Err(invalid());
     }
@@ -1075,7 +1075,7 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
             return Err(invalid());
         }
         let gpu_layers = layers as u32;
-        if deployment["id"] != json!(["managed-gguf-cuda", digest, canonical, layers, device, policy]).to_string() {
+        if deployment["id"].as_str() != Some(json!(["managed-gguf-cuda", digest, canonical, layers, device, policy]).to_string().as_str()) {
             return Err(invalid());
         }
         // Zod outputs the schema-defined field order; serde_json map values
@@ -1086,7 +1086,7 @@ fn validate_binding(state: &Value, id: &str, identity: &str) -> Result<BoundDepl
         ("cuda".to_owned(), Some(device.to_owned()), gpu_layers, policy == "allow-compatible", Some(request_json))
     } else {
         if deployment.get("requestedExecution").is_some() || deployment["variantId"].is_string() ||
-           deployment["id"] != json!(["managed-gguf", digest, canonical]).to_string() {
+           deployment["id"].as_str() != Some(json!(["managed-gguf", digest, canonical]).to_string().as_str()) {
             return Err(invalid());
         }
         ("cpu".to_owned(), None, 0, false, None)
@@ -1976,7 +1976,7 @@ fn observed_cuda_offload(logs: &[u8], model: &str) -> Option<u32> {
         line.contains(model));
     let gpu_allocated=output.lines().any(|line| {
         let Some((_,bytes))=line.split_once("CUDA0 model buffer size =") else {return false};
-        bytes.trim().split_whitespace().next().and_then(|number|number.parse::<f64>().ok())
+        bytes.split_whitespace().next().and_then(|number|number.parse::<f64>().ok())
             .is_some_and(|amount|amount.is_finite()&&amount>0.0)
     });
     if !selected || !gpu_allocated {
@@ -1990,7 +1990,7 @@ fn observed_cuda_offload(logs: &[u8], model: &str) -> Option<u32> {
         let layers = used.parse::<u32>().ok()?;
         let possible = total.parse::<u32>().ok()?;
         (layers > 0 && layers <= possible && possible <= 1000).then_some(layers)
-    }).last()
+    }).next_back()
 }
 
 fn verified_selected_engine(app: &AppHandle, backend: &str) -> bool {
@@ -3232,20 +3232,22 @@ mod tests {
 
     #[test]
     fn lifecycle_stop_rotates_epoch_and_clears_ephemeral_process_authority() {
-        let mut active = RuntimeOwner::default();
-        active.state = "Ready";
-        active.epoch = "old-process-epoch".into();
-        active.port = Some(55123);
-        active.key = Some("secret".into());
-        active.alias = Some("clack-model".into());
-        active.deployment = Some(BoundDeployment {
-            id: "one".into(),
-            identity: "bound".into(),
-            digest: format!("sha256:{}", "a".repeat(64)),
-            context: 4096,
-            requested_backend:"cpu".into(),device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
-            persisted_policy:None,
-        });
+        let mut active = RuntimeOwner {
+            state: "Ready",
+            epoch: "old-process-epoch".into(),
+            port: Some(55123),
+            key: Some("secret".into()),
+            alias: Some("clack-model".into()),
+            deployment: Some(BoundDeployment {
+                id: "one".into(),
+                identity: "bound".into(),
+                digest: format!("sha256:{}", "a".repeat(64)),
+                context: 4096,
+                requested_backend:"cpu".into(),device_id:None,gpu_layers:0,cpu_fallback_allowed:false,
+                persisted_policy:None,
+            }),
+            ..Default::default()
+        };
         forget_process(&mut active, "Stopped", None);
         assert_eq!(active.state, "Stopped");
         assert_ne!(active.epoch, "old-process-epoch");
@@ -3476,7 +3478,7 @@ mod tests {
         let request_canonical = format!(
             r#"{{"backend":"cuda","deviceIds":[{}],"gpuLayers":40,"contextLength":2048,"fallback":{{"policy":"disabled"}}}}"#,
             json!(device));
-        let identity = format!("{},{}]", &json!(["clack-this-pc",ENGINE,artifact,
+        let identity = format!("{},{}]", json!(["clack-this-pc",ENGINE,artifact,
             format!("managed-gguf:{digest}"),1,"b12248/cuda",config]).to_string()[..]
             .trim_end_matches(']'),request_canonical);
         let binding = validate_binding(&state,&id,&identity).expect("canonical CUDA deployment");

@@ -427,11 +427,7 @@ fn run_native(
     crate::modules::proc::hide_console(&mut command);
     run_owned_command(
         command,
-        action,
-        cwd,
-        request_id,
-        actor,
-        approved,
+        CommandReceiptScope { action, cwd, request_id, actor, approved },
         cancelled,
         COMMAND_TIMEOUT,
     )
@@ -537,19 +533,25 @@ pub(crate) fn run_bounded_process(
 }
 
 #[cfg(windows)]
+#[derive(Clone, Copy)]
+struct CommandReceiptScope<'a> {
+    action: TfCommandAction,
+    cwd: &'a Path,
+    request_id: &'a str,
+    actor: &'a str,
+    approved: bool,
+}
+
+#[cfg(windows)]
 fn run_owned_command(
     command: std::process::Command,
-    action: TfCommandAction,
-    cwd: &Path,
-    request_id: &str,
-    actor: &str,
-    approved: bool,
+    scope: CommandReceiptScope<'_>,
     cancelled: Arc<AtomicBool>,
     deadline: Duration,
 ) -> Result<TfCommandReceipt, String> {
     let started_at = epoch_ms();
     let result = run_bounded_process(command, cancelled, deadline)?;
-    let (effect, uncertainty) = match (action, result.terminal, result.exit_code) {
+    let (effect, uncertainty) = match (scope.action, result.terminal, result.exit_code) {
         (_, "cancelled_before_spawn", _) => ("none", "none"),
         (TfCommandAction::ReadStatus, "completed", Some(0)) => ("read_only", "none"),
         (TfCommandAction::ReadStatus, _, _) => ("read_only", "execution_incomplete"),
@@ -558,23 +560,7 @@ fn run_owned_command(
         }
         (TfCommandAction::WriteMarker, _, _) => ("unknown", "may_have_written"),
     };
-    Ok(receipt(
-        action,
-        cwd,
-        request_id,
-        actor,
-        approved,
-        started_at,
-        result.terminal,
-        effect,
-        uncertainty,
-        result.pid,
-        result.exit_code,
-        result.stdout,
-        result.stderr,
-        result.stdout_truncated,
-        result.stderr_truncated,
-    ))
+    Ok(receipt(scope, started_at, effect, uncertainty, result))
 }
 
 #[cfg(windows)]
@@ -588,23 +574,17 @@ fn epoch_ms() -> u64 {
 
 #[cfg(windows)]
 fn receipt(
-    action: TfCommandAction,
-    cwd: &Path,
-    request_id: &str,
-    actor: &str,
-    approved: bool,
+    scope: CommandReceiptScope<'_>,
     started_at: u64,
-    terminal: &'static str,
     side_effect: &'static str,
     uncertainty: &'static str,
-    pid: Option<u32>,
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
+    result: BoundedProcessResult,
 ) -> TfCommandReceipt {
     use sha2::{Digest, Sha256};
+    let CommandReceiptScope { action, cwd, request_id, actor, approved } = scope;
+    let BoundedProcessResult {
+        terminal, pid, exit_code, stdout, stderr, stdout_truncated, stderr_truncated,
+    } = result;
     let stdout_sha256 = format!("{:x}", Sha256::digest(stdout.as_bytes()));
     let stderr_sha256 = format!("{:x}", Sha256::digest(stderr.as_bytes()));
     let args = match action {
@@ -1045,11 +1025,13 @@ mod tests {
             .stderr(std::process::Stdio::piped());
         let receipt = run_owned_command(
             command,
-            TfCommandAction::WriteMarker,
-            Path::new(r"C:\"),
-            "test-timeout",
-            "unit",
-            true,
+            CommandReceiptScope {
+                action: TfCommandAction::WriteMarker,
+                cwd: Path::new(r"C:\"),
+                request_id: "test-timeout",
+                actor: "unit",
+                approved: true,
+            },
             Arc::new(AtomicBool::new(false)),
             Duration::from_millis(40),
         )
@@ -1079,11 +1061,13 @@ mod tests {
         });
         let receipt = run_owned_command(
             command,
-            TfCommandAction::ReadStatus,
-            Path::new(r"C:\"),
-            "test-cancel",
-            "unit",
-            false,
+            CommandReceiptScope {
+                action: TfCommandAction::ReadStatus,
+                cwd: Path::new(r"C:\"),
+                request_id: "test-cancel",
+                actor: "unit",
+                approved: false,
+            },
             flag,
             Duration::from_secs(3),
         )

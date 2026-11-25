@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 
 const MAX_BODY = 64 * 1024;
 const MAX_EVENTS = 24 * 1024 * 1024;
+const MAX_FORM_HOLD_MS = 30_000;
 const NONCE = /^[a-z0-9][a-z0-9-]{14,62}[a-z0-9]$/;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const same = (a, b) => typeof a === 'string' && typeof b === 'string'
@@ -21,6 +22,7 @@ function html(run) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Clack TF4 owned fixture</title></head><body>
 <h1>Owned TF4 fixture</h1>
 <a id="exact-navigation" href="/case/${run}/next">Navigate to owned next document</a>
+<a id="exact-popup" href="/" target="_blank" rel="noopener">Request one bounded native popup</a>
 <input id="stable-type" type="text" autocomplete="off" maxlength="128" aria-label="Stable type">
 <label><input id="stable-check" type="checkbox">Stable check</label>
 <select id="stable-select"><option value="a">Alpha</option><option value="b">Beta</option></select>
@@ -58,9 +60,26 @@ function takeBody(req) {
   });
 }
 
-export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCredential, crossOrigin }) {
+// Only a successfully claimed FORM can enter this hold. Disconnect or the
+// bounded deadline removes the timer and listener; neither permits a retry.
+function holdResponse(res, ms) {
+  if (!ms || res.destroyed) return Promise.resolve();
+  return new Promise(resolveHold => {
+    const finish = () => {
+      clearTimeout(timer);
+      res.off('close', finish);
+      resolveHold();
+    };
+    const timer = setTimeout(finish, ms);
+    res.once('close', finish);
+  });
+}
+
+export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCredential, crossOrigin, formResponseHoldMs = 0 }) {
   if (!NONCE.test(runNonce) || !/^[a-f0-9]{64}$/.test(oracleToken)
       || !syntheticCredential || syntheticCredential.length < 24
+      || !Number.isSafeInteger(formResponseHoldMs) || formResponseHoldMs < 0
+      || formResponseHoldMs > MAX_FORM_HOLD_MS
       || (crossOrigin && (() => {
         try {
           const other = new URL(crossOrigin);
@@ -74,6 +93,7 @@ export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCre
   mkdirSync(root, { recursive: true, mode: 0o700 });
   mkdirSync(join(root, 'claims'), { recursive: true, mode: 0o700 });
   const log = join(root, 'events.jsonl');
+  let ingressIncomplete = false;
   if (!existsSync(log)) {
     const fd = openSync(log, 'wx', 0o600);
     closeSync(fd);
@@ -94,6 +114,24 @@ export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCre
   }
   function reject(res, status, reason) { respond(res, status, reason); }
   return async (req, res) => {
+    // Count every parsed HTTP POST before any request validation or body read.
+    // Never retain arbitrary URLs, query strings, headers or raw bodies here.
+    const attemptId = req.method === 'POST' ? randomUUID() : null;
+    if (attemptId) {
+      let path;
+      try { path = new URL(req.url, 'https://fixture.invalid').pathname; }
+      catch { /* unparseable target remains in the redacted other bucket */ }
+      const safePath = [`/case/${runNonce}/form`, `/case/${runNonce}/upload`].includes(path)
+        ? path : '/__other-post';
+      try {
+        logEvent({ runNonce, method: 'POST', path: safePath,
+          disposition: 'post-ingress', attemptId });
+      } catch {
+        // No durable ingress evidence means no effectful admission.
+        ingressIncomplete = true;
+        return reject(res, 503, 'fixture-ingress-unavailable');
+      }
+    }
     // Never allow credentials in URLs, never log authorization header values.
     let url;
     try { url = new URL(req.url, 'https://fixture.invalid'); } catch { return reject(res, 400, 'invalid-url'); }
@@ -102,6 +140,7 @@ export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCre
     }
     if (url.pathname === '/__oracle/receipts' && req.method === 'GET') {
       if (!same(req.headers.authorization, `Bearer ${oracleToken}`)) return reject(res, 403, 'denied');
+      if (ingressIncomplete) return reject(res, 503, 'fixture-ingress-incomplete');
       // Read-only, non-browser-accessible bearer path; no full token or body.
       const events = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(x => JSON.parse(x));
       return respond(res, 200, JSON.stringify({ runNonce, events }), 'application/json');
@@ -134,7 +173,7 @@ export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCre
       try { fd = openSync(claim, 'wx', 0o600); } catch (error) {
         if (error.code === 'EEXIST') {
           logEvent({ runNonce, method: req.method, path: url.pathname, bodySha256, bodyBytes: body.length,
-            status: 409, disposition: 'replay-denied' });
+            status: 409, disposition: 'replay-denied', attemptId });
           return reject(res, 409, 'replay-denied');
         }
         throw error;
@@ -148,8 +187,21 @@ export function createFixtureHandler({ root, runNonce, oracleToken, syntheticCre
         try { fsyncSync(dir); } finally { closeSync(dir); }
       }
       logEvent({ runNonce, method: 'POST', path: url.pathname, bodySha256, bodyBytes: body.length,
-        status: 201, disposition: 'one-write-accepted' });
-      return respond(res, 201, 'accepted');
+        status: 201, disposition: 'one-write-accepted', attemptId,
+        responseHoldMs: action === 'form' ? formResponseHoldMs : 0 });
+      if (action === 'form' && formResponseHoldMs) {
+        await holdResponse(res, formResponseHoldMs);
+        try {
+          logEvent({ runNonce, method: 'POST', path: url.pathname, attemptId,
+            disposition: res.destroyed ? 'held-response-disconnected' : 'held-response-release' });
+        } catch {
+          ingressIncomplete = true;
+          res.destroy();
+          return;
+        }
+      }
+      if (!res.destroyed) return respond(res, 201, 'accepted');
+      return;
     }
     if (req.method !== 'GET') return reject(res, 405, 'method-denied');
     if (action === 'credential') {
@@ -193,7 +245,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       || !env.TF4_FIXTURE_SYNTHETIC_CREDENTIAL) throw new Error('operator-owned-TLS443-config-required');
   const handler = createFixtureHandler({ root: env.TF4_FIXTURE_STATE, runNonce: env.TF4_FIXTURE_RUN_NONCE,
     oracleToken: env.TF4_FIXTURE_ORACLE_TOKEN, syntheticCredential: env.TF4_FIXTURE_SYNTHETIC_CREDENTIAL,
-    crossOrigin: env.TF4_FIXTURE_CROSS_ORIGIN });
+    crossOrigin: env.TF4_FIXTURE_CROSS_ORIGIN,
+    formResponseHoldMs: env.TF4_FIXTURE_FORM_RESPONSE_HOLD_MS === undefined
+      ? 0 : (/^(0|[1-9][0-9]{0,4})$/.test(env.TF4_FIXTURE_FORM_RESPONSE_HOLD_MS)
+        ? Number(env.TF4_FIXTURE_FORM_RESPONSE_HOLD_MS) : NaN) });
   httpsServer({ cert: readFileSync(env.TF4_FIXTURE_TLS_CERT), key: readFileSync(env.TF4_FIXTURE_TLS_KEY),
     minVersion: 'TLSv1.2' }, handler).listen(port, hostname);
 }

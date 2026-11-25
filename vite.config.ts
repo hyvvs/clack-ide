@@ -37,6 +37,13 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
     // Exclude only actual node:test suites, not all scripts/*.test.mjs.
     exclude: [
       ...configDefaults.exclude,
+      // Cargo's target directory contains archived source checkouts and test
+      // evidence from earlier acceptance runs. Those copies are not the live
+      // frontend suite and can execute stale tests against today's workspace.
+      "**/src-tauri/target/**",
+      // The root outputs/ directory is operator-owned generated evidence and
+      // external worktree material, not checked-in application test source.
+      "outputs/**",
       ...nodeNativeScriptSuites(),
     ],
   },

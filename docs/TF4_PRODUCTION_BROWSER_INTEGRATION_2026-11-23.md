@@ -2226,3 +2226,114 @@ separate mandatory release blocker.
   acceptance feature exited **2** before any real host run; the correctly
   feature-gated invocation succeeded. No original physical suite was rerun
   and no 11/11 acceptance was asserted.
+
+### 2026-11-25 continuing TF4 request manifest, popup intent, CI provenance and physical source test
+
+The dirty functional work following branch `7861b0be8318613b29339f9d244b8d24678e86a5`
+is **not** an optimized installable or current installed-production candidate.
+The parent now admits bounded exact HTTPS native-class manifests (CSS, image,
+font; original document one-use), with class-specific bytes, expiry, duplicate
+denial, central consent visibility and TF3 DNS/IP/TLS/network ownership.
+Approved resource retrieval is **potentially effectful**, and GET/MIME/resource
+extensions are not claims of read-only behavior. Native successor documents,
+redirect following and unapproved effectful page-generated requests remain
+**unsupported and denied**, not silently promoted as features.
+
+WebView2 `NewWindowRequested` remains veto-first with no inherited browser.
+A separate central original retained-node `TriggerPagePopup` consent (exact
+connected `<a target="_blank">` HTTPS root destination) creates a bounded,
+one-use **native intent only**. A second, separate `OpenRequestedPopup` central
+consent captures that intent over the existing authenticated exclusive parent
+pipe, checks opener/session/workspace/revision/source SHA-256, original generation,
+destination and expiry, and then uses the existing `OpenConfinedTab` isolated
+child ownership/capacity/cascade cleanup and re-policy; the ordinary app-owned
+tab path is unchanged. Tests prove deny cases, protocol owner forgery rejection,
+scope and request shape, **not positive installed consent-to-child execution**.
+No arbitrary remote page JavaScript was enabled and the operation remains
+ineligible for unaccepted model-facing `CapabilityIndex` promotion.
+
+**Physical source-current proof (NOT installation):** Feature-enabled Windows
+debug `clack-browser-host.exe` built and ran the original opt-in
+`physical_production_owned_https_document_resources_and_dom` on the existing
+temporary owned loopback TLS fixture: 1,263-byte original document and 68-byte
+image completed with native COM/TF3 TLS/DNS evidence; CSS 302 was denied before
+following `/style.css`, `reason=browser-resource-redirect-denied`,
+`retry=NEVER_REPLAY`, `effect=Unknown`; authenticated DOM (15 visited/12
+elements), masked sensitive fields, original snapshot/ref/recheck passed.
+Actual fixture was stopped (`connections=3`, `denied=0`). No public fixture
+was deployed and no real remote write/causal server effect was accepted.
+
+**CI and source test accounting:** The exact completed PR workflow
+`45520904858` FAILED. The protected-main workflow `44994093010` gave the same
+21 Windows WASI failure names and same nine macOS custom-tools failure names;
+protected-main compilation prevented exact main Nextest/Clippy comparisons,
+so these are not declared baseline-equivalent by file identity alone. New
+portable Node selection locally passed **132/132**, plus one separate source
+test, while evidence-bound historical tests remain `NOT_RUN` in ordinary
+clean-runner CI and are explicitly executable only with genuine original
+artifact provenance. The changed CI retains the real Vitest step. Local
+tracked `src/` Vitest still **FAILED 13/4522** (4 skipped; 4505 passed);
+do not convert that to PASS. First 914-case native-feature library run had
+two regressions and both subsequently passed individually; full rerun pending.
+Clippy -D warnings still FAILED locally with further exact errors under
+`src-tauri/target/tf4-clippy-current.log`, without global lint suppression.
+
+**Release boundaries unchanged:** Case 10 before-commit cancellation race and
+case 11 actual post-effect host failure/restart/independent reconciliation are
+**NOT_PROVEN** physically. Previously accepted grouped matrix remains **9/11**.
+All thirteen canonical gates preserve **0 PASS, 5 PARTIAL, 8 BLOCKED**, and
+the installed 17-step E2E is required. Old `ef73c13` optimized package and
+human install request `ur_xu6so3fb407e` cannot be reused as current-source
+acceptance. No new optimized NSIS, new installation request, actual human
+installation, production deployment, CapabilityIndex enablement, TF5/MCP or
+P15 native desktop computer-control work occurred in this continuation.
+Draft PR #46 remains open/unmerged. The Product-wide UI/UX gate remains a
+separate final product release dependency, not a TF4 functional prerequisite.
+
+### 2026-11-25 source-current original page popup physical follow-up (not installed acceptance)
+
+At unchanged branch HEAD `7861b0be8318613b29339f9d244b8d24678e86a5`
+(with **uncommitted task changes**), the opt-in original scriptless
+`target="_blank"` WebView2 popup fixture was exercised on owned loopback
+HTTPS. Two initial probes and one stage-labeled diagnostic probe failed
+`browser-broker-pipe-closed` while dispatching `popup-native-anchor-action`.
+The bounded native host startup trace identified the **actual cause**:
+`production.control-turn.denied action-payload-digest-mismatch`. This was a
+test-only sender contract error, not a reason to weaken native validation.
+The test-only `popup-click` sender now supplies the canonical SHA-256 of the
+fixed action payload `popup-click`, retaining the original host fail-closed
+digest check and all production authorization boundaries. Failure evidence is
+not reclassified as a successful popup.
+
+After the targeted correction, the same ignored, opt-in physical Rust test
+`physical_production_owned_https_original_popup_intent_capture` exited **0**
+with **1/1 PASS**. Its genuine authenticated host action frame included
+`payloadSha256`; WebView2 emitted and vetoed the original page-requested
+popup, the native one-use intent was captured, the original retained-node
+reference could not be replayed, and isolated host Job/UDF/profile cleanup
+passed. The temporary fixture reported `STOPPED connections=1 denied=0` and
+its active marker was removed. Source-current debug native host SHA-256:
+`8D2E2AC3C6C9E9FC109035CD5A462E87AE516BA96875EADA98B1F8E5BEED8110`.
+Native host source SHA-256:
+`CD1FD7A089AAB7BEE04F627B89A039B4E440D45F094F92FE5A48B2AB70B8A73E`.
+Runtime source SHA-256 for this verification:
+`BDBE38F4AAE0BD690FFF030E95D6EAD1478B1E9F09EA012D50ECF9627737AFC0`.
+The opt-in owned fixture script SHA-256:
+`83F219E262445A0D4040DF1DEB5735C139D4AAA4E47BEFDF8CC358A810131DE9`.
+The test's result explicitly records `TF3_child_dispatch=false` and
+`central_popup_approval=NOT_PROVEN`: **no centrally approved isolated popup
+child or installed production popup acceptance is yet established**.
+
+Additional current-source regression accounting: portable Node script tests
+**133/133 PASS** (132 main + 1 standalone), `npm run check-types` **PASS**,
+and the complete `npm test -- --run` Vitest **FAILED** with **8 failed,
+4,751 passed, 12 skipped** (342 files: 4 failed, 336 passed, 2 skipped).
+Failing files were `src/app/eager-budget.test.ts`,
+`src/modules/ai/lib/agentCompaction.integration.test.ts`,
+`src/modules/ai/lib/lm11ProductionSelectorExclusion.offline.test.tsx`,
+and `src/modules/ai/lib/realWorldAcceptance.integration.test.ts`.
+Strict CI Clippy is still red in other modules; the scoped rerun identified
+no remaining diagnostics in the TF4 browser owner/runtime pair. These are
+local dirty-tree checks, not a new GitHub workflow result. All thirteen
+canonical gates, cases 10–11, optimized packaging, installation and the
+seventeen-step installed E2E remain at their prior non-accepted states.

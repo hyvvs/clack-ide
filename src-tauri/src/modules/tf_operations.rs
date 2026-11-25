@@ -1178,7 +1178,7 @@ mod windows {
                 c.split(';').next().unwrap_or("").trim() != "application/octet-stream"
             })
             || receipt.truncated
-            || receipt.redirect_chain.len() != 0
+            || !receipt.redirect_chain.is_empty()
             || receipt.credential_used
             || receipt.body.is_some()
             || resource.bytes.is_empty()
@@ -1400,8 +1400,8 @@ mod windows {
             for path in &p.canonical_paths {
                 inspect_components(path)?;
                 let current = fs::canonicalize(path);
-                if !(op == TfOperation::FileDelete && path == &p.canonical_paths[0])
-                    && !(op == TfOperation::FileMove && path == &p.canonical_paths[0])
+                if !(matches!(op, TfOperation::FileDelete | TfOperation::FileMove)
+                    && path == &p.canonical_paths[0])
                     && current.map_err(failure)? != *path
                 {
                     return Err("Post-effect path identity changed".into());
@@ -1497,32 +1497,31 @@ mod windows {
         result.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Ok((result, false))
     }
-    fn walk(
-        path: &Path,
-        root: &Path,
-        depth: u64,
+    struct WalkScope<'a> {
+        root: &'a Path,
         max_depth: u64,
-        visited: &mut usize,
-        bytes: &mut u64,
-        req: &TfOperationRequest,
-        matches: &mut Vec<serde_json::Value>,
-        cancelled: &AtomicBool,
+        visited: usize,
+        bytes: u64,
+        req: &'a TfOperationRequest,
+        matches: Vec<serde_json::Value>,
+        cancelled: &'a AtomicBool,
         deadline: Instant,
-        truncated: &mut bool,
-    ) -> Result<(), String> {
-        if depth > max_depth || matches.len() >= 200 {
-            *truncated = true;
+        truncated: bool,
+    }
+    fn walk(path: &Path, depth: u64, scope: &mut WalkScope<'_>) -> Result<(), String> {
+        if depth > scope.max_depth || scope.matches.len() >= 200 {
+            scope.truncated = true;
             return Ok(());
         }
         for item in fs::read_dir(path).map_err(failure)? {
-            if Instant::now() >= deadline {
+            if Instant::now() >= scope.deadline {
                 return Err("Directory search wall-time budget exhausted".into());
             }
-            if cancelled.load(Ordering::Acquire) {
+            if scope.cancelled.load(Ordering::Acquire) {
                 return Err("Search cancelled".into());
             }
-            *visited += 1;
-            if *visited > SEARCH_ENTRY_CAP {
+            scope.visited += 1;
+            if scope.visited > SEARCH_ENTRY_CAP {
                 return Err("Directory search entry budget exhausted".into());
             }
             let item = item.map_err(failure)?;
@@ -1536,22 +1535,10 @@ mod windows {
                 continue;
             }
             if meta.is_dir() {
-                if depth < max_depth {
-                    walk(
-                        &p,
-                        root,
-                        depth + 1,
-                        max_depth,
-                        visited,
-                        bytes,
-                        req,
-                        matches,
-                        cancelled,
-                        deadline,
-                        truncated,
-                    )?;
+                if depth < scope.max_depth {
+                    walk(&p, depth + 1, scope)?;
                 } else {
-                    *truncated = true;
+                    scope.truncated = true;
                 }
                 continue;
             }
@@ -1559,53 +1546,53 @@ mod windows {
                 continue;
             }
             let relative = p
-                .strip_prefix(root)
+                .strip_prefix(scope.root)
                 .map_err(failure)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if req.operation == TfOperation::FileFind {
-                let glob_match = match req.pattern.as_deref() {
+            if scope.req.operation == TfOperation::FileFind {
+                let glob_match = match scope.req.pattern.as_deref() {
                     Some(pattern) => globset::Glob::new(pattern)
                         .map_err(failure)?
                         .compile_matcher()
                         .is_match(&relative),
                     None => true,
                 };
-                let query_match = req.query.as_deref().is_none_or(|q| {
+                let query_match = scope.req.query.as_deref().is_none_or(|q| {
                     relative
                         .to_ascii_lowercase()
                         .contains(&q.to_ascii_lowercase())
                 });
                 if glob_match && query_match {
-                    matches.push(serde_json::json!({"path": relative, "bytes": meta.len()}));
+                    scope.matches.push(serde_json::json!({"path": relative, "bytes": meta.len()}));
                 }
             } else {
                 if meta.len() > FILE_CAP {
                     continue;
                 }
-                *bytes += meta.len();
-                if *bytes > SEARCH_BYTES_CAP {
+                scope.bytes += meta.len();
+                if scope.bytes > SEARCH_BYTES_CAP {
                     return Err("Search scanned byte budget exhausted".into());
                 }
                 let content = read_small(&p)?;
                 if let Ok(content) = std::str::from_utf8(&content) {
-                    let needle = req.query.as_deref().ok_or("Search query missing")?;
+                    let needle = scope.req.query.as_deref().ok_or("Search query missing")?;
                     for (line, content) in content.lines().enumerate() {
                         if content.contains(needle) {
-                            matches.push(serde_json::json!({
+                            scope.matches.push(serde_json::json!({
                                 "path": relative, "line": line + 1,
                                 "text": content.chars().take(256).collect::<String>()
                             }));
-                            if matches.len() >= 200 {
-                                *truncated = true;
+                            if scope.matches.len() >= 200 {
+                                scope.truncated = true;
                                 break;
                             }
                         }
                     }
                 }
             }
-            if matches.len() >= 200 {
-                *truncated = true;
+            if scope.matches.len() >= 200 {
+                scope.truncated = true;
                 break;
             }
         }
@@ -1652,25 +1639,20 @@ mod windows {
                 Ok(out)
             }
             TfOperation::FileFind | TfOperation::TextSearch => {
-                let mut visited = 0;
-                let mut bytes = 0;
-                let mut results = Vec::new();
-                let mut truncated = false;
-                walk(
-                    path,
-                    path,
-                    0,
-                    p.request.depth.unwrap_or(4),
-                    &mut visited,
-                    &mut bytes,
-                    &p.request,
-                    &mut results,
+                let mut scope = WalkScope {
+                    root: path,
+                    max_depth: p.request.depth.unwrap_or(4),
+                    visited: 0,
+                    bytes: 0,
+                    req: &p.request,
+                    matches: Vec::new(),
                     cancelled,
-                    Instant::now() + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
-                    &mut truncated,
-                )?;
-                let mut out = Outcome::no_effect(serde_json::to_string(&results).map_err(failure)?);
-                out.stdout_truncated = truncated;
+                    deadline: Instant::now() + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
+                    truncated: false,
+                };
+                walk(path, 0, &mut scope)?;
+                let mut out = Outcome::no_effect(serde_json::to_string(&scope.matches).map_err(failure)?);
+                out.stdout_truncated = scope.truncated;
                 Ok(out)
             }
             _ => Err("Unsupported filesystem read".into()),

@@ -124,7 +124,7 @@ fn acceptance_wire_controls_match(
             matches!(key.as_str(), "model" | "messages" | "stream" | "options" | "tools" | "think")))
         || !body["options"].as_object().is_some_and(|map|
             map.len() == 2 && map.contains_key("num_ctx") && map.contains_key("num_predict"))
-        || !body["messages"].as_array().is_some_and(|messages| !messages.is_empty())
+        || body["messages"].as_array().is_none_or(|messages| messages.is_empty())
         || (body.get("tools").is_some() && !body["tools"].is_array())
     {
         return false;
@@ -217,12 +217,12 @@ fn acceptance_confirmed_agent_variant_match(
 ) -> bool {
     if expected_think != "omitted" || observed_variant.is_none()
         || body.get("think").and_then(serde_json::Value::as_bool) != observed_variant
-        || !body["options"]["num_predict"].as_u64().is_some_and(|output|
-            acceptance_exact_output(body, contract) == Some(output))
+        || body["options"]["num_predict"].as_u64().is_none_or(|output|
+            acceptance_exact_output(body, contract) != Some(output))
         || !body["options"]["num_ctx"].as_u64().is_some_and(|ctx|
             contract.calibration.candidates.contains(&ctx) &&
                 ctx > body["options"]["num_predict"].as_u64().unwrap_or(u64::MAX))
-        || !body["tools"].as_array().is_some_and(|tools| !tools.is_empty())
+        || body["tools"].as_array().is_none_or(|tools| tools.is_empty())
     {
         return false;
     }

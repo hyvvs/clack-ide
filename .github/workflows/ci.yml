@@ -32,12 +32,23 @@ jobs:
         run: npm run lint
 
       - name: Type-check
+        if: success() || failure()
         run: npm run check-types
 
-      - name: Node-native script suites (including TF4 HTTPS and exact FORM)
-        run: node scripts/run-node-script-tests.mjs
+      - name: Portable Node-native script suites (including TF4 HTTPS and exact FORM)
+        if: success() || failure()
+        run: node scripts/run-node-script-tests.mjs --portable
+
+      # These original artifacts are deliberately outside Git. Never report
+      # historical acceptance as passing based on portable regression tests.
+      - name: Historical acceptance status (NOT_RUN)
+        if: always()
+        run: |
+          echo '### Historical acceptance: NOT_RUN' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The clean runner has no authorized original evidence. See the separate Historical Node acceptance workflow or run `node scripts/run-node-script-tests.mjs --evidence-bound` on the evidence owner checkout.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test
+        if: success() || failure()
         run: npm test
 
       - name: React Compiler healthcheck (advisory)
@@ -45,9 +56,11 @@ jobs:
         continue-on-error: true
 
       - name: Build frontend
+        if: success() || failure()
         run: npm run build
 
       - name: Size budget
+        if: success() || failure()
         run: npm run size
 
       - name: Dead code (advisory)
@@ -85,6 +98,7 @@ jobs:
         run: cargo check --all-targets --locked
 
       - name: cargo clippy
+        if: success() || failure()
         working-directory: src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
 
@@ -94,6 +108,7 @@ jobs:
         continue-on-error: true
 
       - name: cargo nextest
+        if: success() || failure()
         working-directory: src-tauri
         run: cargo nextest run --locked
 
@@ -125,15 +140,28 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets --locked
 
+      - name: Windows native WebView2 host authority regressions
+        if: runner.os == 'Windows' && (success() || failure())
+        working-directory: src-tauri
+        run: cargo test --locked --features tf-browser-native-runtime --bin clack-browser-host
+
+      - name: Windows native WebView2 all-target strict Clippy
+        if: runner.os == 'Windows' && (success() || failure())
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --locked --features tf-browser-native-runtime -- -D warnings
+
       - name: cargo nextest
+        if: success() || failure()
         working-directory: src-tauri
         run: cargo nextest run --locked --retries 2
 
       - name: Remote SSH native lifecycle regression
+        if: success() || failure()
         working-directory: src-tauri
         run: cargo test --locked --lib remote_ssh
 
       - name: Remote SSH parent-death and ownership acceptance
+        if: success() || failure()
         working-directory: src-tauri
         run: cargo test --locked --test remote_ssh_guardian -- --test-threads=1
 
@@ -159,6 +187,7 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked --lib confinement
       - name: T3b registration, authorization and confined JSON functions
+        if: success() || failure()
         working-directory: src-tauri
         run: cargo test --locked --lib custom_tools
 

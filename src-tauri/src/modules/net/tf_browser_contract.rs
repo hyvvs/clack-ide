@@ -149,12 +149,14 @@ pub(crate) struct ActionTarget {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedAction {
+    #[cfg(test)]
     pub target: ActionTarget,
     /// Native-only exact observed index from the authenticated COM snapshot.
     /// Never use as a selector and never accept a caller-provided replacement.
     pub observed_serial: u64,
     pub effect: BrowserEffect,
     pub requires_approval: bool,
+    #[cfg(test)]
     pub kind: BrowserActionKind,
 }
 
@@ -453,8 +455,9 @@ impl BrowserPageContract {
         })
     }
 
-    /// Call at navigation/reload/major DOM replacement or popup transition,
-    /// BEFORE dispatching any new page operation.
+    /// Test-only generation transition; production invalidates old retained
+    /// references instead of manufacturing a successor original document.
+    #[cfg(test)]
     pub(crate) fn invalidate_page(&mut self, next_url: &str) -> Result<(), &'static str> {
         if self.closed {
             return Err("STALE_SESSION");
@@ -712,10 +715,12 @@ impl BrowserPageContract {
         }
         let effect = classify(kind, Some(&item.source));
         Ok(PreparedAction {
+            #[cfg(test)]
             target,
             observed_serial: item.source.serial,
             effect,
             requires_approval: effect != BrowserEffect::ReadOnly,
+            #[cfg(test)]
             kind,
         })
     }
@@ -734,8 +739,9 @@ impl BrowserPageContract {
         Ok(verified.observed_serial)
     }
 
-    /// Called after the native callback, before claiming an observed effect.
-    /// A changed page makes completion UNKNOWN, never retryable automatically.
+    /// Test-only freshness check, never proof of an external effect. Production
+    /// native dispatch maintains its own original-node recheck and UNKNOWN.
+    #[cfg(test)]
     pub(crate) fn verify_completion(&self, action: &PreparedAction) -> Result<(), &'static str> {
         if self.closed
             || self

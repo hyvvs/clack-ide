@@ -1,9 +1,9 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { isTfOperationTool, tfOperationEffectful, validateTfOperationInput } from
-  "@/modules/ai/tools/tfOperations";
-import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWeb";
-import { isTfBrowserTool, validateTfBrowserInput } from "@/modules/ai/tools/tfBrowser";
+  "@/modules/ai/tools/tfOperationSchemas";
+import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWebSchemas";
+import { isTfBrowserTool, validateTfBrowserInput } from "@/modules/ai/tools/tfBrowserSchemas";
 import {
   setAgentWorkspacePermissions,
   type AgentWorkspacePermission,
