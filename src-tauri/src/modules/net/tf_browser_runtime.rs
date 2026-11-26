@@ -854,6 +854,17 @@ fn successor_scope_matches(
         && resource_window_elapsed < RESOURCE_SCOPE_LIFETIME
 }
 
+/// Neither the original page budget nor a separately approved successor may
+/// gain lifetime while TF3 prepares, waits for a lock, or starts a socket.
+/// Always carry the minimum ORIGINAL absolute deadline into TF3 execution.
+fn resource_absolute_deadline(
+    original_started: Instant,
+    successor: Option<Instant>,
+) -> Instant {
+    let original_expires = original_started + RESOURCE_SCOPE_LIFETIME;
+    successor.map_or(original_expires, |expires| expires.min(original_expires))
+}
+
 // Original successful FORM controls can contain CSRF tokens and other secrets.
 // Even internal error/diagnostic formatting must never serialize their values,
 // URL, original node reference, or opaque per-session identities.
@@ -4047,6 +4058,10 @@ mod windows_owner {
             });
             let successor_deadline = successor_eligible.then(||
                 self.successor_scope.as_ref().expect("eligible scope").deadline);
+            let absolute_deadline = resource_absolute_deadline(
+                self.resource_window_started,
+                successor_deadline,
+            );
             if successor_eligible {
                 // Burn BEFORE TF3 preflight, DNS, socket, delivery or any
                 // fallible state transition. A failed network response can
@@ -4128,10 +4143,11 @@ mod windows_owner {
                 });
             }
             let remaining = resource_timeout_ms(self.resource_window_started.elapsed())
-                .and_then(|budget| successor_deadline.map_or(Some(budget), |deadline| {
-                    let millis = deadline.saturating_duration_since(Instant::now()).as_millis() as u64;
+                .and_then(|budget| {
+                    let millis = absolute_deadline
+                        .saturating_duration_since(Instant::now()).as_millis() as u64;
                     (millis > 0).then_some(budget.min(millis))
-                }));
+                });
             let Some(timeout_ms) = remaining else {
                 self.send_and_verify(req.request_id, req.page_generation, 403, "text/plain", &[], Some("browser-resource-lifetime-expired")).await?;
                 return Ok(BrokerResourceReceipt {
@@ -4200,7 +4216,7 @@ mod windows_owner {
             // Preparation must not renew the absolute resource window. Burn
             // an unused TF3 token if the original scope has already expired.
             if resource_timeout_ms(self.resource_window_started.elapsed()).is_none()
-                || successor_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                || Instant::now() >= absolute_deadline
             {
                 let _ = tf_web::cancel(&prepared.token, web_state);
                 self.send_and_verify(req.request_id, req.page_generation, 403, "text/plain", &[], Some("browser-resource-lifetime-expired")).await?;
@@ -4221,34 +4237,22 @@ mod windows_owner {
                             web_state,
                             &approved,
                             cert,
-                            successor_deadline.map(tokio::time::Instant::from_std),
+                            Some(tokio::time::Instant::from_std(absolute_deadline)),
                         )
                         .await
                     } else {
-                        if let Some(deadline) = successor_deadline {
-                            tf_web::execute_browser_resource_same_origin_before(
-                                &prepared.token, registry, web_state, &approved,
-                                tokio::time::Instant::from_std(deadline),
-                            ).await
-                        } else {
-                            tf_web::execute_browser_resource_same_origin(
-                                &prepared.token, registry, web_state, &approved,
-                            ).await
-                        }
+                        tf_web::execute_browser_resource_same_origin_before(
+                            &prepared.token, registry, web_state, &approved,
+                            tokio::time::Instant::from_std(absolute_deadline),
+                        ).await
                     }
                 }
                 #[cfg(not(test))]
                 {
-                    if let Some(deadline) = successor_deadline {
-                        tf_web::execute_browser_resource_same_origin_before(
-                            &prepared.token, registry, web_state, &approved,
-                            tokio::time::Instant::from_std(deadline),
-                        ).await
-                    } else {
-                        tf_web::execute_browser_resource_same_origin(
-                            &prepared.token, registry, web_state, &approved,
-                        ).await
-                    }
+                    tf_web::execute_browser_resource_same_origin_before(
+                        &prepared.token, registry, web_state, &approved,
+                        tokio::time::Instant::from_std(absolute_deadline),
+                    ).await
                 }
             };
             match result {
@@ -4260,8 +4264,7 @@ mod windows_owner {
                     // WebView2 URI. Deny with an empty body and retain the
                     // actual TF3 receipt as evidence of what was attempted.
                     let mime = original_uri_response_mime(&receipt, &req.url, result.bytes.len());
-                    let delivered = self.resource_window_started.elapsed() < RESOURCE_SCOPE_LIFETIME
-                        && successor_deadline.is_none_or(|deadline| Instant::now() < deadline)
+                    let delivered = Instant::now() < absolute_deadline
                         && mime.is_some() && size_allowed_for_class(
                         req.resource_class.as_str(), mime, result.bytes.len(),
                         resource_budget,
@@ -5510,6 +5513,26 @@ mod tests {
             deadline: Instant::now() - Duration::from_secs(1), ..spent
         };
         assert!(!successor_scope_matches(&expired,&req,true,Duration::ZERO));
+    }
+
+    #[test]
+    fn successor_network_absolute_deadline_never_renews_original_page_lifetime() {
+        let original_started = Instant::now() - Duration::from_secs(89);
+        let original_expires = original_started + RESOURCE_SCOPE_LIFETIME;
+        let successor_expires = Instant::now() + Duration::from_secs(18);
+        assert_eq!(
+            resource_absolute_deadline(original_started, Some(successor_expires)),
+            original_expires,
+            "an 18-second successor may not outlive its original 90-second page scope",
+        );
+        assert_eq!(resource_absolute_deadline(original_started, None), original_expires);
+        let tighter = Instant::now() + Duration::from_millis(300);
+        assert_eq!(resource_absolute_deadline(original_started, Some(tighter)), tighter);
+        let expired_original = Instant::now() - RESOURCE_SCOPE_LIFETIME - Duration::from_secs(1);
+        assert!(
+            resource_absolute_deadline(expired_original, Some(successor_expires)) < Instant::now(),
+            "an expired source window cannot be resurrected by a fresh successor grant",
+        );
     }
     #[test]
     fn com_ack_requires_exact_native_completion_identity_and_status() {
