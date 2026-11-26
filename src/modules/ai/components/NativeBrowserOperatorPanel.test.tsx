@@ -6,10 +6,14 @@ import {
   confinedRootUrl,
   nativeOperatorRoleAllowed,
   nativeOperatorReceiptMatches,
+  nativeHumanRetainedObservationFresh,
+  nativeSameOriginTransferUrl,
   originalNativeOperatorRequest,
   originalNativeSubmitPair,
   pendingOriginalPopupAttempt,
   preparedNativeOperatorMatches,
+  syntheticNativeUploadName,
+  verifiedNativeScreenshotEvidence,
 } from "./NativeBrowserOperatorPanel";
 
 const session = "a".repeat(48);
@@ -188,6 +192,8 @@ describe("manual native TF4 app approval presentation", () => {
       effectState: "Observed", retry: "NEVER_REPLAY", autoRetry: false,
       nativeScreenshotEvidence: {
         format: "png", width: 800, height: 600,
+        pageId: page.pageId, pageGeneration: page.pageGeneration,
+        snapshotId: page.snapshotId, urlSha256: "e".repeat(64),
         contentSha256: "a".repeat(64), bytesVerified: 12991,
         workspaceRelativeFile: `tf4-browser-screenshot-${"1".repeat(24)}.png`,
         effectState: "Observed", retry: "NEVER_REPLAY",
@@ -200,6 +206,7 @@ describe("manual native TF4 app approval presentation", () => {
     expect(receipt).toContain('"bytesVerified": 12991');
     expect(receipt).toContain(`"contentSha256": "${"a".repeat(64)}"`);
     expect(receipt).not.toMatch(/PNG_SECRET_BYTES|SECRET_URL|unapproved|privatePath/);
+    expect(receipt).toContain(`"pageId": "${page.pageId}"`);
     const bad = boundedNativeReceiptEvidence({
       requestId: "e".repeat(48), operation: "screenshot",
       nativeScreenshotEvidence: {
@@ -212,6 +219,236 @@ describe("manual native TF4 app approval presentation", () => {
     expect(bad).toContain('"contentSha256": null');
     expect(bad).toContain('"bytesVerified": null');
     expect(bad).not.toContain("../secret.png");
+  });
+
+  it("requires exact retained-page identity and canonical 1024x768 / 64 KiB PNG contract", () => {
+    const observed = closedNativePage(page, session);
+    expect(observed).not.toBeNull();
+    const evidence = {
+      format: "png", width: 1024, height: 768,
+      pageId: page.pageId, snapshotId: page.snapshotId,
+      pageGeneration: page.pageGeneration, urlSha256: "e".repeat(64),
+      contentSha256: "a".repeat(64), bytesVerified: 65_536,
+      workspaceRelativeFile: `tf4-browser-screenshot-${"1".repeat(24)}.png`,
+      effectState: "Observed", retry: "NEVER_REPLAY",
+    };
+    const good = {
+      requestId: "f".repeat(48), toolId: "tf.browser_operation.v1",
+      actor: scope.actor, sessionId: scope.sessionId,
+      operation: "screenshot" as const, browserSessionId: session,
+      engine: "confined_webview2_read_only_unaccepted",
+      terminal: "completed", policyDecision: "allowed", effectState: "Observed",
+      retry: "NEVER_REPLAY", autoRetry: false, reasonCode: "native-screenshot-TF2-file-readback-verified",
+      snapshotId: page.snapshotId, contentSha256: "a".repeat(64), bytesReceived: 65_536,
+      nativeScreenshotEvidence: evidence,
+    };
+    expect(verifiedNativeScreenshotEvidence(good, observed)).toBe(true);
+    for (const forged of [
+      { ...good, browserSessionId: "2".repeat(48) },
+      { ...good, retry: "SAFE_RETRY" },
+      { ...good, autoRetry: true },
+      { ...good, terminal: "unknown" },
+      { ...good, bytesReceived: 9 },
+      { ...good, contentSha256: "b".repeat(64) },
+      { ...good, snapshotId: "c".repeat(48).replace(/c/g, "7") },
+      { ...good, nativeScreenshotEvidence: { ...evidence, width: 1025 } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, height: 769 } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, bytesVerified: 65_537 } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, pageId: "f".repeat(48) } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, snapshotId: "f".repeat(48) } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, pageGeneration: 3 } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, urlSha256: "invalid" } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, workspaceRelativeFile: "../outside.png" } },
+      { ...good, nativeScreenshotEvidence: { ...evidence, effectState: "Unknown" } },
+    ]) {
+      expect(verifiedNativeScreenshotEvidence(forged, observed)).toBe(false);
+    }
+    expect(verifiedNativeScreenshotEvidence(good, null)).toBe(false);
+    for (const bad of [
+      { ...evidence, width: 1025 },
+      { ...evidence, height: 769 },
+      { ...evidence, bytesVerified: 65_537 },
+    ]) {
+      const bounded = JSON.parse(boundedNativeReceiptEvidence({
+        ...good, nativeScreenshotEvidence: bad,
+      }) ?? "null") as { nativeTf2Screenshot: Record<string, unknown> };
+      expect(bounded.nativeTf2Screenshot[
+        bad.width > 1024 ? "width" : bad.height > 768 ? "height" : "bytesVerified"
+      ]).toBeNull();
+    }
+  });
+
+  it("exposes only centrally governed original-page transfer and opaque credential requests", () => {
+    const retained = closedNativePage(page, session);
+    const exact = "https://example.org/tf4-synthetic-upload";
+    const credentialReference = "e".repeat(48);
+    expect(nativeSameOriginTransferUrl(exact, page.origin)).toBe(true);
+    expect(nativeSameOriginTransferUrl("https://example.org/", page.origin)).toBe(true);
+    for (const unsafe of [
+      "http://example.org/", "https://another.example.org/path",
+      "https://example.org:444/path", "https://example.org/path?token=SECRET",
+      "https://example.org/#secret", "https://user:pass@example.org/",
+      "https://example.org/a\\b", "https://example.org/secure\n",
+    ]) {
+      expect(nativeSameOriginTransferUrl(unsafe, page.origin)).toBe(false);
+    }
+    for (const unsafe of [
+      "file.bin", "../tf4-file.bin", "C:/tf4-file.bin",
+      "tf4-synthetic.png", "tf4-test.bin/subpath", "tf4-.bin",
+      "tf4-SECRET.bin", "tf4-file.bin\n",
+    ]) expect(syntheticNativeUploadName(unsafe)).toBe(false);
+    expect(syntheticNativeUploadName("tf4-synthetic-test.bin")).toBe(true);
+    const base = {
+      operation: "download", actor: scope.actor, sessionId: scope.sessionId,
+      workspaceRoot: scope.workspaceRoot, browserSessionId: session,
+      pageId: page.pageId, pageGeneration: page.pageGeneration,
+      snapshotId: page.snapshotId, url: exact,
+    };
+    expect(originalNativeOperatorRequest("download", scope, retained, undefined, undefined, exact))
+      .toEqual(base);
+    expect(originalNativeOperatorRequest("upload", scope, retained, undefined,
+      "tf4-synthetic-test.bin", exact)).toEqual({
+        ...base, operation: "upload", text: "tf4-synthetic-test.bin",
+      });
+    expect(originalNativeOperatorRequest("credential_get", scope, retained, undefined,
+      credentialReference, exact)).toEqual({
+        ...base, operation: "credential_get", text: credentialReference,
+      });
+    expect(originalNativeOperatorRequest("credential_get", scope, retained, undefined,
+      "TOP-SECRET", exact)).toBeNull();
+    expect(originalNativeOperatorRequest("upload", scope, retained, undefined,
+      "../tf4-synthetic.bin", exact)).toBeNull();
+    expect(originalNativeOperatorRequest("download", scope, retained, undefined,
+      "arbitrary", exact)).toBeNull();
+    expect(originalNativeOperatorRequest("download", scope, null, undefined,
+      undefined, exact)).toBeNull();
+    expect(originalNativeOperatorRequest("download", {
+      ...scope, browserId: "f".repeat(48),
+    }, retained, undefined, undefined, exact)).toBeNull();
+    expect(originalNativeOperatorRequest("download", scope, retained, undefined,
+      undefined, "https://other.example.org/")).toBeNull();
+    expect(originalNativeOperatorRequest("download", scope, retained, undefined,
+      undefined, exact, { openerId: session } as never)).toBeNull();
+    for (const operation of ["download", "upload", "credential_get"] as const) {
+      expect(preparedNativeOperatorMatches({
+        token: "b".repeat(48), requestId: "c".repeat(48), operation,
+        requiresApproval: true, browserSessionId: session,
+        engine: "confined_webview2_read_only_unaccepted",
+      }, operation, session)).toBe(true);
+    }
+  });
+
+  it("opens a separately consented child only from an existing exact opener session", () => {
+    const childUrl = "https://another.example.org/";
+    expect(originalNativeOperatorRequest("open_confined_tab", scope, null,
+      undefined, undefined, childUrl)).toEqual({
+        operation: "open_confined_tab", actor: scope.actor,
+        sessionId: scope.sessionId, workspaceRoot: scope.workspaceRoot,
+        browserSessionId: session, url: childUrl,
+      });
+    expect(originalNativeOperatorRequest("open_confined_tab", {
+      ...scope, browserId: null,
+    }, null, undefined, undefined, childUrl)).toBeNull();
+    const prepared = {
+      token: "8".repeat(48), requestId: "7".repeat(48),
+      operation: "open_confined_tab" as const, requiresApproval: true,
+      browserSessionId: "6".repeat(48), engine: "confined_webview2_read_only_unaccepted",
+    };
+    expect(preparedNativeOperatorMatches(prepared, "open_confined_tab", session)).toBe(true);
+    expect(preparedNativeOperatorMatches({ ...prepared, browserSessionId: session },
+      "open_confined_tab", session)).toBe(false);
+    expect(preparedNativeOperatorMatches({ ...prepared, requiresApproval: false },
+      "open_confined_tab", session)).toBe(false);
+    expect(nativeOperatorReceiptMatches({
+      toolId: "tf.browser_operation.v1", requestId: prepared.requestId,
+      actor: scope.actor, sessionId: scope.sessionId, operation: "open_confined_tab",
+      browserSessionId: prepared.browserSessionId, engine: prepared.engine,
+      terminal: "pending", policyDecision: "allowed", effectState: "Unknown",
+      autoRetry: false, reasonCode: "confined-native-appcontainer-ready-broker-serving",
+    }, prepared, "open_confined_tab", scope)).toBe(true);
+  });
+
+  it("refuses aging original-node UI requests without changing native identity or auto-retrying", () => {
+    const now = 1_800_000_000_000;
+    expect(nativeHumanRetainedObservationFresh(now - 1, now)).toBe(true);
+    expect(nativeHumanRetainedObservationFresh(now - 25_000, now)).toBe(true);
+    expect(nativeHumanRetainedObservationFresh(now - 25_001, now)).toBe(false);
+    expect(nativeHumanRetainedObservationFresh(null, now)).toBe(false);
+    expect(nativeHumanRetainedObservationFresh(now + 1, now)).toBe(false);
+    expect(nativeHumanRetainedObservationFresh(0, now)).toBe(false);
+    expect(nativeHumanRetainedObservationFresh(now, NaN)).toBe(false);
+    // A new observation must produce an entirely new original retained
+    // snapshot. The UI age check never claims that a matching hash/selector
+    // makes the previous snapshot's node live again.
+    const first = closedNativePage(page, session);
+    const second = closedNativePage({
+      ...page, snapshotId: "4".repeat(48),
+      elements: [{ elementRef: "5".repeat(48), role: "link" }],
+    }, session);
+    expect(first?.elements[0].elementRef).not.toBe(second?.elements[0].elementRef);
+    expect(originalNativeOperatorRequest("click", scope, second, first?.elements[0]))
+      .toBeNull();
+  });
+
+  it("exports only closed TF3/TF2 transfer and opaque-keyring digest evidence", () => {
+    const common = { requestId: "f".repeat(48), browserSessionId: session,
+      terminal: "completed", retry: "NEVER_REPLAY", autoRetry: false,
+      policyDecision: "allowed", effectState: "Unknown" };
+    const secret = "PRIVATE_PAGE_OR_CREDENTIAL_VALUE";
+    const credential = boundedNativeReceiptEvidence({
+      ...common, operation: "credential_get",
+      nativeCredentialTransport: {
+        requestMethod: "GET", destinationSha256: "a".repeat(64),
+        referenceSha256: "b".repeat(64), tf3RequestId: "c".repeat(48),
+        credentialSentToApprovedOrigin: true, statusCode: 200,
+        effectState: "Unknown", retry: "NEVER_REPLAY", origin: secret,
+      },
+    });
+    expect(credential).toContain('"credentialSentToApprovedOrigin": true');
+    expect(credential).not.toContain(secret);
+    const download = boundedNativeReceiptEvidence({
+      ...common, operation: "download", effectState: "Observed",
+      nativeDownloadEvidence: {
+        method: "GET", sourceUrlSha256: "a".repeat(64),
+        responseSha256: "b".repeat(64), bytesVerified: 65_536,
+        workspaceRelativeFile: `tf4-browser-download-${"d".repeat(24)}.bin`,
+        pageId: page.pageId, pageGeneration: page.pageGeneration,
+        snapshotId: page.snapshotId, tf3RequestId: "c".repeat(48),
+        fileEffectState: "Observed", retry: "NEVER_REPLAY",
+        fullPath: secret, bytes: secret,
+      },
+    });
+    expect(download).toContain('"bytesVerified": 65536');
+    expect(download).not.toContain(secret);
+    const invalid = boundedNativeReceiptEvidence({
+      ...common, operation: "download",
+      nativeDownloadEvidence: {
+        method: "POST", bytesVerified: 65_537,
+        workspaceRelativeFile: "../private.bin", responseSha256: "bad",
+        pageId: secret,
+      },
+    });
+    expect(invalid).toContain('"bytesVerified": null');
+    expect(invalid).toContain('"workspaceRelativeFile": null');
+    expect(invalid).not.toContain(secret);
+    const upload = boundedNativeReceiptEvidence({
+      ...common, operation: "upload",
+      nativeUploadTransport: {
+        method: "POST", destinationSha256: "a".repeat(64),
+        originalFileSha256: "b".repeat(64), bodyBytes: 70000,
+        tf3RequestId: "c".repeat(48), remoteEffectState: "Unknown",
+        retry: "NEVER_REPLAY", originalBytes: secret,
+      },
+    });
+    expect(upload).toContain('"bodyBytes": null');
+    expect(upload).not.toContain(secret);
+    const preDispatchDenial = boundedNativeReceiptEvidence({
+      ...common, operation: "download", terminal: "denied",
+      policyDecision: "denied", effectState: "NoEffect",
+      reasonCode: "native-transfer-TF3-public-policy-or-witness-denied",
+    });
+    expect(preDispatchDenial).toContain('"effectState": "NoEffect"');
+    expect(preDispatchDenial).toContain('"policyDecision": "denied"');
   });
 
   it("accepts only an original retained FORM and actual native submit fieldType candidate", () => {

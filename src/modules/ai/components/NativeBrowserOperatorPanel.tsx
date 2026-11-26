@@ -8,6 +8,7 @@ import { useRef, useState } from "react";
  * prepare -> genuine Tauri OS dialog -> execute authority and single-use token. */
 type NativeOperation =
   | "open_confined"
+  | "open_confined_tab"
   | "observe_confined"
   | "click"
   | "trigger_page_popup"
@@ -20,6 +21,9 @@ type NativeOperation =
   | "scroll"
   | "submit"
   | "screenshot"
+  | "credential_get"
+  | "download"
+  | "upload"
   | "close_confined";
 type Prepared = {
   token: string;
@@ -65,12 +69,52 @@ type NativeReceipt = {
     format?: string;
     width?: number;
     height?: number;
+    pageId?: string;
+    pageGeneration?: number;
+    snapshotId?: string;
+    urlSha256?: string;
     contentSha256?: string;
     bytesVerified?: number;
     workspaceRelativeFile?: string;
     effectState?: string;
     retry?: string;
   };
+  nativeCredentialTransport?: {
+    requestMethod?: string;
+    destinationSha256?: string;
+    referenceSha256?: string;
+    tf3RequestId?: string;
+    credentialSentToApprovedOrigin?: boolean;
+    statusCode?: number;
+    effectState?: string;
+    retry?: string;
+  };
+  nativeDownloadEvidence?: {
+    method?: string;
+    sourceUrlSha256?: string;
+    responseSha256?: string;
+    bytesVerified?: number;
+    workspaceRelativeFile?: string;
+    pageId?: string;
+    pageGeneration?: number;
+    snapshotId?: string;
+    tf3RequestId?: string;
+    fileEffectState?: string;
+    retry?: string;
+  };
+  nativeUploadTransport?: {
+    method?: string;
+    destinationSha256?: string;
+    originalFileSha256?: string;
+    bodyBytes?: number;
+    tf3RequestId?: string;
+    statusCode?: number;
+    remoteEffectState?: string;
+    retry?: string;
+  };
+  snapshotId?: string;
+  contentSha256?: string;
+  bytesReceived?: number;
   nativeEffectEvidence?: {
     brokerRequestId: number;
     sourcePageGeneration: number;
@@ -82,6 +126,16 @@ type NativeReceipt = {
   };
 };
 const NATIVE_ENGINE = "confined_webview2_read_only_unaccepted";
+// Exact native host + TF2 contract, NOT the larger generic image/media cap.
+const NATIVE_SCREENSHOT_MAX_WIDTH = 1024;
+const NATIVE_SCREENSHOT_MAX_HEIGHT = 768;
+const NATIVE_SCREENSHOT_PNG_BYTES_LIMIT = 64 * 1024;
+const NATIVE_SCREENSHOT_FIXED_FILE = /^tf4-browser-screenshot-[a-f0-9]{24}\.png$/;
+const NATIVE_DOWNLOAD_FIXED_FILE = /^tf4-browser-download-[a-f0-9]{24}\.bin$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+// Advisory freshness ceiling only: the native MutationObserver + exact Node
+// identity remains authoritative during/after OS consent, regardless of age.
+const HUMAN_NATIVE_RETAINED_PREPARE_AGE_MS = 25_000;
 const exactHandle = (raw: unknown): raw is string =>
   typeof raw === "string" && /^[a-f\d]{48}$/i.test(raw);
 const nativeMutation = (operation: NativeOperation): boolean =>
@@ -142,6 +196,37 @@ export function confinedRootUrl(raw: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Human-entered public request destination, intentionally same-origin with
+ * the exact retained native page. TF3 still owns public DNS/IP/TLS/redirect
+ * and pre-dispatch policy; this shape check never grants network authority. */
+export function nativeSameOriginTransferUrl(raw: string, origin: string): boolean {
+  if (raw.length === 0 || raw.length > 2048 || raw.trim() !== raw ||
+      /[\u0000-\u001f\u007f\\]/u.test(raw)) return false;
+  try {
+    const destination = new URL(raw);
+    return destination.protocol === "https:" && destination.origin === origin &&
+      !destination.username && !destination.password && !destination.port &&
+      !destination.search && !destination.hash && destination.href === raw;
+  } catch {
+    return false;
+  }
+}
+
+/** This human-only fixture UI deliberately limits upload file selection to
+ * a synthetic flat basename. TF2 independently reopens under WorkspaceRegistry. */
+export function syntheticNativeUploadName(raw: string): boolean {
+  return /^tf4-[a-z0-9_-]{1,80}\.bin$/.test(raw);
+}
+
+export function nativeHumanRetainedObservationFresh(
+  observedAtMs: number | null,
+  nowMs: number,
+): boolean {
+  return observedAtMs !== null && Number.isSafeInteger(observedAtMs) &&
+    observedAtMs > 0 && Number.isSafeInteger(nowMs) && nowMs >= observedAtMs &&
+    nowMs - observedAtMs <= HUMAN_NATIVE_RETAINED_PREPARE_AGE_MS;
 }
 
 /** An untrusted renderer-projected snapshot is never an action authority. The
@@ -288,6 +373,10 @@ export function originalNativeOperatorRequest(
     return root ? { ...base, url: root } : null;
   }
   if (!exactHandle(scope.browserId)) return null;
+  if (operation === "open_confined_tab") {
+    const root = confinedRootUrl(url ?? "");
+    return root ? { ...base, browserSessionId: scope.browserId, url: root } : null;
+  }
   if (operation === "open_requested_popup") {
     return popup && popup.openerId === scope.browserId &&
       popup.sourceGeneration === 1 && exactHandle(popup.sourcePageId) &&
@@ -309,6 +398,27 @@ export function originalNativeOperatorRequest(
       ...base, browserSessionId: scope.browserId,
       pageId: page.pageId, pageGeneration: page.pageGeneration,
       snapshotId: page.snapshotId,
+    };
+  }
+  if (operation === "credential_get" || operation === "download" || operation === "upload") {
+    if (!page || page.browserSessionId !== scope.browserId ||
+        !exactHandle(page.pageId) || !exactHandle(page.snapshotId) ||
+        !Number.isSafeInteger(page.pageGeneration) || page.pageGeneration < 1 ||
+        !nativeSameOriginTransferUrl(url ?? "", page.origin) ||
+        element !== undefined || (popup !== undefined && popup !== null))
+      return null;
+    if (operation === "credential_get" &&
+        (typeof parameters !== "string" || !/^[a-f0-9]{48}$/.test(parameters)))
+      return null;
+    if (operation === "download" && parameters !== undefined) return null;
+    if (operation === "upload" &&
+        (typeof parameters !== "string" || !syntheticNativeUploadName(parameters)))
+      return null;
+    return {
+      ...base, browserSessionId: scope.browserId, pageId: page.pageId,
+      pageGeneration: page.pageGeneration, snapshotId: page.snapshotId,
+      url,
+      ...(parameters !== undefined ? { text: parameters } : {}),
     };
   }
   if (!nativeMutation(operation)) {
@@ -346,13 +456,15 @@ export function preparedNativeOperatorMatches(
   operation: NativeOperation,
   originalBrowserId: string | null,
 ): boolean {
-  const opensSession = operation === "open_confined" || operation === "open_requested_popup";
+  const opensSession = operation === "open_confined" ||
+    operation === "open_confined_tab" || operation === "open_requested_popup";
   return exactHandle(prepared.token) && exactHandle(prepared.requestId) &&
     prepared.operation === operation && prepared.engine === NATIVE_ENGINE &&
     prepared.requiresApproval === (operation !== "close_confined") &&
     (opensSession
       ? exactHandle(prepared.browserSessionId) &&
-        (operation !== "open_requested_popup" || prepared.browserSessionId !== originalBrowserId)
+        (operation === "open_confined" ||
+          prepared.browserSessionId !== originalBrowserId)
       : prepared.browserSessionId === originalBrowserId && exactHandle(originalBrowserId));
 }
 
@@ -362,7 +474,8 @@ export function nativeOperatorReceiptMatches(
   operation: NativeOperation,
   scope: { actor: string; sessionId: string; browserId: string | null },
 ): boolean {
-  const opensSession = operation === "open_confined" || operation === "open_requested_popup";
+  const opensSession = operation === "open_confined" ||
+    operation === "open_confined_tab" || operation === "open_requested_popup";
   return receipt.toolId === "tf.browser_operation.v1" &&
     receipt.requestId === prepared.requestId && receipt.actor === scope.actor &&
     receipt.sessionId === scope.sessionId && receipt.operation === operation &&
@@ -370,8 +483,40 @@ export function nativeOperatorReceiptMatches(
     (opensSession
       ? exactHandle(prepared.browserSessionId) &&
         receipt.browserSessionId === prepared.browserSessionId &&
-        (operation !== "open_requested_popup" || receipt.browserSessionId !== scope.browserId)
+        (operation === "open_confined" || receipt.browserSessionId !== scope.browserId)
       : receipt.browserSessionId === scope.browserId && exactHandle(scope.browserId));
+}
+
+/** Presentation-level cross-check of TF4's original retained identity and
+ * TF2's already committed/read-back evidence. This CANNOT substitute for
+ * backend PNG CRC, digest, atomic TF2 readback or the genuine OS approval. */
+export function verifiedNativeScreenshotEvidence(
+  receipt: NativeReceipt,
+  originallyApproved: NativePage | null,
+): boolean {
+  const e = receipt.nativeScreenshotEvidence;
+  return receipt.operation === "screenshot" &&
+    receipt.terminal === "completed" && receipt.policyDecision === "allowed" &&
+    receipt.effectState === "Observed" && receipt.retry === "NEVER_REPLAY" &&
+    receipt.autoRetry === false && !!originallyApproved && !!e &&
+    receipt.browserSessionId === originallyApproved.browserSessionId &&
+    e.pageId === originallyApproved.pageId &&
+    e.snapshotId === originallyApproved.snapshotId &&
+    e.pageGeneration === originallyApproved.pageGeneration &&
+    receipt.snapshotId === e.snapshotId &&
+    receipt.contentSha256 === e.contentSha256 &&
+    receipt.bytesReceived === e.bytesVerified &&
+    e.format === "png" &&
+    Number.isSafeInteger(e.width) && Number(e.width) >= 1 &&
+    Number(e.width) <= NATIVE_SCREENSHOT_MAX_WIDTH &&
+    Number.isSafeInteger(e.height) && Number(e.height) >= 1 &&
+    Number(e.height) <= NATIVE_SCREENSHOT_MAX_HEIGHT &&
+    Number.isSafeInteger(e.bytesVerified) && Number(e.bytesVerified) >= 1 &&
+    Number(e.bytesVerified) <= NATIVE_SCREENSHOT_PNG_BYTES_LIMIT &&
+    SHA256.test(e.urlSha256 ?? "") &&
+    SHA256.test(e.contentSha256 ?? "") &&
+    NATIVE_SCREENSHOT_FIXED_FILE.test(e.workspaceRelativeFile ?? "") &&
+    e.effectState === "Observed" && e.retry === "NEVER_REPLAY";
 }
 
 function safeReason(error: unknown): string {
@@ -393,9 +538,9 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     !exactHandle(receipt.requestId) ||
     typeof receipt.operation !== "string" ||
     ![
-      "open_confined", "observe_confined", "click", "trigger_page_popup",
+      "open_confined", "open_confined_tab", "observe_confined", "click", "trigger_page_popup",
       "open_requested_popup", "type", "clear", "select", "check", "uncheck",
-      "scroll", "submit", "screenshot", "close_confined",
+      "scroll", "submit", "screenshot", "credential_get", "download", "upload", "close_confined",
     ].includes(receipt.operation)
   ) return null;
   const closed = (item: unknown, allowed: readonly string[]): string =>
@@ -416,9 +561,23 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
   const screenshot = receipt.operation === "screenshot" && rawScreenshot &&
     typeof rawScreenshot === "object" && !Array.isArray(rawScreenshot)
       ? (rawScreenshot as Record<string, unknown>) : null;
+  const nativeObject = (field: string, kind: string): Record<string, unknown> | null => {
+    const input = receipt[field];
+    return receipt.operation === kind && input && typeof input === "object" &&
+      !Array.isArray(input) ? input as Record<string, unknown> : null;
+  };
+  const credential = nativeObject("nativeCredentialTransport", "credential_get");
+  const download = nativeObject("nativeDownloadEvidence", "download");
+  const upload = nativeObject("nativeUploadTransport", "upload");
+  const boundedBytes = (item: unknown): number | null =>
+    Number.isSafeInteger(item) && Number(item) >= 1 &&
+      Number(item) <= NATIVE_SCREENSHOT_PNG_BYTES_LIMIT ? Number(item) : null;
+  const statusCode = (item: unknown): number | null =>
+    Number.isSafeInteger(item) && Number(item) >= 100 && Number(item) <= 599
+      ? Number(item) : null;
   const screenshotFile =
     typeof screenshot?.workspaceRelativeFile === "string" &&
-    /^tf4-browser-screenshot-[a-f0-9]{24}\.png$/.test(screenshot.workspaceRelativeFile)
+    NATIVE_SCREENSHOT_FIXED_FILE.test(screenshot.workspaceRelativeFile)
       ? screenshot.workspaceRelativeFile : null;
   const safe = {
     requestId: receipt.requestId,
@@ -428,7 +587,7 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     nativeTerminal: closed(receipt.nativeTerminal, ["DENIED", "STALE", "CANCELLED_BEFORE_DISPATCH", "FAILED_BEFORE_DISPATCH", "DISPATCHED", "CONFIRMED", "UNKNOWN"]),
     canonicalTerminal: closed(receipt.canonicalTerminal, ["SUCCESS", "FAILED", "CANCELLED", "UNKNOWN"]),
     policyDecision: closed(receipt.policyDecision, ["allowed", "denied"]),
-    effectState: closed(receipt.effectState, ["Observed", "Unknown", "NotAttempted"]),
+    effectState: closed(receipt.effectState, ["Observed", "Unknown", "NotAttempted", "NoEffect"]),
     retry: closed(receipt.retry, ["NEVER_REPLAY", "SAFE_REPREPARE", "NOT_ATTEMPTED", "SAFE_RETRY"]),
     autoRetry: receipt.autoRetry === true,
     reasonCode: safeReason(receipt.reasonCode),
@@ -455,18 +614,60 @@ export function boundedNativeReceiptEvidence(value: unknown): string | null {
     nativeTf2Screenshot: screenshot ? {
       format: closed(screenshot.format, ["png"]),
       width: Number.isSafeInteger(screenshot.width) &&
-        Number(screenshot.width) >= 1 && Number(screenshot.width) <= 16_384
+        Number(screenshot.width) >= 1 && Number(screenshot.width) <= NATIVE_SCREENSHOT_MAX_WIDTH
         ? screenshot.width : null,
       height: Number.isSafeInteger(screenshot.height) &&
-        Number(screenshot.height) >= 1 && Number(screenshot.height) <= 16_384
+        Number(screenshot.height) >= 1 && Number(screenshot.height) <= NATIVE_SCREENSHOT_MAX_HEIGHT
         ? screenshot.height : null,
+      pageId: exactHandle(screenshot.pageId) ? screenshot.pageId : null,
+      snapshotId: exactHandle(screenshot.snapshotId) ? screenshot.snapshotId : null,
+      pageGeneration: Number.isSafeInteger(screenshot.pageGeneration) &&
+        Number(screenshot.pageGeneration) >= 1 ? screenshot.pageGeneration : null,
+      urlSha256: hash(screenshot.urlSha256),
       contentSha256: hash(screenshot.contentSha256),
       bytesVerified: Number.isSafeInteger(screenshot.bytesVerified) &&
-        Number(screenshot.bytesVerified) >= 1 && Number(screenshot.bytesVerified) <= 16 * 1024 * 1024
+        Number(screenshot.bytesVerified) >= 1 &&
+        Number(screenshot.bytesVerified) <= NATIVE_SCREENSHOT_PNG_BYTES_LIMIT
         ? screenshot.bytesVerified : null,
       workspaceRelativeFile: screenshotFile,
       effectState: closed(screenshot.effectState, ["Observed", "Unknown", "NotAttempted"]),
       retry: closed(screenshot.retry, ["NEVER_REPLAY"]),
+    } : null,
+    nativeCredentialTransport: credential ? {
+      requestMethod: closed(credential.requestMethod, ["GET"]),
+      destinationSha256: hash(credential.destinationSha256),
+      referenceSha256: hash(credential.referenceSha256),
+      tf3RequestId: exactHandle(credential.tf3RequestId) ? credential.tf3RequestId : null,
+      credentialSentToApprovedOrigin: credential.credentialSentToApprovedOrigin === true,
+      statusCode: statusCode(credential.statusCode),
+      effectState: closed(credential.effectState, ["Unknown", "NoEffect", "NotAttempted"]),
+      retry: closed(credential.retry, ["NEVER_REPLAY"]),
+    } : null,
+    nativeTf2Download: download ? {
+      method: closed(download.method, ["GET"]),
+      sourceUrlSha256: hash(download.sourceUrlSha256),
+      responseSha256: hash(download.responseSha256),
+      bytesVerified: boundedBytes(download.bytesVerified),
+      workspaceRelativeFile: typeof download.workspaceRelativeFile === "string" &&
+        NATIVE_DOWNLOAD_FIXED_FILE.test(download.workspaceRelativeFile)
+          ? download.workspaceRelativeFile : null,
+      pageId: exactHandle(download.pageId) ? download.pageId : null,
+      pageGeneration: Number.isSafeInteger(download.pageGeneration) &&
+        Number(download.pageGeneration) >= 1 ? download.pageGeneration : null,
+      snapshotId: exactHandle(download.snapshotId) ? download.snapshotId : null,
+      tf3RequestId: exactHandle(download.tf3RequestId) ? download.tf3RequestId : null,
+      fileEffectState: closed(download.fileEffectState, ["Observed"]),
+      retry: closed(download.retry, ["NEVER_REPLAY"]),
+    } : null,
+    nativeUploadTransport: upload ? {
+      method: closed(upload.method, ["POST"]),
+      destinationSha256: hash(upload.destinationSha256),
+      originalFileSha256: hash(upload.originalFileSha256),
+      bodyBytes: boundedBytes(upload.bodyBytes),
+      tf3RequestId: exactHandle(upload.tf3RequestId) ? upload.tf3RequestId : null,
+      statusCode: statusCode(upload.statusCode),
+      remoteEffectState: closed(upload.remoteEffectState, ["Unknown"]),
+      retry: closed(upload.retry, ["NEVER_REPLAY"]),
     } : null,
   };
   return JSON.stringify(safe, null, 2);
@@ -486,8 +687,13 @@ export function NativeBrowserOperatorPanel({
   onChanged: () => void;
 }) {
   const [initialUrl, setInitialUrl] = useState("");
+  const [childTabUrl, setChildTabUrl] = useState("");
+  const [transferUrl, setTransferUrl] = useState("");
+  const [opaqueCredentialRef, setOpaqueCredentialRef] = useState("");
+  const [syntheticUploadFile, setSyntheticUploadFile] = useState("");
   const [browserId, setBrowserId] = useState<string | null>(null);
   const [page, setPage] = useState<NativePage | null>(null);
+  const [observedAtMs, setObservedAtMs] = useState<number | null>(null);
   const [expectedPopupUrl, setExpectedPopupUrl] = useState("");
   const [popupAttempt, setPopupAttempt] = useState<NativePopupAttempt | null>(null);
   const [formRef, setFormRef] = useState("");
@@ -509,13 +715,26 @@ export function NativeBrowserOperatorPanel({
     parameters?: string,
   ): Promise<void> {
     if (busy || transactionActive.current) return;
+    if (nativeMutation(operation) &&
+        !nativeHumanRetainedObservationFresh(observedAtMs, Date.now())) {
+      // IANA's historical positive clicks arrived 34s and 44s after the
+      // semantic snapshot. This avoids requesting a misleading per-node OS
+      // consent on an already aging observation, but NEVER rebinds an old
+      // handle or weakens the native mutation/detachment check.
+      setPage(null);
+      setObservedAtMs(null);
+      setResult("Original retained-node observation is older than 25 seconds. Observe the same session again for entirely new opaque handles before choosing a gesture. Nothing was prepared or dispatched.");
+      return;
+    }
     const activePage = page;
     const activeBrowserId = browserId;
     const request = originalNativeOperatorRequest(
       operation, { actor, sessionId, workspaceRoot, browserId: activeBrowserId },
       activePage, element, parameters,
       operation === "open_confined" ? initialUrl :
-        operation === "trigger_page_popup" ? expectedPopupUrl : undefined,
+        operation === "open_confined_tab" ? childTabUrl :
+        operation === "trigger_page_popup" ? expectedPopupUrl :
+        ["credential_get", "download", "upload"].includes(operation) ? transferUrl : undefined,
       popupAttempt,
     );
     if (!request) {
@@ -530,10 +749,12 @@ export function NativeBrowserOperatorPanel({
     setBusy(true);
     setLastEvidence(null);
     if (operation === "type") setTestText("");
-    if (nativeMutation(operation) || operation === "screenshot") {
+    if (nativeMutation(operation) || ["screenshot", "credential_get", "download", "upload"].includes(operation)) {
       setFormRef("");
       setSubmitterRef("");
     }
+    if (nativeMutation(operation) || ["screenshot", "credential_get", "download", "upload"].includes(operation))
+      setObservedAtMs(null);
     setResult(
       `Native ${operation.replace(/_/g, " ")} awaiting application authorization…`,
     );
@@ -542,7 +763,8 @@ export function NativeBrowserOperatorPanel({
       const prepared = await invoke<Prepared>("tf_browser_prepare", {
         request,
       });
-      const isOpen = operation === "open_confined" || operation === "open_requested_popup";
+      const isOpen = operation === "open_confined" ||
+        operation === "open_confined_tab" || operation === "open_requested_popup";
       if (!preparedNativeOperatorMatches(prepared, operation, activeBrowserId)) {
         throw Error("native-prepared-scope-mismatch");
       }
@@ -551,8 +773,9 @@ export function NativeBrowserOperatorPanel({
         // Actual user decision occurs only inside the existing Tauri OS dialog.
         await invoke<void>("tf_browser_approve", { token: preparedToken });
       }
-      if (nativeMutation(operation) || operation === "screenshot")
-        setPage(null); // Screenshot can advance the session revision; no stale refs.
+      if (nativeMutation(operation) ||
+          ["screenshot", "credential_get", "download", "upload"].includes(operation))
+        setPage(null); // One-use effect/TF2 operation may advance session revision.
       const receipt = await invoke<NativeReceipt>("tf_browser_execute", {
         token: preparedToken,
       });
@@ -573,9 +796,12 @@ export function NativeBrowserOperatorPanel({
           throw Error("native-open-unverified");
         setBrowserId(receipt.browserSessionId);
         setPage(null);
+        setObservedAtMs(null);
         setResult(
           operation === "open_requested_popup"
             ? `Separately consented page-requested popup child ${receipt.browserSessionId.slice(0, 10)} launched under the original opener. Independently isolated; document outcome still pending. Observe child before further actions.`
+            : operation === "open_confined_tab"
+              ? `Separate explicitly consented isolated tab ${receipt.browserSessionId.slice(0, 10)} launched with its own AppContainer and UDF. Observe before actions; original opener remains separately owned.`
             : "Confined session launched. Observe after the HTTPS document loads; no page action is approved yet.",
         );
       } else if (operation === "observe_confined") {
@@ -583,6 +809,7 @@ export function NativeBrowserOperatorPanel({
         if (receipt.terminal !== "completed" || !found)
           throw Error("native-snapshot-unverified");
         setPage(found);
+        setObservedAtMs(Date.now());
         setFormRef("");
         setSubmitterRef("");
         setResult(
@@ -608,17 +835,54 @@ export function NativeBrowserOperatorPanel({
           ? "Original FORM+submitter native POST: TF3 transport receipt observed. Server-side effect UNKNOWN; NEVER REPLAY. Only closed SHA-256 and byte evidence exported."
           : `Original FORM submission unverified/UNKNOWN · ${safeReason(receipt.reasonCode)}. Never replay a possible write.`);
       } else if (operation === "screenshot") {
-        const evidence = receipt.nativeScreenshotEvidence;
-        const verified = receipt.terminal === "completed" &&
-          receipt.policyDecision === "allowed" &&
-          receipt.effectState === "Observed" &&
-          evidence?.format === "png" &&
-          /^[a-f0-9]{64}$/.test(evidence.contentSha256 ?? "") &&
-          /^tf4-browser-screenshot-[a-f0-9]{24}\.png$/.test(evidence.workspaceRelativeFile ?? "") &&
-          Number.isSafeInteger(evidence.bytesVerified) && (evidence.bytesVerified ?? 0) > 0;
+        const verified = verifiedNativeScreenshotEvidence(receipt, activePage);
         setResult(verified
           ? "Native screenshot: genuine per-call OS privacy consent and TF2 workspace PNG commit/readback reported. Independently verify the fixed evidence path and SHA-256. Re-observe before further page actions."
           : `Native screenshot outcome UNKNOWN or unverified · ${safeReason(receipt.reasonCode)}. NEVER REPLAY.`);
+      } else if (operation === "credential_get") {
+        const e = receipt.nativeCredentialTransport;
+        const transported = receipt.terminal === "completed" &&
+          receipt.retry === "NEVER_REPLAY" && receipt.autoRetry === false &&
+          e?.requestMethod === "GET" && e.credentialSentToApprovedOrigin === true &&
+          SHA256.test(e.destinationSha256 ?? "") &&
+          SHA256.test(e.referenceSha256 ?? "") &&
+          e.retry === "NEVER_REPLAY";
+        setOpaqueCredentialRef("");
+        setResult(transported
+          ? "A single centrally consented opaque keyring credential was delivered via TF3 only to the exact approved origin. Remote business effect UNKNOWN; never replay. No credential bytes are recorded."
+          : `Credential GET denied or UNKNOWN · ${safeReason(receipt.reasonCode)}. Do not retry an uncertain request.`);
+      } else if (operation === "download") {
+        const e = receipt.nativeDownloadEvidence;
+        const fileCommitted = receipt.terminal === "completed" &&
+          receipt.effectState === "Observed" && receipt.retry === "NEVER_REPLAY" &&
+          receipt.autoRetry === false && !!activePage &&
+          e?.method === "GET" && e.pageId === activePage.pageId &&
+          e.snapshotId === activePage.snapshotId &&
+          e.pageGeneration === activePage.pageGeneration &&
+          e.fileEffectState === "Observed" && e.retry === "NEVER_REPLAY" &&
+          SHA256.test(e.responseSha256 ?? "") &&
+          NATIVE_DOWNLOAD_FIXED_FILE.test(e.workspaceRelativeFile ?? "") &&
+          Number.isSafeInteger(e.bytesVerified) &&
+          Number(e.bytesVerified) >= 1 && Number(e.bytesVerified) <= 65_536 &&
+          receipt.bytesReceived === e.bytesVerified &&
+          receipt.contentSha256 === e.responseSha256;
+        setResult(fileCommitted
+          ? "Native TF3 GET + TF2 atomic no-clobber download and independent file readback reported. Check the fixed relative file in the owning chat workspace; no remote business effect is proven."
+          : `Download local file effect UNKNOWN or unverified · ${safeReason(receipt.reasonCode)}. NEVER REPLAY.`);
+      } else if (operation === "upload") {
+        const e = receipt.nativeUploadTransport;
+        const sent = receipt.terminal === "completed" &&
+          receipt.effectState === "Unknown" && receipt.retry === "NEVER_REPLAY" &&
+          receipt.autoRetry === false && e?.method === "POST" &&
+          SHA256.test(e.destinationSha256 ?? "") &&
+          SHA256.test(e.originalFileSha256 ?? "") &&
+          Number.isSafeInteger(e.bodyBytes) &&
+          Number(e.bodyBytes) >= 1 && Number(e.bodyBytes) <= 65_536 &&
+          e.remoteEffectState === "Unknown" && e.retry === "NEVER_REPLAY";
+        setSyntheticUploadFile("");
+        setResult(sent
+          ? "Original TF2 synthetic workspace file independently re-read and sent via one exact-body TF3 POST. Remote server-side acceptance UNKNOWN, never replay. Use an independent effects oracle."
+          : `Upload outcome UNKNOWN or denied · ${safeReason(receipt.reasonCode)}. NEVER REPLAY.`);
       } else if (operation === "click") {
         const success =
           receipt.terminal === "success" &&
@@ -640,6 +904,7 @@ export function NativeBrowserOperatorPanel({
         );
       } else {
         setPage(null);
+        setObservedAtMs(null);
         setBrowserId(null);
         setFormRef("");
         setSubmitterRef("");
@@ -678,6 +943,13 @@ export function NativeBrowserOperatorPanel({
         No native model tools are enabled. The OS asks for genuine per-call
         consent. This is not a general Internet browser; TF3 can deny an origin.
       </p>
+      <p role="status" className="text-muted-foreground">
+        Exact owning chat / WorkspaceRegistry scope: {workspaceRoot}.
+        This scope comes from the saved chat profile or active run, NOT the
+        currently selected project tab. Use a fresh chat bound to an approved
+        dedicated scratch workspace for file, screenshot or credential tests.
+        This panel cannot change or impersonate workspace ownership.
+      </p>
       {nativeSessions.map((session) => (
         <Button
           key={session.browserSessionId}
@@ -688,6 +960,7 @@ export function NativeBrowserOperatorPanel({
           onClick={() => {
             setBrowserId(session.browserSessionId);
             setPage(null);
+            setObservedAtMs(null);
             setPopupAttempt(null);
             setExpectedPopupUrl("");
             setFormRef("");
@@ -746,6 +1019,22 @@ export function NativeBrowserOperatorPanel({
           Close owned session
         </Button>
       </div>
+      {browserId ? (
+        <section aria-label="Separately approved isolated tab" className="space-y-1 rounded border p-2">
+          <label htmlFor="tf4-native-child-url" className="block text-muted-foreground">
+            New isolated child HTTPS origin root (separate AppContainer/UDF)
+          </label>
+          <input id="tf4-native-child-url" type="url" value={childTabUrl}
+            autoComplete="off" spellCheck={false} maxLength={2048}
+            disabled={busy} onChange={(event) => setChildTabUrl(event.currentTarget.value)}
+            className="w-full rounded border bg-background px-2 py-1" />
+          <Button type="button" size="sm" variant="outline"
+            disabled={busy || !confinedRootUrl(childTabUrl)}
+            onClick={() => { void executeOnce("open_confined_tab"); }}>
+            Open separately consented isolated tab (no popup inheritance)
+          </Button>
+        </section>
+      ) : null}
       {popupAttempt && browserId === popupAttempt.openerId ? (
         <section aria-label="Original page popup follow-up" className="space-y-1 rounded border p-2">
           <p className="font-medium">Stage 2 · original page-requested popup (not an app tab)</p>
@@ -770,6 +1059,12 @@ export function NativeBrowserOperatorPanel({
             its own genuine OS approval; UNKNOWN must never be retried.
           </p>
           <p className="text-muted-foreground">
+            Human-action freshness window: 25 seconds from the completed native
+            observation. A changed document can still invalidate an element
+            sooner. Re-observe to mint entirely new retained node IDs; never
+            retry the old action or treat elapsed time as native authority.
+          </p>
+          <p className="text-muted-foreground">
             Original browser {page.browserSessionId.slice(0, 10)} · page {page.pageId.slice(0, 10)} · snapshot {page.snapshotId.slice(0, 10)} · origin {page.origin}.
           </p>
           <Button type="button" size="sm" variant="outline" disabled={busy}
@@ -782,6 +1077,53 @@ export function NativeBrowserOperatorPanel({
             approve only for a trusted workspace. No screenshot bytes are shown
             to the model or copied into the native receipt.
           </p>
+          <section aria-label="Exact original-page TF3 transfers" className="space-y-1 rounded border p-2">
+            <p className="font-medium">Origin-bound TF3 + TF2 effects (human-approved only)</p>
+            <label className="block text-muted-foreground" htmlFor="tf4-native-transfer-url">
+              Independently known exact HTTPS URL, same origin as retained original page
+            </label>
+            <input id="tf4-native-transfer-url" type="url" maxLength={2048}
+              autoComplete="off" spellCheck={false} value={transferUrl}
+              disabled={busy} onChange={(event) => setTransferUrl(event.currentTarget.value)}
+              className="w-full rounded border bg-background px-2 py-1" />
+            <p className="text-muted-foreground">
+              Only a public, owned synthetic test endpoint should receive a
+              credential or POST. TF3 still denies private IPs, redirects and
+              unauthorized destinations at the actual network boundary.
+              Every request requires separate OS consent and is never replayed.
+            </p>
+            <Button type="button" size="sm" variant="outline"
+              disabled={busy || !nativeSameOriginTransferUrl(transferUrl, page.origin)}
+              onClick={() => { void executeOnce("download"); }}>
+              Download one bounded binary via TF3 and atomically verify TF2 workspace file
+            </Button>
+            <label className="block text-muted-foreground" htmlFor="tf4-native-upload-file">
+              Existing synthetic TF2 file basename (tf4-*.bin, never an arbitrary path)
+            </label>
+            <input id="tf4-native-upload-file" type="text" maxLength={96}
+              autoComplete="off" spellCheck={false} value={syntheticUploadFile}
+              disabled={busy} onChange={(event) => setSyntheticUploadFile(event.currentTarget.value)}
+              className="w-full rounded border bg-background px-2 py-1" />
+            <Button type="button" size="sm" variant="outline"
+              disabled={busy || !nativeSameOriginTransferUrl(transferUrl, page.origin) ||
+                !syntheticNativeUploadName(syntheticUploadFile)}
+              onClick={() => { void executeOnce("upload", undefined, syntheticUploadFile); }}>
+              Upload one reverified TF2 synthetic file with TF3 and one-use OS approval
+            </Button>
+            <label className="block text-muted-foreground" htmlFor="tf4-native-credential-ref">
+              Existing opaque OS-keyring credential reference (48 lowercase hex; NEVER a secret)
+            </label>
+            <input id="tf4-native-credential-ref" type="text" maxLength={48}
+              autoComplete="off" spellCheck={false} value={opaqueCredentialRef}
+              disabled={busy} onChange={(event) => setOpaqueCredentialRef(event.currentTarget.value)}
+              className="w-full rounded border bg-background px-2 py-1" />
+            <Button type="button" size="sm" variant="outline"
+              disabled={busy || !nativeSameOriginTransferUrl(transferUrl, page.origin) ||
+                !/^[a-f0-9]{48}$/.test(opaqueCredentialRef)}
+              onClick={() => { void executeOnce("credential_get", undefined, opaqueCredentialRef); }}>
+              One origin-scoped keyring GET via TF3 (native OS consent)
+            </Button>
+          </section>
           {page.elements
             .filter((element) => element.role === "link")
             .slice(0, 8)

@@ -27,6 +27,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use std::sync::atomic::AtomicU8;
@@ -2296,6 +2297,26 @@ fn valid_nav_url(raw: &str) -> Result<String, String> {
     // user consent and on every redirect, before any socket connection.
     Ok(parsed.to_string())
 }
+
+/// Presentation-time *negative* gate only. Reuse TF3's canonical literal-IP
+/// classification and forbidden metadata host names, without doing DNS here.
+/// A successfully shaped public hostname is NOT considered safe by this
+/// check: the original TF3 policy still resolves, pins and rechecks each hop
+/// at execution. No pre-consent socket, DNS authority or new allowlist.
+fn reject_obvious_forbidden_native_destination(url: &Url) -> Result<(), String> {
+    let host = url.host_str().ok_or("confined-destination-host-required")?;
+    if super::is_blocked_host_name(host) {
+        return Err("confined-destination-forbidden-before-consent".into());
+    }
+    // URL serialization brackets IPv6 literals; the canonical network
+    // classifier accepts IpAddr without brackets. No textual allowlist.
+    if let Ok(ip) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() {
+        if super::ip_kind(ip) != super::IpKind::Public {
+            return Err("confined-destination-forbidden-before-consent".into());
+        }
+    }
+    Ok(())
+}
 fn inert_link_metadata_allowed(url: &Url) -> bool {
     // Suppress links that visibly carry credential-like query names. This is
     // defense-in-depth for receipt metadata, NOT an alternative to TF3's
@@ -2433,6 +2454,7 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
                 {
                     return Err("confined-initial-https-root-only".into());
                 }
+                reject_obvious_forbidden_native_destination(&target)?;
                 if let Some(resources) = req.resource_manifest.as_deref() {
                     super::tf_browser_runtime::validate_resource_manifest(
                         target.as_str(), resources
@@ -2526,6 +2548,7 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
             {
                 return Err("native-origin-credential-exact-scope-denied".into());
             }
+            reject_obvious_forbidden_native_destination(&destination)?;
         }
         TfBrowserOperation::Download | TfBrowserOperation::Upload => {
             let url = req
@@ -2553,6 +2576,7 @@ fn ensure_request_shape(req: &TfBrowserRequest) -> Result<(), String> {
             {
                 return Err("native-transfer-exact-original-scope-required".into());
             }
+            reject_obvious_forbidden_native_destination(&destination)?;
         }
         operation if operation.native_action() => {
             if req.url.is_some()
@@ -4324,6 +4348,33 @@ async fn execute_confined_native(
 /// existing actor owns the same sealed native session and host-issued turn;
 /// no competing pipe reader, script/selector API, or model tool is created.
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn closed_native_observation_failure_reason(untrusted: &str) -> &'static str {
+    // The native owner can return an opaque transport/COM failure string.
+    // Export ONLY a fixed allowlist of host-authored categories. Paths,
+    // page content, Windows error text and private broker details stay hidden.
+    match untrusted {
+        "STALE" | "observation-page-stale" | "browser-native-page-stale" => {
+            "native-semantic-observation-page-stale"
+        }
+        "observation-timeout" | "browser-structure-observation-timeout" => {
+            "native-semantic-observation-com-timeout"
+        }
+        "browser-structure-session-not-ready" | "browser-exclusive-control-turn-required" |
+        "browser-control-turn-required" => {
+            "native-semantic-observation-owner-not-ready"
+        }
+        "observation-session-broken" | "browser-control-turn-broker-lost" => {
+            "native-semantic-observation-owner-broken"
+        }
+        "observation-result-invalid" | "observation-identity-invalid" |
+        "observation-identity-unavailable" | "observation-identity-probe-invalid" => {
+            "native-semantic-observation-identity-unverified"
+        }
+        _ => "native-semantic-observation-outcome-uncertain",
+    }
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 async fn execute_confined_observation(
     token: &str,
     registry: &WorkspaceRegistry,
@@ -4420,6 +4471,15 @@ async fn execute_confined_observation(
                     session.revision = session.revision.saturating_add(1);
                 }
             }
+        }
+        Ok(Ok(Err(reason))) => {
+            // Preserve RFC Editor-style UNKNOWN/NEVER_REPLAY while exposing
+            // only an allowlisted, non-secret failure category. The native
+            // owner still poisons and reaps its job on failed observation.
+            receipt.terminal = "unknown";
+            receipt.effect_state = "Unknown";
+            receipt.reason_code = closed_native_observation_failure_reason(&reason).into();
+            receipt.uncertainty = "native-observation-IPC-or-COM-unverified";
         }
         _ => {
             receipt.terminal = "unknown";
@@ -6518,6 +6578,88 @@ mod tests {
         gesture.text = None;
         gesture.selector = Some("a[target=_blank]".into());
         assert!(ensure_request_shape(&gesture).is_err());
+    }
+
+    #[test]
+    fn confined_native_obvious_private_literals_are_rejected_before_os_consent() {
+        let (dir, registry, state, _) = setup();
+        for operation in [
+            TfBrowserOperation::OpenConfined,
+            TfBrowserOperation::OpenConfinedTab,
+            TfBrowserOperation::OpenRequestedPopup,
+        ] {
+            for target in [
+                "https://10.255.255.1/",
+                "https://127.0.0.1/",
+                "https://169.254.169.254/",
+                "https://192.168.1.1/",
+                "https://100.64.0.1/",
+                "https://198.18.0.1/",
+                "https://[::1]/",
+                "https://[::ffff:127.0.0.1]/",
+                "https://[fe80::1]/",
+                "https://[fd00:ec2::254]/",
+                "https://metadata.google.internal/",
+                "https://metadata.azure.com/",
+            ] {
+                let mut request = req(dir.path(), operation);
+                if operation.opens_child() {
+                    request.browser_session_id = Some("e".repeat(48));
+                }
+                request.url = Some(target.into());
+                assert_eq!(
+                    ensure_request_shape(&request).unwrap_err(),
+                    "confined-destination-forbidden-before-consent",
+                    "{operation:?}: {target}"
+                );
+                // No approval token, owner, DNS or host is allocated.
+                assert_eq!(
+                    prepare(request, &registry, &state).unwrap_err(),
+                    "confined-destination-forbidden-before-consent",
+                    "{operation:?}: {target}"
+                );
+            }
+        }
+        for public in [
+            "https://example.org/",
+            "https://www.iana.org/",
+            "https://1.1.1.1/",
+            "https://[2606:4700:4700::1111]/",
+        ] {
+            let mut request = req(dir.path(), TfBrowserOperation::OpenConfined);
+            request.url = Some(public.into());
+            assert!(ensure_request_shape(&request).is_ok(), "{public}");
+        }
+        // Shape admission never replaces TF3's authoritative DNS/IP/TLS
+        // execution policy, including DNS rebinding and redirect checks.
+        let entries = state.entries.lock().unwrap();
+        assert!(entries.pending.is_empty());
+        assert!(entries.sessions.is_empty());
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn failed_native_observation_exposes_only_closed_cause_and_stays_unknown() {
+        assert_eq!(
+            closed_native_observation_failure_reason("observation-page-stale"),
+            "native-semantic-observation-page-stale"
+        );
+        assert_eq!(
+            closed_native_observation_failure_reason("observation-timeout"),
+            "native-semantic-observation-com-timeout"
+        );
+        assert_eq!(
+            closed_native_observation_failure_reason("browser-structure-session-not-ready"),
+            "native-semantic-observation-owner-not-ready"
+        );
+        assert_eq!(
+            closed_native_observation_failure_reason("observation-identity-unavailable"),
+            "native-semantic-observation-identity-unverified"
+        );
+        let secret = "C:\\Users\\private\\session-token=SUPER-SECRET";
+        let result = closed_native_observation_failure_reason(secret);
+        assert_eq!(result, "native-semantic-observation-outcome-uncertain");
+        assert!(!result.contains(secret));
     }
 
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
