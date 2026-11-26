@@ -1582,13 +1582,18 @@ struct NetworkScope<'a> {
     tls_test_root: Option<&'a reqwest::Certificate>,
 }
 
+struct NetworkFetchFence<'a> {
+    attempted: &'a mut bool,
+    absolute_deadline: Option<tokio::time::Instant>,
+}
+
 async fn network_fetch(
     p: &Pending,
     receipt: &mut TfWebReceipt,
     cancel: &mut watch::Receiver<bool>,
     credential: Option<&str>,
     state: &TfWebState,
-    attempted: &mut bool,
+    fence: NetworkFetchFence<'_>,
     scope: NetworkScope<'_>,
 ) -> Result<(), Failure> {
     let NetworkScope {
@@ -1697,8 +1702,16 @@ async fn network_fetch(
     } else {
         "SAFE_RETRY"
     };
-    let deadline = tokio::time::Instant::now()
+    // The native original-link successor is authorized only within its
+    // consumed absolute deadline. TF3 preparation/lock contention must NOT
+    // start a fresh relative network clock after that permission expires.
+    let relative_deadline = tokio::time::Instant::now()
         + Duration::from_millis(p.request.timeout_ms.unwrap_or(MAX_TIMEOUT));
+    let deadline = fence.absolute_deadline
+        .map_or(relative_deadline, |bound| bound.min(relative_deadline));
+    if tokio::time::Instant::now() >= deadline {
+        return Err(Failure("timeout"));
+    }
     let max_hops = if search || browser_credential.is_some() {
         0
     } else {
@@ -1851,9 +1864,15 @@ async fn network_fetch(
             request = request.header(reqwest::header::AUTHORIZATION, header);
             receipt.credential_used = true;
         }
+        // This final check is after DNS, client creation, and header assembly
+        // but BEFORE the one possible reqwest send. All DNS and send futures
+        // also use the same absolute deadline through bounded().
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Failure("timeout"));
+        }
         // Distinguish a network attempt from proof of remote delivery.
         receipt.uncertainty = "socket-peer-ip-not-observed";
-        *attempted = true;
+        *fence.attempted = true;
         if browser_resource {
             // A transport acknowledgment is never an independently observed
             // application effect; only a separate owned-server oracle can
@@ -2107,6 +2126,20 @@ async fn execute_policy_with_output_scoped(
     scope: NetworkScope<'_>,
     expected_kind: Tf3ExecutionKind,
 ) -> Result<TfWebReceipt, String> {
+    execute_policy_with_output_scoped_deadline(
+        token, registry, state, credential, scope, expected_kind, None,
+    ).await
+}
+
+async fn execute_policy_with_output_scoped_deadline(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    credential: Option<String>,
+    scope: NetworkScope<'_>,
+    expected_kind: Tf3ExecutionKind,
+    absolute_network_deadline: Option<tokio::time::Instant>,
+) -> Result<TfWebReceipt, String> {
     let (p, mut rx) = consume_policy(token, registry, state, scope.policy)?;
     if pending_executor_kind(&p) != expected_kind
         || (expected_kind != Tf3ExecutionKind::PublicRead
@@ -2137,7 +2170,10 @@ async fn execute_policy_with_output_scoped(
         &mut rx,
         credential.as_deref(),
         state,
-        &mut attempted,
+        NetworkFetchFence {
+            attempted: &mut attempted,
+            absolute_deadline: absolute_network_deadline,
+        },
         scope,
     )
     .await;
@@ -2233,6 +2269,35 @@ pub async fn execute_browser_resource_same_origin(
     state: &TfWebState,
     approved_origin: &Url,
 ) -> Result<TfBrowserResource, String> {
+    execute_browser_resource_same_origin_scoped(
+        token, registry, state, approved_origin, None,
+    ).await
+}
+
+/// TF4-only absolute-time successor document boundary. The native parent
+/// supplies this deadline from its genuinely consumed original-node action,
+/// not from page data or an untrusted renderer callback. It is checked again
+/// after consuming the TF3 token and immediately before the reqwest send.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) async fn execute_browser_resource_same_origin_before(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+    absolute_deadline: tokio::time::Instant,
+) -> Result<TfBrowserResource, String> {
+    execute_browser_resource_same_origin_scoped(
+        token, registry, state, approved_origin, Some(absolute_deadline),
+    ).await
+}
+
+async fn execute_browser_resource_same_origin_scoped(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+    absolute_deadline: Option<tokio::time::Instant>,
+) -> Result<TfBrowserResource, String> {
     if approved_origin.scheme() != "https"
         || approved_origin.host_str().is_none()
         || !approved_origin.username().is_empty()
@@ -2242,7 +2307,7 @@ pub async fn execute_browser_resource_same_origin(
         return Err("browser-approved-https-origin-invalid".into());
     }
     let mut bytes = Vec::new();
-    let receipt = execute_policy_with_output_scoped(
+    let receipt = execute_policy_with_output_scoped_deadline(
         token,
         registry,
         state,
@@ -2254,6 +2319,7 @@ pub async fn execute_browser_resource_same_origin(
             tls_test_root: None,
         },
         Tf3ExecutionKind::PublicRead,
+        absolute_deadline,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -2294,6 +2360,7 @@ pub(crate) async fn execute_owned_https_for_test(
     state: &TfWebState,
     approved_origin: &Url,
     ephemeral_public_certificate: &reqwest::Certificate,
+    absolute_deadline: Option<tokio::time::Instant>,
 ) -> Result<TfBrowserResource, String> {
     if approved_origin.scheme() != "https"
         || approved_origin.host_str() != Some("127.0.0.1")
@@ -2302,7 +2369,7 @@ pub(crate) async fn execute_owned_https_for_test(
         return Err("owned-https-approved-origin-denied".into());
     }
     let mut bytes = Vec::new();
-    let receipt = execute_policy_with_output_scoped(
+    let receipt = execute_policy_with_output_scoped_deadline(
         token,
         registry,
         state,
@@ -2314,6 +2381,7 @@ pub(crate) async fn execute_owned_https_for_test(
             tls_test_root: Some(ephemeral_public_certificate),
         },
         Tf3ExecutionKind::PublicRead,
+        absolute_deadline,
     )
     .await?;
     Ok(TfBrowserResource { receipt, bytes })
@@ -4114,5 +4182,49 @@ mod tests {
         assert!(prepare(fetch.clone(), &registry, &state).is_ok());
         fetch.session_id = "other-session".into();
         assert!(prepare(fetch, &registry, &state).is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_native_successor_absolute_deadline_never_reaches_network() {
+        let (dir, registry, state) = setup();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://127.0.0.1:{}/clicked", listener.local_addr().unwrap().port());
+        let origin = Url::parse(&url).unwrap();
+        let req = fixture(dir.path(), url.clone());
+        let prepared = prepare_policy(req, &registry, &state, NetworkPolicy::FixtureLoopback)
+            .unwrap();
+        let mut output = Vec::new();
+        let receipt = execute_policy_with_output_scoped_deadline(
+            &prepared.token,
+            &registry,
+            &state,
+            None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: Some(&mut output),
+                browser_approved_origin: Some(&origin),
+                tls_test_root: None,
+            },
+            Tf3ExecutionKind::PublicRead,
+            Some(tokio::time::Instant::now() - Duration::from_millis(1)),
+        ).await.unwrap();
+        assert_eq!(receipt.terminal, "timed_out");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        assert!(receipt.dns_evidence.is_empty());
+        assert!(receipt.status_code.is_none());
+        assert!(output.is_empty());
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert!(execute_policy_with_output_scoped_deadline(
+            &prepared.token, &registry, &state, None,
+            NetworkScope {
+                policy: NetworkPolicy::FixtureLoopback,
+                browser_bytes: Some(&mut output),
+                browser_approved_origin: Some(&origin),
+                tls_test_root: None,
+            },
+            Tf3ExecutionKind::PublicRead,
+            None,
+        ).await.is_err(), "expired successor token is already consumed, never replayable");
     }
 }

@@ -289,7 +289,7 @@ mod host {
     // and dispatch at most one HTMLElement.click(). This is a programmatic
     // DOM activation, NOT a trusted hardware pointer event or effect proof.
     // Caller-provided JS, selectors, element strings and retries are absent.
-    const DOM_EXACT_CLICK_JS: &str = r#"function(slot) {
+    const DOM_EXACT_CLICK_JS: &str = r#"function(slot, approvedDestination) {
       if (this.observer.takeRecords().length) this.state.changed = true;
       if (this.state.changed) return {dispatched:false,targetHref:null};
       const node = this.nodes[slot];
@@ -318,7 +318,9 @@ mod host {
       }
       const targetHref = node.href;
       if (!targetHref || targetHref.length > 2048
-          || targetHref.includes('?') || targetHref.includes('#'))
+          || targetHref.includes('?') || targetHref.includes('#')
+          || typeof approvedDestination !== 'string'
+          || approvedDestination !== targetHref)
         return {dispatched:false,targetHref:null};
       const destination = new URL(targetHref);
       const source = new URL(document.location.href);
@@ -330,6 +332,38 @@ mod host {
       this.state.changed = true;
       node.click();
       return {dispatched:true,targetHref};
+    }"#;
+    // A separate, strictly READ-ONLY pre-consent capture of the intended
+    // destination of the ORIGINAL retained link. This is never a selector,
+    // authorization, click, navigation or network request. The later actual
+    // activation must independently revalidate this same Node and href.
+    const DOM_EXACT_LINK_CAPTURE_JS: &str = r#"function(slot) {
+      if (this.observer.takeRecords().length) this.state.changed = true;
+      if (this.state.changed) return null;
+      const node = this.nodes[slot];
+      if (!node || !node.isConnected || node.ownerDocument !== document ||
+          node.tagName !== 'A' || node.disabled === true ||
+          !node.getClientRects().length || node.hasAttribute('download') ||
+          node.hasAttribute('ping') ||
+          (node.target !== '' && node.target.toLowerCase() !== '_self')) return null;
+      if (node.target === '') {
+        let headNode = document.head && document.head.firstElementChild;
+        let headVisits = 0;
+        while (headNode && headVisits++ < 128) {
+          if (headNode.tagName === 'BASE' && headNode.hasAttribute('target')) return null;
+          headNode = headNode.nextElementSibling;
+        }
+        if (headNode) return null;
+      }
+      const href = node.href;
+      if (!href || href.length > 2048 || href.includes('?') || href.includes('#')) return null;
+      const destination = new URL(href), source = new URL(document.location.href);
+      if (source.protocol !== 'https:' || destination.protocol !== 'https:' ||
+          destination.origin !== source.origin || destination.port !== '' ||
+          source.port !== '' || destination.username !== '' ||
+          destination.password !== '' || destination.href !== href ||
+          destination.href === source.href) return null;
+      return {destination:href};
     }"#;
     // A SEPARATELY approved original-node gesture can ask WebView2 for a
     // new window, but NewWindowRequested is always synchronously vetoed.
@@ -1441,11 +1475,21 @@ mod host {
     // Separate one-use claims allow either COM event ordering without opening
     // a second document request or navigation. Only the trusted readiness
     // acknowledgement arms these claims, immediately before Navigate.
+    struct ProductionOneUseSuccessor {
+        destination: String,
+        source_generation: u64,
+        armed_at: Instant,
+        navigation_claimed: bool,
+        document_claimed: bool,
+    }
+
     #[derive(Default)]
     struct ProductionNetworkAdmission {
         armed: AtomicBool,
         navigation_claimed: AtomicBool,
         document_claimed: AtomicBool,
+        successor_armed_once: AtomicBool,
+        successor: Mutex<Option<ProductionOneUseSuccessor>>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1471,10 +1515,81 @@ mod host {
     }
 
     impl ProductionNetworkAdmission {
+        fn arm_one_use_successor(
+            &self,
+            destination: &str,
+            original: &str,
+            page_generation: u64,
+        ) -> Result<(), &'static str> {
+            let target = reqwest::Url::parse(destination)
+                .map_err(|_| "production-successor-url-invalid")?;
+            let source = reqwest::Url::parse(original)
+                .map_err(|_| "production-successor-origin-invalid")?;
+            if !self.armed.load(Ordering::Acquire)
+                || !self.navigation_claimed.load(Ordering::Acquire)
+                || !self.document_claimed.load(Ordering::Acquire)
+                || page_generation != 1
+                || destination.is_empty() || destination.len() > 2048
+                || !production_broker_url(destination)
+                || target.origin() != source.origin()
+                || target.as_str() != destination || target == source
+                || target.query().is_some() || target.fragment().is_some()
+            {
+                return Err("production-successor-original-page-or-destination-denied");
+            }
+            // A second action cannot extend the grant even if the first
+            // navigation stalls or the first DOM activation returns STALE.
+            if self.successor_armed_once.swap(true, Ordering::AcqRel) {
+                return Err("production-successor-already-armed");
+            }
+            let mut pending = self.successor.lock()
+                .map_err(|_| "production-successor-lock-failed")?;
+            *pending = Some(ProductionOneUseSuccessor {
+                destination: destination.to_owned(),
+                source_generation: page_generation,
+                armed_at: Instant::now(),
+                navigation_claimed: false,
+                document_claimed: false,
+            });
+            Ok(())
+        }
+
+        fn claim_successor(&self, destination: &str, navigation: bool) -> bool {
+            let Ok(mut state) = self.successor.lock() else { return false; };
+            let Some(pending) = state.as_mut() else { return false; };
+            if pending.destination != destination
+                || pending.source_generation != 1
+                || pending.armed_at.elapsed() >= Duration::from_secs(18)
+            {
+                return false;
+            }
+            let consumed = if navigation {
+                &mut pending.navigation_claimed
+            } else {
+                &mut pending.document_claimed
+            };
+            if *consumed { return false; }
+            *consumed = true;
+            true
+        }
+
+        fn revoke_unclaimed_successor(&self) {
+            if let Ok(mut pending) = self.successor.lock() {
+                if pending.as_ref().is_some_and(|p|
+                    !p.navigation_claimed && !p.document_claimed)
+                {
+                    *pending = None;
+                }
+            }
+        }
+
         fn navigation(&self, raw: &str, original: &str) -> bool {
-            self.armed.load(Ordering::Acquire)
-                && production_document_navigation_allowed(raw, original)
-                && !self.navigation_claimed.swap(true, Ordering::AcqRel)
+            if !self.armed.load(Ordering::Acquire) { return false; }
+            if production_document_navigation_allowed(raw, original) {
+                !self.navigation_claimed.swap(true, Ordering::AcqRel)
+            } else {
+                self.claim_successor(raw, true)
+            }
         }
 
         fn resource(
@@ -1495,8 +1610,9 @@ mod host {
                 return None;
             }
             if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT {
-                return (production_document_navigation_allowed(raw, original)
+                return ((production_document_navigation_allowed(raw, original)
                     && !self.document_claimed.swap(true, Ordering::AcqRel))
+                    || self.claim_successor(raw, false))
                 .then_some(ProductionResource::Document);
             }
             if !self.document_claimed.load(Ordering::Acquire) || !production_broker_url(raw) {
@@ -2110,6 +2226,8 @@ mod host {
         action: String,
         approval_id: String,
         #[serde(default)]
+        approved_destination: Option<String>,
+        #[serde(default)]
         text: Option<String>,
         #[serde(default)]
         option_index: Option<u32>,
@@ -2142,6 +2260,20 @@ mod host {
         ordinal: u32,
         form_index: u32,
         form_ordinal: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ParentDomLinkCaptureRequest {
+        version: u8,
+        kind: String,
+        session: String,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: String,
+        index: u32,
+        ordinal: u32,
     }
 
     #[derive(Debug, Deserialize)]
@@ -2225,6 +2357,22 @@ mod host {
         encoding: Option<&'static str>,
         destination: Option<String>,
         body: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildDomLinkCaptureReply<'a> {
+        version: u8,
+        kind: &'static str,
+        session: &'a str,
+        check_sequence: u64,
+        observation_id: u64,
+        page_generation: u64,
+        source_id: &'a str,
+        index: u32,
+        ordinal: u32,
+        state: &'static str,
+        destination: Option<String>,
     }
 
     #[derive(Serialize)]
@@ -2829,6 +2977,27 @@ mod host {
         {
             return Err("action-not-authorized-or-kind-denied");
         }
+        // Only a centrally approved ORIGINAL link may carry a successor
+        // destination. Its raw exact URL is checked again against the fixed
+        // retained Node immediately before that Node's sole activation.
+        if request.action == "click" {
+            let destination = request.approved_destination.as_deref()
+                .ok_or("action-original-link-destination-unapproved")?;
+            let target = reqwest::Url::parse(destination)
+                .map_err(|_| "action-original-link-destination-invalid")?;
+            let source = reqwest::Url::parse(initial_url)
+                .map_err(|_| "action-original-link-source-invalid")?;
+            if destination.is_empty() || destination.len() > 2048
+                || !production_broker_url(destination)
+                || target.origin() != source.origin()
+                || target.as_str() != destination || target == source
+                || target.query().is_some() || target.fragment().is_some()
+            {
+                return Err("action-original-link-destination-denied");
+            }
+        } else if request.approved_destination.is_some() {
+            return Err("action-link-approval-reused-for-another-operation");
+        }
         if request.action == "submit" {
             // Reject even explicit nulls for disallowed sibling payloads:
             // serde Option alone treats them like absent properties. A Submit
@@ -3113,6 +3282,38 @@ mod host {
             return Err("form-capture-url-denied");
         }
         Ok(Some((destination.to_owned(), body.to_owned())))
+    }
+
+    fn parse_dom_link_capture_response(raw: &str) -> Result<Option<String>, &'static str> {
+        if raw.is_empty() || raw.len() > 4096 {
+            return Err("link-capture-com-bounds");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| "link-capture-com-invalid")?;
+        if value.get("exceptionDetails").is_some()
+            || value.pointer("/result/objectId").is_some()
+            || value.pointer("/result/type").and_then(|v| v.as_str()) != Some("object")
+        {
+            return Err("link-capture-com-untrusted");
+        }
+        let fields = match value.pointer("/result/value") {
+            Some(serde_json::Value::Null) => return Ok(None),
+            Some(serde_json::Value::Object(fields)) if fields.len() == 1 => fields,
+            _ => return Err("link-capture-com-shape"),
+        };
+        let destination = fields
+            .get("destination")
+            .and_then(|v| v.as_str())
+            .ok_or("link-capture-destination-missing")?;
+        let url = reqwest::Url::parse(destination).map_err(|_| "link-capture-url-invalid")?;
+        if destination.is_empty() || destination.len() > 2048
+            || !production_broker_url(destination)
+            || url.query().is_some() || url.fragment().is_some()
+            || url.as_str() != destination
+        {
+            return Err("link-capture-url-denied");
+        }
+        Ok(Some(destination.to_owned()))
     }
 
     #[cfg(debug_assertions)]
@@ -4205,6 +4406,7 @@ mod host {
         debug_replace_heading: bool,
         activate_exact_click: bool,
         activate_popup_click: bool,
+        approved_link_destination: Option<String>,
     }
 
     fn recheck_dom_on_ui(
@@ -4220,11 +4422,18 @@ mod host {
             debug_replace_heading,
             activate_exact_click,
             activate_popup_click,
+            approved_link_destination,
         } = mode;
         if (debug_replace_heading && (activate_exact_click || activate_popup_click))
             || (activate_exact_click && activate_popup_click)
         {
             return Err("action-mode-conflict");
+        }
+        if (activate_exact_click && approved_link_destination.as_ref().is_none_or(|url|
+                url.is_empty() || url.len() > 2048))
+            || (!activate_exact_click && approved_link_destination.is_some())
+        {
+            return Err("action-original-destination-approval-missing");
         }
         #[cfg(not(debug_assertions))]
         if debug_replace_heading {
@@ -4293,7 +4502,10 @@ mod host {
                             let parameters = json!({
                                 "objectId": reference.root_object_id,
                                 "functionDeclaration": declaration,
-                                "arguments": [{ "value": reference.slot }],
+                                "arguments": [
+                                    { "value": reference.slot },
+                                    { "value": approved_link_destination }
+                                ],
                                 "returnByValue": activate_exact_click || activate_popup_click,
                                 "silent": true,
                                 "awaitPromise": false,
@@ -4529,6 +4741,81 @@ mod host {
             .map_err(|_| "action-timeout")?
     }
 
+    fn capture_retained_link_on_ui(
+        app: &tauri::AppHandle,
+        expected_url: &str,
+        generation: u64,
+        link: NativeDomNodeRef,
+        current_generation: Arc<AtomicU64>,
+        stats: Arc<BrokerStats>,
+    ) -> Result<Option<String>, &'static str> {
+        if stats.broken.load(Ordering::Acquire)
+            || stats.pending.load(Ordering::Acquire) != 0
+            || current_generation.load(Ordering::Acquire) != generation
+            || link.page_generation != generation
+        {
+            return Err("link-capture-page-stale");
+        }
+        let expected = expected_url.to_owned();
+        let (tx, rx) = mpsc::sync_channel::<Result<Option<String>, &'static str>>(1);
+        let app_for_ui = app.clone();
+        app.run_on_main_thread(move || {
+            let tx_ui = tx.clone();
+            let dispatched = app_for_ui
+                .get_webview_window("browser-host")
+                .ok_or("link-capture-window-unavailable")
+                .and_then(|window| {
+                    window
+                        .with_webview(move |native| {
+                            let sender = tx_ui.clone();
+                            let core = match unsafe { native.controller().CoreWebView2() } {
+                                Ok(core) => core,
+                                Err(_) => {
+                                    let _ = sender.send(Err("link-capture-controller-unavailable"));
+                                    return;
+                                }
+                            };
+                            let mut source = PWSTR::null();
+                            if unsafe { core.Source(&mut source) }.is_err()
+                                || take_pwstr(source) != expected
+                                || current_generation.load(Ordering::Acquire) != generation
+                                || stats.broken.load(Ordering::Acquire)
+                                || stats.pending.load(Ordering::Acquire) != 0
+                            {
+                                let _ = sender.send(Err("link-capture-native-page-changed"));
+                                return;
+                            }
+                            let parameters = json!({
+                                "objectId":link.root_object_id,
+                                "functionDeclaration":DOM_EXACT_LINK_CAPTURE_JS,
+                                "arguments":[{"value":link.slot}],
+                                "returnByValue":true,
+                                "silent":true,
+                                "awaitPromise":false,
+                                "generatePreview":false
+                            }).to_string();
+                            native_dom_cdp_on_ui(
+                                &core,
+                                "Runtime.callFunctionOn",
+                                parameters,
+                                Box::new(move |remote| {
+                                    let result = remote.and_then(|raw|
+                                        parse_dom_link_capture_response(&raw));
+                                    let _ = sender.send(result);
+                                }),
+                            );
+                        })
+                        .map_err(|_| "link-capture-ui-dispatch")
+                });
+            if dispatched.is_err() {
+                let _ = tx.send(Err("link-capture-ui-dispatch"));
+            }
+        })
+        .map_err(|_| "link-capture-ui-dispatch")?;
+        rx.recv_timeout(PRODUCTION_DOM_DEADLINE)
+            .map_err(|_| "link-capture-timeout")?
+    }
+
     fn capture_retained_form_on_ui(
         app: &tauri::AppHandle,
         expected_url: &str,
@@ -4615,9 +4902,68 @@ mod host {
         app: &'a tauri::AppHandle,
         session: &'a str,
         popup_slot: &'a Mutex<PopupExpectation>,
+        network_admission: &'a ProductionNetworkAdmission,
         page_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         initial_url: &'a str,
+    }
+
+    fn service_parent_link_capture_frame(
+        frame: &[u8],
+        write: &mut File,
+        scope: DomControlScope<'_>,
+        latest_observation_id: u64,
+        last_check_sequence: &mut u64,
+        identities: &NativeDomIdentity,
+    ) -> Result<(), &'static str> {
+        let DomControlScope {
+            app, session, page_generation, stats, initial_url, ..
+        } = scope;
+        let request: ParentDomLinkCaptureRequest =
+            serde_json::from_slice(frame).map_err(|_| "link-capture-request-invalid")?;
+        let check = json!({
+            "version":request.version,"kind":"recheck-element",
+            "session":request.session,"checkSequence":request.check_sequence,
+            "observationId":request.observation_id,"pageGeneration":request.page_generation,
+            "sourceId":request.source_id,"index":request.index,"ordinal":request.ordinal
+        }).to_string();
+        let (_, retained) = validate_dom_recheck_request(
+            check.as_bytes(), session, *last_check_sequence, latest_observation_id,
+            page_generation.load(Ordering::Acquire), initial_url, identities,
+        )?;
+        if request.kind != "capture-link" {
+            return Err("link-capture-kind-denied");
+        }
+        // Even an obsolete/denied original node burns its check sequence.
+        *last_check_sequence = request.check_sequence;
+        let captured = retained
+            .filter(|node| identities.may_click(node))
+            .and_then(|node| capture_retained_link_on_ui(
+                app, initial_url, request.page_generation, node,
+                page_generation.clone(), stats.clone(),
+            ).ok().flatten());
+        let valid = captured.is_some()
+            && page_generation.load(Ordering::Acquire) == request.page_generation
+            && !stats.broken.load(Ordering::Acquire)
+            && stats.pending.load(Ordering::Acquire) == 0;
+        let reply = ChildDomLinkCaptureReply {
+            version: 2,
+            kind: "link-capture",
+            session: &request.session,
+            check_sequence: request.check_sequence,
+            observation_id: request.observation_id,
+            page_generation: request.page_generation,
+            source_id: &request.source_id,
+            index: request.index,
+            ordinal: request.ordinal,
+            state: if valid { "CAPTURED" } else { "STALE" },
+            destination: if valid { captured } else { None },
+        };
+        let bytes = serde_json::to_vec(&reply).map_err(|_| "link-capture-reply-invalid")?;
+        if bytes.is_empty() || bytes.len() > 4096 {
+            return Err("link-capture-reply-bounds");
+        }
+        broker_write_frame(write, &bytes).map_err(|_| "link-capture-reply-pipe")
     }
 
     fn service_parent_form_capture_frame(
@@ -4853,6 +5199,7 @@ mod host {
                     debug_replace_heading,
                     activate_exact_click: false,
                     activate_popup_click: false,
+                    approved_link_destination: None,
                 },
             )
             .map(|result| result.0)
@@ -4894,6 +5241,7 @@ mod host {
             app,
             session,
             popup_slot,
+            network_admission,
             page_generation,
             stats,
             initial_url,
@@ -4971,6 +5319,19 @@ mod host {
                         .map_err(|_| "popup-expectation-lock")?
                         .arm(&request.approval_id, request.page_generation);
                 }
+                if request.action == "click" {
+                    // Host owns both WebView2 event gates. A parent-consumed
+                    // central action has supplied one exact approved href;
+                    // the fixed original-node COM script must *again* match
+                    // that href before the sole node.click(). This grant is
+                    // never created by an untrusted renderer resource event.
+                    network_admission.arm_one_use_successor(
+                        request.approved_destination.as_deref()
+                            .ok_or("action-original-link-destination-unapproved")?,
+                        initial_url,
+                        request.page_generation,
+                    )?;
+                }
                 let outcome = if matches!(request.action.as_str(), "click" | "popup-click") {
                     recheck_dom_on_ui(
                         app,
@@ -4983,6 +5344,7 @@ mod host {
                             debug_replace_heading: false,
                             activate_exact_click: request.action == "click",
                             activate_popup_click: request.action == "popup-click",
+                            approved_link_destination: request.approved_destination.clone(),
                         },
                     )
                 } else {
@@ -5039,6 +5401,12 @@ mod host {
                         None
                     },
                 );
+        }
+        if request.action == "click" && state != "DISPATCHED" {
+            // No COM-confirmed activation: do not let a later coincidental
+            // navigation consume a stale permission. If a native event has
+            // already claimed it, keep the effect UNKNOWN and fail closed.
+            network_admission.revoke_unclaimed_successor();
         }
         if identities.observation_id == request.observation_id {
             identities.invalidate(request.observation_id, request.page_generation);
@@ -5112,6 +5480,16 @@ mod host {
         }
         if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-form") {
             return service_parent_form_capture_frame(
+                &frame,
+                write,
+                scope,
+                *last_observation_id,
+                last_check_sequence,
+                identities,
+            );
+        }
+        if discriminator.get("kind").and_then(|v| v.as_str()) == Some("capture-link") {
+            return service_parent_link_capture_frame(
                 &frame,
                 write,
                 scope,
@@ -6240,7 +6618,7 @@ mod host {
                                     if let Err(reason) = service_parent_dom_control(
                                         &mut broker_read,
                                         &mut broker_write,
-                                        DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
+                                        DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, network_admission: &worker_network_admission, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
                                         &mut last_observation_id,
                                         &mut last_check_sequence,
                                         &mut native_dom_identity,
@@ -6301,7 +6679,7 @@ mod host {
                                         if let Err(reason) = service_parent_control_turn(
                                             &mut broker_read,
                                             &mut broker_write,
-                                            DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
+                                            DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, network_admission: &worker_network_admission, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
                                             id,
                                             DomControlState { last_observation_id: &mut last_observation_id, last_check_sequence: &mut last_check_sequence, identities: &mut native_dom_identity, used_approval_ids: &mut used_dom_approval_ids },
                                         ) {
@@ -6318,7 +6696,7 @@ mod host {
                                             let result = service_parent_dom_control(
                                                 &mut broker_read,
                                                 &mut broker_write,
-                                                DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
+                                                DomControlScope { app: &handle, session: &worker_session, popup_slot: &worker_popup_slot, network_admission: &worker_network_admission, page_generation: worker_generation.clone(), stats: worker_stats.clone(), initial_url: &worker_initial_url },
                                                 &mut last_observation_id,
                                                 &mut last_check_sequence,
                                                 &mut native_dom_identity,
@@ -7135,8 +7513,26 @@ mod host {
                                         }
                                         return Ok(());
                                     }
+                                    if current_url != nav_expected_url {
+                                        // This is a separately, centrally
+                                        // approved exact successor, not a
+                                        // second initial document. In either
+                                        // possible native event ordering its
+                                        // generation must become precisely 2.
+                                        match nav_generation.compare_exchange(
+                                            1, 2, Ordering::AcqRel, Ordering::Acquire,
+                                        ) {
+                                            Ok(_) | Err(2) => {}
+                                            _ => {
+                                                production_fatal_feature_veto(
+                                                    &nav_trace, &nav_stats,
+                                                    "production.successor-generation-denied",
+                                                );
+                                            }
+                                        }
+                                    }
                                     nav_first_expected.store(true, Ordering::Release);
-                                    nav_trace.record("production.navigation.policy-pending", "one-use initial native page epoch bound to TF3 resource authorization");
+                                    nav_trace.record("production.navigation.policy-pending", "one-use exact native document epoch bound to TF3 resource authorization");
                                     return Ok(());
                                 }
                                 if nav_fault == BrokerFault::PageRace
@@ -7251,6 +7647,21 @@ mod host {
                                         event_trace.record("production.resource.context-denied", "GET outside initial document/passive context authority");
                                         return broker_deny_on_ui(&args, &event_env, 403, &event_trace, &event_stats);
                                     };
+                                    if admitted == ProductionResource::Document
+                                        && uri != event_document_url
+                                    {
+                                        match event_generation.compare_exchange(
+                                            1, 2, Ordering::AcqRel, Ordering::Acquire,
+                                        ) {
+                                            Ok(_) | Err(2) => {}
+                                            _ => {
+                                                production_fatal_feature_veto(
+                                                    &event_trace, &event_stats,
+                                                    "production.successor-resource-generation-denied",
+                                                );
+                                            }
+                                        }
+                                    }
                                     Some(admitted)
                                 } else { None };
                                 let deferral = match unsafe { args.GetDeferral() } {
@@ -9932,6 +10343,7 @@ mod host {
                 "checkSequence":1,"observationId":1,"pageGeneration":7,
                 "sourceId":production_dom_source_id("https://example.test/").unwrap(),
                 "index":4,"ordinal":2,"action":"click","approvalId":"a".repeat(48),
+                "approvedDestination":"https://example.test/clicked",
             });
             let validate = |r: &serde_json::Value, last: u64, held: &NativeDomIdentity| {
                 validate_dom_action_request(
@@ -9957,6 +10369,8 @@ mod host {
                 ("approvalId", json!("bad")),
                 ("approvalId", json!("A".repeat(48))),
                 ("checkSequence", json!(2)),
+                ("approvedDestination", json!("https://other.test/clicked")),
+                ("approvedDestination", json!("https://example.test/clicked?private=1")),
             ] {
                 let mut forged = request.clone();
                 forged[field] = value;
@@ -9965,6 +10379,9 @@ mod host {
             let mut forged = request.clone();
             forged["selector"] = json!("button");
             assert!(validate(&forged, 0, &identity).is_err());
+            let mut missing_destination = request.clone();
+            missing_destination.as_object_mut().unwrap().remove("approvedDestination");
+            assert!(validate(&missing_destination, 0, &identity).is_err());
             let mut stale = request.clone();
             stale["ordinal"] = json!(1);
             assert!(validate(&stale, 0, &identity).unwrap().1.is_none());
@@ -9976,7 +10393,7 @@ mod host {
 
         #[test]
         fn production_exact_click_is_atomic_dom_activation_not_verified_pointer_or_effect() {
-            assert!(DOM_EXACT_CLICK_JS.starts_with("function(slot)"));
+            assert!(DOM_EXACT_CLICK_JS.starts_with("function(slot, approvedDestination)"));
             let mutation = DOM_EXACT_CLICK_JS
                 .rfind("this.state.changed = true;")
                 .unwrap();
@@ -10553,6 +10970,79 @@ mod host {
                 admission.resource("GET", original, original, doc, document_source),
                 None
             );
+        }
+
+        #[test]
+        fn production_original_link_capture_is_read_only_and_denies_forged_destinations() {
+            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("this.nodes[slot]"));
+            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("this.observer.takeRecords()"));
+            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("node.hasAttribute('ping')"));
+            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("node.hasAttribute('download')"));
+            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("headVisits++ < 128"));
+            assert!(!DOM_EXACT_LINK_CAPTURE_JS.contains("node.click()"));
+            for dangerous in ["querySelector", "fetch(", "XMLHttpRequest", "innerHTML", "eval("] {
+                assert!(!DOM_EXACT_LINK_CAPTURE_JS.contains(dangerous));
+            }
+            let captured = r#"{"result":{"type":"object","value":{"destination":"https://example.test/clicked"}}}"#;
+            assert_eq!(
+                parse_dom_link_capture_response(captured),
+                Ok(Some("https://example.test/clicked".to_owned())),
+            );
+            assert_eq!(parse_dom_link_capture_response(r#"{"result":{"type":"object","value":null}}"#), Ok(None));
+            for forged in [
+                r#"{"result":{"type":"object","value":{"destination":"https://evil.test/","extra":1}}}"#,
+                r#"{"result":{"type":"object","value":{"destination":"http://example.test/"}}}"#,
+                r#"{"result":{"type":"object","value":{"destination":"https://example.test/clicked?secret=1"}}}"#,
+                r#"{"result":{"type":"object","value":{"destination":"https://example.test/clicked#f"}}}"#,
+                r#"{"result":{"type":"object","value":{"destination":"https://example.test/clicked"},"objectId":"spoof"}}"#,
+                r#"{"result":{"type":"object","value":{"destination":"https://example.test/clicked"}},"exceptionDetails":{}}"#,
+            ] {
+                assert!(parse_dom_link_capture_response(forged).is_err(), "forged capture: {forged}");
+            }
+        }
+
+        #[test]
+        fn production_successor_exact_url_is_independently_one_use_in_both_native_event_orders() {
+            let original = "https://example.test/";
+            let successor = "https://example.test/clicked";
+            let doc = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT;
+            let source = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT;
+            for resource_first in [false, true] {
+                let admission = ProductionNetworkAdmission::default();
+                admission.armed.store(true, Ordering::Release);
+                assert!(admission.arm_one_use_successor(successor, original, 1).is_err());
+                assert!(admission.navigation(original, original));
+                assert_eq!(admission.resource("GET", original, original, doc, source), Some(ProductionResource::Document));
+                assert!(!admission.navigation(successor, original));
+                assert_eq!(admission.resource("GET", successor, original, doc, source), None);
+                for denied in [
+                    "http://example.test/clicked", "https://other.test/clicked",
+                    "https://example.test/clicked?secret=1",
+                    "https://example.test/clicked#other",
+                    "https://example.test:444/clicked",
+                ] {
+                    assert!(admission.arm_one_use_successor(denied, original, 1).is_err());
+                }
+                assert!(admission.arm_one_use_successor(successor, original, 2).is_err());
+                admission.arm_one_use_successor(successor, original, 1).unwrap();
+                assert!(admission.arm_one_use_successor(successor, original, 1).is_err());
+                assert!(!admission.navigation("https://example.test/unapproved", original));
+                assert_eq!(admission.resource("POST", successor, original, doc, source), None);
+                assert_eq!(admission.resource("GET", successor, original, doc,
+                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER), None);
+                if resource_first {
+                    assert_eq!(admission.resource("GET", successor, original, doc, source), Some(ProductionResource::Document));
+                    assert!(admission.navigation(successor, original));
+                } else {
+                    assert!(admission.navigation(successor, original));
+                    assert_eq!(admission.resource("GET", successor, original, doc, source), Some(ProductionResource::Document));
+                }
+                assert!(!admission.navigation(successor, original));
+                assert_eq!(admission.resource("GET", successor, original, doc, source), None);
+                assert_eq!(admission.resource("GET", original, original, doc, source), None);
+                admission.revoke_unclaimed_successor();
+                assert!(!admission.navigation(successor, original));
+            }
         }
 
         #[test]

@@ -766,6 +766,8 @@ struct ParentElementAction<'a> {
     action: &'static str,
     approval_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    approved_destination: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     option_index: Option<u32>,
@@ -790,6 +792,66 @@ pub(crate) struct NativeFormIntent {
     pub destination: reqwest::Url,
     pub body: Vec<u8>,
     pub body_sha256: String,
+}
+
+/// Exact private original-link intention, captured by the attested native
+/// host from its retained DOM Node BEFORE central human consent. No selector,
+/// renderer-issued navigation authority or model-facing URL is involved.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeLinkIntent {
+    pub target: crate::modules::net::tf_browser_contract::ActionTarget,
+    pub observation_id: u64,
+    pub original_link_index: u32,
+    pub destination: reqwest::Url,
+    pub destination_sha256: String,
+}
+
+impl std::fmt::Debug for NativeLinkIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeLinkIntent")
+            .field("original_link_index", &self.original_link_index)
+            .field("destination_sha256", &self.destination_sha256)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(super) fn original_link_intent_unchanged(
+    approved: &NativeLinkIntent,
+    current: &NativeLinkIntent,
+) -> bool {
+    approved == current
+        && approved.destination_sha256
+            == format!("{:x}", Sha256::digest(approved.destination.as_str().as_bytes()))
+}
+
+/// A centrally consumed original-link action may admit precisely ONE
+/// successor DOCUMENT to its exact captured href. This is network authority,
+/// not proof that WebResourceRequested was caused by the original gesture.
+/// The latter remains UNKNOWN without independent native causality.
+struct NativeSuccessorScope {
+    destination: String,
+    source_generation: u64,
+    consumed_action_id: String,
+    request_floor: u64,
+    deadline: Instant,
+    claimed: bool,
+}
+
+fn successor_scope_matches(
+    scope: &NativeSuccessorScope,
+    request: &ChildGet,
+    original_delivered: bool,
+    resource_window_elapsed: std::time::Duration,
+) -> bool {
+    !scope.claimed
+        && original_delivered
+        && !scope.consumed_action_id.is_empty()
+        && request.resource_class == "document"
+        && request.url == scope.destination
+        && request.page_generation == scope.source_generation.saturating_add(1)
+        && request.request_id > scope.request_floor
+        && Instant::now() < scope.deadline
+        && resource_window_elapsed < RESOURCE_SCOPE_LIFETIME
 }
 
 // Original successful FORM controls can contain CSRF tokens and other secrets.
@@ -1047,6 +1109,85 @@ struct ParentFormCapture<'a> {
     form_ordinal: u32,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentLinkCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildLinkCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    state: String,
+    destination: Option<String>,
+}
+
+fn validate_link_capture(
+    frame: &[u8],
+    request: &ParentLinkCapture<'_>,
+    target: &crate::modules::net::tf_browser_contract::ActionTarget,
+    source_url: &reqwest::Url,
+) -> Result<NativeLinkIntent, &'static str> {
+    if frame.is_empty() || frame.len() > 4096 {
+        return Err("native-link-capture-frame-bounds");
+    }
+    let captured: ChildLinkCapture =
+        serde_json::from_slice(frame).map_err(|_| "native-link-capture-frame-invalid")?;
+    if captured.version != 2
+        || captured.kind != "link-capture"
+        || captured.session != request.session
+        || captured.check_sequence != request.check_sequence
+        || captured.observation_id != request.observation_id
+        || captured.page_generation != request.page_generation
+        || captured.source_id != request.source_id
+        || captured.index != request.index
+        || captured.ordinal != request.ordinal
+        || captured.state != "CAPTURED"
+    {
+        return Err("native-link-capture-original-binding-denied");
+    }
+    let destination = captured.destination.as_deref()
+        .ok_or("native-link-capture-destination-missing")?;
+    let url = reqwest::Url::parse(destination).map_err(|_| "native-link-capture-url-invalid")?;
+    if destination.len() > 2048
+        || url.as_str() != destination
+        || url.scheme() != "https"
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.origin() != source_url.origin()
+        || url == *source_url
+    {
+        return Err("native-link-capture-destination-denied");
+    }
+    Ok(NativeLinkIntent {
+        target: target.clone(),
+        observation_id: request.observation_id,
+        original_link_index: request.index,
+        destination_sha256: format!("{:x}", Sha256::digest(destination.as_bytes())),
+        destination: url,
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChildFormCapture {
@@ -1213,6 +1354,18 @@ fn validate_element_action_reply_with_target(
             && terminal == T::Dispatched && reply.target_url_sha256.is_none())
     {
         return Err("browser-action-reply-target-denied");
+    }
+    // The host's dispatch acknowledgement is NOT successor-document effect
+    // proof. Nevertheless, retaining the new one-use successor TF3 permit
+    // requires proof the fixed original-node COM script revalidated and
+    // activated exactly the href consented to, not an arbitrary 64-hex value.
+    if request.action == "click" && terminal == T::Dispatched {
+        let exact_destination = request.approved_destination
+            .ok_or("browser-action-reply-original-link-approval-missing")?;
+        let expected_digest = format!("{:x}", Sha256::digest(exact_destination.as_bytes()));
+        if reply.target_url_sha256.as_deref() != Some(expected_digest.as_str()) {
+            return Err("browser-action-reply-original-link-digest-mismatch");
+        }
     }
     Ok((terminal, reply.target_url_sha256))
 }
@@ -2129,6 +2282,8 @@ mod windows_owner {
         /// content cannot increase this set during a session.
         resource_manifest: Vec<BrowserResourceCapability>,
         resource_manifest_consumed: std::collections::HashSet<usize>,
+        successor_scope: Option<NativeSuccessorScope>,
+        successor_scope_ever_armed: bool,
         original_document_delivered: bool,
         resource_window_started: Instant,
         pub private_root: PathBuf,
@@ -2356,6 +2511,8 @@ mod windows_owner {
                 initial_url: initial.to_string(),
                 resource_manifest: start.resource_manifest,
                 resource_manifest_consumed: std::collections::HashSet::new(),
+                successor_scope: None,
+                successor_scope_ever_armed: false,
                 original_document_delivered: false,
                 resource_window_started: Instant::now(),
                 private_root,
@@ -2845,6 +3002,7 @@ mod windows_owner {
         pub(crate) async fn dispatch_exact_click_in_control_turn(
             &mut self,
             approval: super::NativeConsumedExactClickApproval,
+            link: &NativeLinkIntent,
         ) -> Result<
             (
                 crate::modules::net::tf_browser_contract::NativeEffectReceipt,
@@ -2855,7 +3013,7 @@ mod windows_owner {
             if approval.action != super::NativeRetainedAction::Click {
                 return Err("native-click-approved-operation-mismatch".into());
             }
-            self.dispatch_retained_action_in_control_turn(approval)
+            self.dispatch_retained_action_with_link_in_control_turn(approval, Some(link))
                 .await
         }
 
@@ -2873,12 +3031,41 @@ mod windows_owner {
             ),
             String,
         > {
+            self.dispatch_retained_action_with_link_in_control_turn(approval, None).await
+        }
+
+        async fn dispatch_retained_action_with_link_in_control_turn(
+            &mut self,
+            approval: super::NativeConsumedExactClickApproval,
+            link: Option<&NativeLinkIntent>,
+        ) -> Result<
+            (
+                crate::modules::net::tf_browser_contract::NativeEffectReceipt,
+                Option<String>,
+            ),
+            String,
+        > {
             use crate::modules::net::tf_browser_contract::{
                 NativeEffectReceipt, NativeEffectTerminal,
             };
             let target = approval.target.clone();
             let action = approval.action.clone();
             let scope = self.exact_retained_scope_for_central(&target, action.clone())?;
+            if action == super::NativeRetainedAction::Click {
+                let link = link.ok_or("native-click-original-link-intent-required")?;
+                if link.target != target
+                    || link.observation_id != scope.observation_id
+                    || link.original_link_index != scope.index
+                    || !original_link_intent_unchanged(link, link)
+                    || link.destination.origin()
+                        != reqwest::Url::parse(&self.initial_url)
+                            .map_err(|_| "native-click-source-url-invalid")?.origin()
+                {
+                    return Err("native-click-original-link-intent-stale".into());
+                }
+            } else if link.is_some() {
+                return Err("native-link-intent-reused-for-nonlink-action".into());
+            }
             // No arbitrary 48-hex string, boolean, or model argument can
             // substitute for the consumed exact central approval witness.
             if !approval.matches_exact(&scope) {
@@ -2898,6 +3085,7 @@ mod windows_owner {
             let payload_sha256 = payload
                 .as_ref()
                 .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            let consumed_action_id = approval.action_id().to_owned();
             let approval_id = approval.approval_id;
             if approval_id.len() != 48
                 || !approval_id
@@ -2919,6 +3107,7 @@ mod windows_owner {
                 ordinal,
                 action: action.wire_action(),
                 approval_id: &approval_id,
+                approved_destination: link.map(|link| link.destination.as_str()),
                 text: match &action {
                     super::NativeRetainedAction::Type(value) => Some(value.as_str()),
                     _ => None,
@@ -2936,6 +3125,28 @@ mod windows_owner {
             let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
             if frame.is_empty() || frame.len() > 1024 {
                 return Err("native-click-request-bounds".into());
+            }
+            if let Some(link) = link {
+                if self.successor_scope_ever_armed
+                    || self.last_page_generation != link.target.page_generation
+                    || !self.original_document_delivered
+                    || self.last_request_id == 0
+                {
+                    return Err("native-successor-original-document-or-one-use-denied".into());
+                }
+                // This exact URL has already survived the same original
+                // retained-node identity, pre-consent capture and central
+                // token consumption. It must independently survive the host
+                // fixed-JS href recheck and the TF3 request-time policy.
+                self.successor_scope_ever_armed = true;
+                self.successor_scope = Some(NativeSuccessorScope {
+                    destination: link.destination.as_str().to_owned(),
+                    source_generation: link.target.page_generation,
+                    consumed_action_id,
+                    request_floor: self.last_request_id,
+                    deadline: Instant::now() + std::time::Duration::from_secs(18),
+                    claimed: false,
+                });
             }
             // Burn the native sequence AND every page reference before any
             // pipe/COM I/O. Post-dispatch errors are UNKNOWN, never replayed.
@@ -2959,6 +3170,9 @@ mod windows_owner {
             .await;
             match result {
                 Ok((terminal, target_digest)) if terminal != NativeEffectTerminal::Unknown => {
+                    if terminal != NativeEffectTerminal::Dispatched {
+                        self.successor_scope = None;
+                    }
                     self.poisoned = false;
                     flight.committed = true;
                     Ok((NativeEffectReceipt::classify(terminal), target_digest))
@@ -2968,6 +3182,64 @@ mod windows_owner {
                     None,
                 )),
             }
+        }
+
+        /// Original retained LINK destination capture on the same sealed
+        /// exclusive control turn as the form preview. It neither activates
+        /// the link nor authorizes a successor. Its exact URL remains private
+        /// to the human-consent owner, not the model or page snapshot.
+        pub(crate) async fn capture_link_in_control_turn(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<NativeLinkIntent, String> {
+            let scope = self.exact_retained_scope_for_central(
+                target,
+                super::NativeRetainedAction::Click,
+            )?;
+            let sequence = scope.check_sequence;
+            let observation = scope.observation_id;
+            let generation = scope.target.page_generation;
+            let index = scope.index;
+            let ordinal = scope.ordinal;
+            let source = scope.source_id.clone();
+            let source_url = reqwest::Url::parse(&self.initial_url)
+                .map_err(|_| "native-link-capture-source-invalid")?;
+            let nonce = self.nonce.clone();
+            let request = ParentLinkCapture {
+                version: 2,
+                kind: "capture-link",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id: observation,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal,
+            };
+            let frame = serde_json::to_vec(&request)
+                .map_err(|_| "native-link-capture-serialization")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-link-capture-request-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self.requests.try_clone()
+                    .map_err(|_| "native-link-capture-reader-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-link-capture-worker-failed")??;
+                validate_link_capture(&bytes, &request, target, &source_url)
+                    .map_err(str::to_owned)
+            }.await;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            result
         }
 
         /// Read-only original-node form capture on the existing exclusive
@@ -3435,6 +3707,16 @@ mod windows_owner {
             // production v2 fixed-action payload digest. The native host
             // rejects missing/mismatched hashes before touching WebView2.
             let popup_payload_sha256 = popup.then(|| format!("{:x}", Sha256::digest(b"popup-click")));
+            // The historical owned-HTTPS test fixture has exactly one
+            // original <a href="/clicked">. This is a TEST-ONLY transport
+            // probe; it does not create a central human successor approval.
+            let fixture_link_destination = (!popup).then(|| {
+                reqwest::Url::parse(&self.initial_url)
+                    .expect("test-owned source URL")
+                    .join("/clicked")
+                    .expect("test-owned exact link")
+                    .to_string()
+            });
             let request = ParentElementAction {
                 version: 2,
                 kind: "act-element",
@@ -3447,6 +3729,7 @@ mod windows_owner {
                 ordinal: ordinal as u32,
                 action: if popup { "popup-click" } else { "click" },
                 approval_id: &approval_id,
+                approved_destination: fixture_link_destination.as_deref(),
                 text: None,
                 option_index: None,
                 option_ordinal: None,
@@ -3458,6 +3741,30 @@ mod windows_owner {
             let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
             if frame.is_empty() || frame.len() > 1024 {
                 return Err("native-click-request-bounds".into());
+            }
+            if let Some(destination) = fixture_link_destination.as_ref().filter(|_| {
+                std::env::var("CLACK_TF4_OWNED_NATIVE_DENY_SUCCESSOR").as_deref() != Ok("1")
+            }) {
+                // Explicitly opt-in TEST-ONLY surrogate grant for one owned
+                // localhost HTTPS fixture, never a shipped permission path.
+                // It exercises the same parent successor scope as production
+                // but cannot claim genuine human approval or installed E2E.
+                if self.successor_scope_ever_armed
+                    || self.last_page_generation != 1
+                    || !self.original_document_delivered
+                    || self.last_request_id != 1
+                {
+                    return Err("test-click-successor-scope-not-original-one-use".into());
+                }
+                self.successor_scope_ever_armed = true;
+                self.successor_scope = Some(NativeSuccessorScope {
+                    destination: destination.to_owned(),
+                    source_generation: 1,
+                    consumed_action_id: approval_id.clone(),
+                    request_floor: self.last_request_id,
+                    deadline: Instant::now() + Duration::from_secs(18),
+                    claimed: false,
+                });
             }
             if popup {
                 // Production action commands execute only after the native
@@ -3732,15 +4039,33 @@ mod windows_owner {
             // Authenticated COM class alone never expands the manifest; each
             // exact resource grant is single-use, expires with the page and
             // is burned even when the later network effect is uncertain.
-            let resource_claim = resource_scope_index(
-                &req,
-                &self.initial_url,
-                &self.resource_manifest,
-                &self.resource_manifest_consumed,
-                self.last_request_id,
-                self.original_document_delivered,
-                self.resource_window_started.elapsed(),
-            );
+            let successor_eligible = self.successor_scope.as_ref().is_some_and(|scope| {
+                successor_scope_matches(
+                    scope, &req, self.original_document_delivered,
+                    self.resource_window_started.elapsed(),
+                )
+            });
+            let successor_deadline = successor_eligible.then(||
+                self.successor_scope.as_ref().expect("eligible scope").deadline);
+            if successor_eligible {
+                // Burn BEFORE TF3 preflight, DNS, socket, delivery or any
+                // fallible state transition. A failed network response can
+                // never replay this successor document grant.
+                self.successor_scope.as_mut().expect("eligible scope").claimed = true;
+            }
+            let resource_claim = if successor_eligible {
+                Ok(None)
+            } else {
+                resource_scope_index(
+                    &req,
+                    &self.initial_url,
+                    &self.resource_manifest,
+                    &self.resource_manifest_consumed,
+                    self.last_request_id,
+                    self.original_document_delivered,
+                    self.resource_window_started.elapsed(),
+                )
+            };
             if req.page_generation < self.last_page_generation {
                 return Err("browser-broker-stale-page-generation".into());
             }
@@ -3802,7 +4127,12 @@ mod windows_owner {
                     causal_native_action_id: None,
                 });
             }
-            let Some(timeout_ms) = resource_timeout_ms(self.resource_window_started.elapsed()) else {
+            let remaining = resource_timeout_ms(self.resource_window_started.elapsed())
+                .and_then(|budget| successor_deadline.map_or(Some(budget), |deadline| {
+                    let millis = deadline.saturating_duration_since(Instant::now()).as_millis() as u64;
+                    (millis > 0).then_some(budget.min(millis))
+                }));
+            let Some(timeout_ms) = remaining else {
                 self.send_and_verify(req.request_id, req.page_generation, 403, "text/plain", &[], Some("browser-resource-lifetime-expired")).await?;
                 return Ok(BrokerResourceReceipt {
                     request_id: req.request_id, page_generation: req.page_generation,
@@ -3869,7 +4199,9 @@ mod windows_owner {
             };
             // Preparation must not renew the absolute resource window. Burn
             // an unused TF3 token if the original scope has already expired.
-            if resource_timeout_ms(self.resource_window_started.elapsed()).is_none() {
+            if resource_timeout_ms(self.resource_window_started.elapsed()).is_none()
+                || successor_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            {
                 let _ = tf_web::cancel(&prepared.token, web_state);
                 self.send_and_verify(req.request_id, req.page_generation, 403, "text/plain", &[], Some("browser-resource-lifetime-expired")).await?;
                 return Ok(BrokerResourceReceipt {
@@ -3889,27 +4221,34 @@ mod windows_owner {
                             web_state,
                             &approved,
                             cert,
+                            successor_deadline.map(tokio::time::Instant::from_std),
                         )
                         .await
                     } else {
-                        tf_web::execute_browser_resource_same_origin(
-                            &prepared.token,
-                            registry,
-                            web_state,
-                            &approved,
-                        )
-                        .await
+                        if let Some(deadline) = successor_deadline {
+                            tf_web::execute_browser_resource_same_origin_before(
+                                &prepared.token, registry, web_state, &approved,
+                                tokio::time::Instant::from_std(deadline),
+                            ).await
+                        } else {
+                            tf_web::execute_browser_resource_same_origin(
+                                &prepared.token, registry, web_state, &approved,
+                            ).await
+                        }
                     }
                 }
                 #[cfg(not(test))]
                 {
-                    tf_web::execute_browser_resource_same_origin(
-                        &prepared.token,
-                        registry,
-                        web_state,
-                        &approved,
-                    )
-                    .await
+                    if let Some(deadline) = successor_deadline {
+                        tf_web::execute_browser_resource_same_origin_before(
+                            &prepared.token, registry, web_state, &approved,
+                            tokio::time::Instant::from_std(deadline),
+                        ).await
+                    } else {
+                        tf_web::execute_browser_resource_same_origin(
+                            &prepared.token, registry, web_state, &approved,
+                        ).await
+                    }
                 }
             };
             match result {
@@ -3922,6 +4261,7 @@ mod windows_owner {
                     // actual TF3 receipt as evidence of what was attempted.
                     let mime = original_uri_response_mime(&receipt, &req.url, result.bytes.len());
                     let delivered = self.resource_window_started.elapsed() < RESOURCE_SCOPE_LIFETIME
+                        && successor_deadline.is_none_or(|deadline| Instant::now() < deadline)
                         && mime.is_some() && size_allowed_for_class(
                         req.resource_class.as_str(), mime, result.bytes.len(),
                         resource_budget,
@@ -4021,8 +4361,28 @@ mod windows_owner {
             // eligible; avoid following symlinks/reparse points during cleanup.
             ensure_plain_dir(&self.private_root)?;
             ensure_plain_dir(&self.effective_udf)?;
-            fs::remove_dir_all(&self.private_root)
-                .map_err(|_| "browser-session-udf-cleanup-failed")?;
+            // WebView2's owned Job has zero active processes, but Windows may
+            // temporarily retain UDF filesystem handles after process exit.
+            // Retry deletion of ONLY this attested session root for a bounded
+            // window, rechecking ordinary directory identity each time.
+            // Never call a retained UDF "clean" without removing it.
+            let delete_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if !self.private_root.exists() {
+                    break;
+                }
+                ensure_plain_dir(&self.private_root)?;
+                if self.effective_udf.exists() {
+                    ensure_plain_dir(&self.effective_udf)?;
+                }
+                match fs::remove_dir_all(&self.private_root) {
+                    Ok(()) => break,
+                    Err(_) if Instant::now() < delete_deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => return Err("browser-session-udf-cleanup-failed".into()),
+                }
+            }
             self.profile.delete()?;
             self.stopped = true;
             Ok(())
@@ -4785,6 +5145,7 @@ mod tests {
             ordinal: 2,
             action: "type",
             approval_id: "approved",
+            approved_destination: None,
             text: Some("a"),
             option_index: None,
             option_ordinal: None,
@@ -5055,6 +5416,101 @@ mod tests {
         assert!(!size_allowed_for_class("image", Some("text/css"), 32, 1024));
         assert!(!size_allowed_for_class("fetch", Some("image/png"), 32, 1024));
     }
+
+    #[test]
+    fn original_link_preconsent_capture_binds_exact_node_source_and_destination() {
+        use crate::modules::net::tf_browser_contract::ActionTarget;
+        let session = "a".repeat(48);
+        let source_id = "b".repeat(64);
+        let target = ActionTarget {
+            browser_session_id: "browser".into(), page_id: "page".into(),
+            page_generation: 1, snapshot_id: "snapshot".into(),
+            element_ref: "c".repeat(48),
+        };
+        let request = ParentLinkCapture {
+            version: 2, kind: "capture-link", session: &session,
+            check_sequence: 4, observation_id: 3, page_generation: 1,
+            source_id: &source_id, index: 7, ordinal: 2,
+        };
+        let source = reqwest::Url::parse("https://example.test/").unwrap();
+        let mut reply = serde_json::json!({
+            "version":2,"kind":"link-capture","session":session,
+            "checkSequence":4,"observationId":3,"pageGeneration":1,
+            "sourceId":source_id,"index":7,"ordinal":2,"state":"CAPTURED",
+            "destination":"https://example.test/clicked"
+        });
+        let decode = |frame: &serde_json::Value| {
+            validate_link_capture(frame.to_string().as_bytes(), &request, &target, &source)
+        };
+        let captured = decode(&reply).unwrap();
+        assert_eq!(captured.target, target);
+        assert_eq!(captured.original_link_index, 7);
+        assert_eq!(captured.destination.as_str(), "https://example.test/clicked");
+        assert!(original_link_intent_unchanged(&captured, &captured));
+        for (field, forged) in [
+            ("session", serde_json::json!("other")),
+            ("checkSequence", serde_json::json!(5)),
+            ("observationId", serde_json::json!(4)),
+            ("pageGeneration", serde_json::json!(2)),
+            ("sourceId", serde_json::json!("0".repeat(64))),
+            ("ordinal", serde_json::json!(3)),
+            ("index", serde_json::json!(8)),
+            ("state", serde_json::json!("STALE")),
+            ("destination", serde_json::json!("https://other.test/clicked")),
+            ("destination", serde_json::json!("https://example.test/clicked?secret=1")),
+            ("destination", serde_json::json!("http://example.test/clicked")),
+            ("destination", serde_json::json!("https://example.test/")),
+        ] {
+            let old = reply[field].clone();
+            reply[field] = forged;
+            assert!(decode(&reply).is_err(), "forged {field}");
+            reply[field] = old;
+        }
+        let mut injected = reply.clone();
+        injected["selector"] = serde_json::json!("a[href]");
+        assert!(decode(&injected).is_err());
+        let mut tampered = captured.clone();
+        tampered.destination_sha256 = "0".repeat(64);
+        assert!(!original_link_intent_unchanged(&captured, &tampered));
+    }
+
+    #[test]
+    fn separately_consumed_successor_document_requires_exact_one_use_scope() {
+        let scope = NativeSuccessorScope {
+            destination: "https://example.test/clicked".into(),
+            source_generation: 1,
+            consumed_action_id: "a".repeat(48),
+            request_floor: 3,
+            deadline: Instant::now() + Duration::from_secs(18),
+            claimed: false,
+        };
+        let mut req = ChildGet {
+            version:2, session: "s".repeat(48), request_id:4,
+            method:"GET".into(),url:scope.destination.clone(),
+            resource_class:"document".into(),page_generation:2,
+        };
+        assert!(successor_scope_matches(&scope,&req,true,Duration::from_secs(10)));
+        assert!(!successor_scope_matches(&scope,&req,false,Duration::ZERO));
+        assert!(!successor_scope_matches(&scope,&req,true,RESOURCE_SCOPE_LIFETIME));
+        req.request_id=3;
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.request_id=4;
+        req.page_generation=1;
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.page_generation=2;
+        req.resource_class="stylesheet".into();
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.resource_class="document".into();
+        req.url="https://example.test/unapproved".into();
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.url=scope.destination.clone();
+        let spent = NativeSuccessorScope { claimed: true, ..scope };
+        assert!(!successor_scope_matches(&spent,&req,true,Duration::ZERO));
+        let expired = NativeSuccessorScope {
+            deadline: Instant::now() - Duration::from_secs(1), ..spent
+        };
+        assert!(!successor_scope_matches(&expired,&req,true,Duration::ZERO));
+    }
     #[test]
     fn com_ack_requires_exact_native_completion_identity_and_status() {
         let nonce = "b".repeat(48);
@@ -5177,6 +5633,7 @@ mod tests {
             ordinal: 2,
             action: "click",
             approval_id: "c",
+            approved_destination: Some("https://example.test/clicked"),
             text: None,
             option_index: None,
             option_ordinal: None,
@@ -5191,19 +5648,20 @@ mod tests {
             "sourceId":"b","index":4,"ordinal":2,"action":"click",
             "approvalId":"c","state":"DISPATCHED",
         });
-        assert_eq!(
-            validate_element_action_reply(raw.to_string().as_bytes(), &request),
-            Ok(T::Dispatched)
+        assert!(
+            validate_element_action_reply(raw.to_string().as_bytes(), &request).is_err(),
+            "DISPATCHED original click must prove exact approved href digest"
         );
-        let digest = "a".repeat(64);
+        let digest = format!("{:x}", Sha256::digest(b"https://example.test/clicked"));
         let mut bound = raw.clone();
-        bound["targetUrlSha256"] = serde_json::json!(digest);
+        bound["targetUrlSha256"] = serde_json::json!(digest.clone());
         assert_eq!(
             validate_element_action_reply_with_target(bound.to_string().as_bytes(), &request),
-            Ok((T::Dispatched, Some("a".repeat(64))))
+            Ok((T::Dispatched, Some(digest.clone())))
         );
         for invalid_digest in [
             String::new(),
+            "a".repeat(64),
             "A".to_owned(),
             "A".repeat(64),
             "z".repeat(64),
@@ -5216,6 +5674,11 @@ mod tests {
             )
             .is_err());
         }
+        let mut missing_digest = bound.clone();
+        missing_digest.as_object_mut().unwrap().remove("targetUrlSha256");
+        assert!(validate_element_action_reply_with_target(
+            missing_digest.to_string().as_bytes(), &request,
+        ).is_err(), "absent native digest cannot leave successor scope armed");
         let mut forged = bound.clone();
         forged["state"] = serde_json::json!("STALE");
         assert!(
@@ -7391,11 +7854,32 @@ mod tests {
     #[tokio::test]
     #[ignore = "opt-in separate owned HTTPS two-page real WebView2 exact-node programmatic click; NOT central-policy approval or 17-step E2E"]
     async fn physical_production_owned_https_exact_click_navigation_probe() {
+        physical_owned_https_exact_click_successor_case(true).await;
+    }
+
+    /// Negative physical case: the native host still observes and accepts
+    /// ONLY the exact ORIGINAL node action, but the independently trusted
+    /// parent intentionally grants NO successor document to TF3. The actual
+    /// WebView2 successor request must be denied before any second HTTPS GET.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in exact original-node WebView2 click with parent successor grant intentionally ABSENT; TEST-ONLY negative"]
+    async fn physical_production_owned_https_unapproved_successor_denied() {
+        physical_owned_https_exact_click_successor_case(false).await;
+    }
+
+    #[cfg(windows)]
+    async fn physical_owned_https_exact_click_successor_case(approved: bool) {
         use crate::modules::net::tf_browser_contract::NativeEffectTerminal;
         use std::time::Duration;
         assert_eq!(
             std::env::var("CLACK_TF4_OWNED_NATIVE_CLICK").as_deref(),
             Ok("1")
+        );
+        assert_eq!(
+            std::env::var("CLACK_TF4_OWNED_NATIVE_DENY_SUCCESSOR").as_deref() == Ok("1"),
+            !approved,
+            "the run-scoped negative flag must match this exact test case",
         );
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let evidence = manifest.join("target").join("tf4-owned-https");
@@ -7507,16 +7991,25 @@ mod tests {
             )
             .await
             .map_err(|_| "click-navigation-TF3-deadline")??;
-            if destination.request_id != 2
-                || destination.terminal != "completed"
-                || !destination.native_com_completed
-                || destination.tf3.as_ref().is_none_or(|tf3| {
-                    tf3.requested_url.as_deref() != Some("https://127.0.0.1/clicked")
-                        || tf3.status_code != Some(200)
-                        || tf3.terminal != "completed"
-                })
+            if destination.request_id != 2 || !destination.native_com_completed {
+                return Err("click-original-successor-no-independent-native-COM-receipt".into());
+            }
+            if approved {
+                if destination.terminal != "completed"
+                    || destination.tf3.as_ref().is_none_or(|tf3| {
+                        tf3.requested_url.as_deref() != Some("https://127.0.0.1/clicked")
+                            || tf3.status_code != Some(200)
+                            || tf3.terminal != "completed"
+                    })
+                {
+                    return Err("click-actual-navigation-TF3-not-observed".into());
+                }
+            } else if destination.terminal != "denied"
+                || destination.reason != "browser-resource-lifecycle-denied"
+                || destination.tf3.is_some()
+                || destination.causal_native_action_id.is_some()
             {
-                return Err("click-actual-navigation-TF3-not-observed".into());
+                return Err("unapproved-native-successor-was-not-denied-before-TF3".into());
             }
             Ok::<_, String>(())
         }
@@ -7532,7 +8025,11 @@ mod tests {
             .verify_clean_readonly_close_for_test(2)
             .expect("two native GETs, Job0, host terminated, UDF/profile removed");
         assert!(parent.path().read_dir().unwrap().next().is_none());
-        eprintln!("PRODUCTION_OWNED_EXACT_CLICK_NAVIGATION_PROBE=PASS real AppContainer/WebView2 COM retained exact link node programmatic DOM click, independent TF3 HTTPS GET /clicked, native Job0/UDF/profile clean; TEST-ONLY parent grant; NOT trusted pointer or central approval or full E2E; FIXTURE_RUN_ID={run_id}");
+        if approved {
+            eprintln!("PRODUCTION_OWNED_EXACT_CLICK_NAVIGATION_PROBE=PASS real AppContainer/WebView2 COM retained exact link node programmatic DOM click, independent TF3 HTTPS GET /clicked, native Job0/UDF/profile clean; TEST-ONLY parent grant; NOT trusted pointer or central approval or full E2E; FIXTURE_RUN_ID={run_id}");
+        } else {
+            eprintln!("PRODUCTION_OWNED_UNAPPROVED_SUCCESSOR_DENIAL=PASS real AppContainer/WebView2 original retained link click DISPATCHED UNKNOWN/NEVER_REPLAY, independent native document request2 denied before TF3, no /clicked HTTPS GET, COM403, Job0/UDF/profile clean; no surrogate parent successor grant; NOT human or installed approval; FIXTURE_RUN_ID={run_id}");
+        }
     }
 
     #[cfg(windows)]

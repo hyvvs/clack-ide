@@ -1131,6 +1131,10 @@ enum NativeCommand {
         action: NativeRetainedAction,
         reply: oneshot::Sender<Result<NativeFormIntent, String>>,
     },
+    CaptureLink {
+        target: ActionTarget,
+        reply: oneshot::Sender<Result<super::tf_browser_runtime::NativeLinkIntent, String>>,
+    },
     Screenshot {
         token: String,
         browser_id: String,
@@ -1915,6 +1919,8 @@ struct Pending {
     /// Exact *browser-captured* form body, action URL and original Node pair.
     /// Populated before the genuine consent UI; never serialized/model-visible.
     form_intent: Option<NativeFormIntent>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    link_intent: Option<super::tf_browser_runtime::NativeLinkIntent>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     screenshot_scope: Option<NativeScreenshotScope>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -3100,6 +3106,8 @@ pub fn prepare(
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             form_intent: None,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            link_intent: None,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             screenshot_scope,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             credential_scope,
@@ -3347,21 +3355,22 @@ fn initial_receipt(p: &Pending) -> TfBrowserReceipt {
 /// application dialog. A mismatch also burns it. No model-provided approval
 /// ID, second store or test fixture flag participates in this transaction.
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+type NativeConsumedActionContext = (
+    NativeConsumedExactClickApproval,
+    String,
+    SemanticRole,
+    String,
+    Option<NativeFormIntent>,
+    Option<super::tf_browser_runtime::NativeLinkIntent>,
+);
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 fn consume_native_action_approval(
     token: &str,
     native: &NativeExactClickApprovalScope<'_>,
     registry: &WorkspaceRegistry,
     state: &TfBrowserState,
-) -> Result<
-    (
-        NativeConsumedExactClickApproval,
-        String,
-        SemanticRole,
-        String,
-        Option<NativeFormIntent>,
-    ),
-    String,
-> {
+) -> Result<NativeConsumedActionContext, String> {
     let mut entries = state
         .entries
         .lock()
@@ -3455,6 +3464,22 @@ fn consume_native_action_approval(
     } else if p.form_intent.is_some() {
         return Err("native-form-grant-reused-for-another-action".into());
     }
+    if native.action == NativeRetainedAction::Click {
+        let intent = p.link_intent.as_ref()
+            .ok_or("native-link-preconsent-capture-required")?;
+        if intent.target != *native.target
+            || intent.observation_id != native.observation_id
+            || intent.original_link_index != native.index
+            || intent.destination.query().is_some()
+            || intent.destination.fragment().is_some()
+            || intent.destination_sha256 != format!(
+                "{:x}", Sha256::digest(intent.destination.as_str().as_bytes()))
+        {
+            return Err("native-link-approved-destination-or-node-changed".into());
+        }
+    } else if p.link_intent.is_some() {
+        return Err("native-link-grant-reused-for-another-action".into());
+    }
     let witness = NativeConsumedExactClickApproval::from_consumed_central_token(
         token.to_owned(),
         native,
@@ -3474,6 +3499,7 @@ fn consume_native_action_approval(
         p.native_role.ok_or("native-click-approved-role-missing")?,
         p.url.ok_or("native-click-approved-source-missing")?,
         p.form_intent,
+        p.link_intent,
     ))
 }
 
@@ -3797,6 +3823,21 @@ async fn execute_confined_native(
                                         }
                                     }
                                 }
+                                NativeCommand::CaptureLink { target, reply } => {
+                                    if !reply.is_closed() {
+                                        let captured = browser
+                                            .capture_link_in_control_turn(&target)
+                                            .await;
+                                        let failed = captured.is_err();
+                                        let _ = reply.send(captured);
+                                        if failed {
+                                            terminal = Err(
+                                                "confined-native-link-capture-uncertain".into(),
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
                                 NativeCommand::CapturePopup { expected_url, reply, _capture_lease } => {
                                     if !reply.is_closed() {
                                         if let Err(reason) = _capture_lease.admit(&expected_url) {
@@ -3922,6 +3963,7 @@ async fn execute_confined_native(
                                                 approved_role,
                                                 source_url,
                                                 approved_form,
+                                                approved_link,
                                             )) => {
                                                 if approved_browser_id != browser_id {
                                                     Ok((NativeEffectReceipt::classify(
@@ -4093,9 +4135,12 @@ async fn execute_confined_native(
                                                         browser.last_resource_request_id(),
                                                     ));
                                                     if action == NativeRetainedAction::Click {
+                                                        let link = approved_link.as_ref()
+                                                            .ok_or("native-click-consented-link-intent-missing")?;
                                                         browser
                                                             .dispatch_exact_click_in_control_turn(
                                                                 grant,
+                                                                link,
                                                             )
                                                             .await
                                                     } else {
@@ -5631,6 +5676,63 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         drop(capture_lease);
     }
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if pending.request.operation == TfBrowserOperation::Click {
+        let (sender, requester, target) = {
+            let authority = app.state::<TfBrowserState>();
+            let entries = authority.entries.lock().map_err(|_| "browser-state-unavailable")?;
+            let current = entries.pending.get(&token)
+                .ok_or("browser-link-pending-consent-lost")?;
+            let id = current.browser_id.as_deref()
+                .ok_or("browser-link-session-missing")?;
+            let owner = entries.sessions.get(id)
+                .and_then(|session| session.native.as_ref())
+                .ok_or("browser-link-native-owner-unavailable")?;
+            if !current.approving || current.approved
+                || !owner.owner_alive.load(Ordering::Acquire)
+            {
+                return Err("browser-link-consent-state-stale".into());
+            }
+            (
+                owner.command_tx.clone(),
+                owner.turn_requester.clone(),
+                current.native_target.clone()
+                    .ok_or("browser-link-original-node-missing")?,
+            )
+        };
+        let (reply, received) = oneshot::channel();
+        tokio::time::timeout(Duration::from_secs(3), sender.send(
+            NativeCommand::CaptureLink { target: target.clone(), reply },
+        ))
+        .await
+        .map_err(|_| "browser-link-capture-queue-timeout")?
+        .map_err(|_| "browser-link-capture-queue-closed")?;
+        requester.request();
+        let intent = tokio::time::timeout(Duration::from_secs(18), received)
+            .await
+            .map_err(|_| "browser-link-capture-timeout")?
+            .map_err(|_| "browser-link-capture-owner-stopped")??;
+        if intent.target != target || intent.destination_sha256
+            != format!("{:x}", Sha256::digest(intent.destination.as_str().as_bytes()))
+        {
+            return Err("browser-link-capture-target-changed".into());
+        }
+        let authority = app.state::<TfBrowserState>();
+        let mut entries = authority.entries.lock()
+            .map_err(|_| "browser-state-unavailable")?;
+        let current = entries.pending.get_mut(&token)
+            .ok_or("browser-link-pending-consent-lost")?;
+        if !current.approving || current.approved
+            || current.request_id != pending.request_id
+            || current.revision != pending.revision
+            || current.native_target != pending.native_target
+            || current.link_intent.is_some()
+        {
+            return Err("browser-link-capture-consent-scope-changed".into());
+        }
+        current.link_intent = Some(intent.clone());
+        pending.link_intent = Some(intent);
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     if pending.request.operation == TfBrowserOperation::Submit {
         let (sender, requester, target, action) = {
             let authority = app.state::<TfBrowserState>();
@@ -5839,7 +5941,14 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             .as_ref()
             .ok_or("native-action-approved-parameters-missing")?
         {
-            NativeRetainedAction::Click => "No additional parameters".to_owned(),
+            NativeRetainedAction::Click => {
+                let intent = pending.link_intent.as_ref()
+                    .ok_or("native-link-original-node-preconsent-capture-required")?;
+                format!(
+                    "Original retained LINK visit index: {}\nExact captured intended destination: {}\nExact destination SHA-256: {}\nThis pre-consent capture is NOT successor-document authority; the original Node and href must be revalidated at execution.",
+                    intent.original_link_index, intent.destination, intent.destination_sha256,
+                )
+            }
             NativeRetainedAction::PopupClick =>
                 "Exact retained <a target=_blank> only; host vets HTTPS root destination, vetoes NewWindowRequested, and NEVER launches a child without separate authorization".to_owned(),
             NativeRetainedAction::Type(text) => format!(
@@ -5993,6 +6102,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             {
                 live.popup_intent != pending.popup_intent
                     || live.form_intent != pending.form_intent
+                    || live.link_intent != pending.link_intent
                     || live.screenshot_scope != pending.screenshot_scope
                     || live.credential_scope != pending.credential_scope
                     || live.transfer_scope != pending.transfer_scope
