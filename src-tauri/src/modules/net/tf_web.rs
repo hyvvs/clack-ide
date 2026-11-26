@@ -2278,7 +2278,7 @@ pub async fn execute_browser_resource_same_origin(
 /// supplies this deadline from its genuinely consumed original-node action,
 /// not from page data or an untrusted renderer callback. It is checked again
 /// after consuming the TF3 token and immediately before the reqwest send.
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
 pub(crate) async fn execute_browser_resource_same_origin_before(
     token: &str,
     registry: &WorkspaceRegistry,
