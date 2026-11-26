@@ -1050,31 +1050,51 @@ async fn cancel_accepted_connection_before_response_headers() {
 }
 #[tokio::test]
 async fn slow_first_output_then_meaningful_chunks_extend_idle_until_completion() {
-    let fixture = paced_server(
-        vec![
-            headers(),
-            delta(),
-            delta(),
-            delta(),
-            b"data: [DONE]\n\n".to_vec(),
-        ],
-        false,
-        false,
-        Duration::from_millis(40),
-    );
+    // The dedicated 100ms idle-denial tests use the unchanged limits(). This
+    // positive case must prove that REAL delivered content resets an idle
+    // deadline despite loaded macOS CI scheduling delays. Send enough genuine
+    // SSE deltas to span a wider *test-only* idle period, and verify the native
+    // callbacks themselves span that period (not merely the server's writes).
+    const DELTAS: usize = 32;
+    let mut parts = vec![headers()];
+    parts.extend((0..DELTAS).map(|_| delta()));
+    parts.push(b"data: [DONE]\n\n".to_vec());
+    let fixture = paced_server(parts, false, false, Duration::from_millis(40));
     let state = InferenceState::default();
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     let start = Instant::now();
-    // The 40ms-paced localhost writer can reach its *first* body chunk after
-    // the 150ms first-output limit on loaded macOS CI. This test requires an
-    // elapsed stream >150ms and meaningful chunks resetting the original
-    // 100ms idle timer; it does not test the first-output rejection boundary.
+    // Network delivery and 40ms localhost writes can each be delayed by
+    // heavily loaded CI. These are fixture-only allowances: production
+    // timeouts and strict 100ms negative idle tests remain untouched.
     let mut slow_fixture_limits = limits();
-    slow_fixture_limits.first = Some(Duration::from_secs(1));
-    let result = execute(&lease, request(fixture.url), slow_fixture_limits, &|_| true).await;
+    slow_fixture_limits.first = Some(Duration::from_secs(2));
+    slow_fixture_limits.idle = Some(Duration::from_millis(750));
+    slow_fixture_limits.overall = Duration::from_secs(8);
+    let delivered = Mutex::new(Vec::new());
+    let callback_times = Mutex::new(Vec::new());
+    let result = execute(&lease, request(fixture.url), slow_fixture_limits, &|payload| {
+        if let Payload::Chunk { bytes } = payload {
+            delivered.lock().unwrap().extend_from_slice(&bytes);
+            callback_times.lock().unwrap().push(Instant::now());
+        }
+        true
+    }).await;
     assert!(result.is_ok(), "{result:?}");
-    assert!(start.elapsed() > limits().first.unwrap());
+    assert!(start.elapsed() > Duration::from_millis(750));
+    {
+        let times = callback_times.lock().unwrap();
+        assert!(times.len() >= 2, "stream must deliver distinct native chunks");
+        assert!(
+            times.last().unwrap().duration_since(times[0]) > Duration::from_millis(750),
+            "actual native content callbacks must span more than the test idle window"
+        );
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&delivered.lock().unwrap()).matches("hello").count(),
+        DELTAS,
+        "every meaningful SSE delta reached the native IPC callback"
+    );
     drop(lease);
     assert_eq!(state.len(), 0);
     fixture.closed.await.unwrap();
