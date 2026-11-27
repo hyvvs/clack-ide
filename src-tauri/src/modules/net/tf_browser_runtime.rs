@@ -443,6 +443,34 @@ impl NativeRetainedAction {
     }
 }
 
+/// Authenticated owner-issued, pre-consent *eligibility* for one exact
+/// central token. Not user consent; the central token must still be approved
+/// and consumed, and host COM must recheck the same original nodes.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone)]
+pub(crate) struct NativeActionReservation {
+    token: String,
+    target: super::tf_browser_contract::ActionTarget,
+    action: NativeRetainedAction,
+    page: super::tf_browser_contract::PreconsentActionReservation,
+    pub(super) expires_at: Instant,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+impl NativeActionReservation {
+    pub(super) fn matches(
+        &self,
+        token: &str,
+        target: &super::tf_browser_contract::ActionTarget,
+        action: &NativeRetainedAction,
+    ) -> bool {
+        self.expires_at > Instant::now()
+            && self.token == token
+            && self.target == *target
+            && self.action == *action
+    }
+}
+
 pub(crate) fn valid_native_type_text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
@@ -866,6 +894,14 @@ fn resource_absolute_deadline(
 ) -> Instant {
     let original_expires = original_started + RESOURCE_SCOPE_LIFETIME;
     successor.map_or(original_expires, |expires| expires.min(original_expires))
+}
+
+/// One action's pre-consent authority is no longer than either the original
+/// central approval token or the original native resource window. Never
+/// derive a new deadline from the moment the human opens a consent dialog.
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+fn native_action_approval_deadline(central_expires: Instant, original_started: Instant) -> Instant {
+    central_expires.min(original_started + RESOURCE_SCOPE_LIFETIME)
 }
 
 // Original successful FORM controls can contain CSRF tokens and other secrets.
@@ -2924,6 +2960,74 @@ mod windows_owner {
             target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
             action: super::NativeRetainedAction,
         ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            self.exact_retained_scope_inner(target, action, None)
+        }
+
+        /// Only an owner-issued reservation for the SAME central token may
+        /// cross the ordinary 30s snapshot-age cutoff. Every other retained
+        /// identity, option/form and process attestation check is identical.
+        pub(crate) fn exact_retained_scope_with_reservation<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: &super::NativeActionReservation,
+            token: &str,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            if !reservation.matches(token, target, &action) {
+                return Err("native-action-reservation-expired-or-changed".into());
+            }
+            self.exact_retained_scope_inner(target, action, Some((reservation, token)))
+        }
+
+        pub(crate) fn reserve_action_for_consent(
+            &self,
+            token: &str,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            central_deadline: Instant,
+        ) -> Result<super::NativeActionReservation, String> {
+            // This initial ordinary check MUST happen before consent and
+            // while the 30s original snapshot has not expired.
+            self.exact_retained_scope_for_central(target, action.clone())?;
+            let expires_at = super::native_action_approval_deadline(
+                central_deadline,
+                self.resource_window_started,
+            );
+            let text = match &action {
+                super::NativeRetainedAction::Type(value) => Some(value.as_str()),
+                _ => None,
+            };
+            let related = match &action {
+                super::NativeRetainedAction::Select(reference)
+                | super::NativeRetainedAction::Submit(reference) => Some(reference.as_str()),
+                _ => None,
+            };
+            let page = self
+                .page_contract
+                .reserve_preconsent_action(
+                    token,
+                    action.kind(),
+                    target.clone(),
+                    text,
+                    related,
+                    expires_at,
+                )
+                .map_err(str::to_owned)?;
+            Ok(super::NativeActionReservation {
+                token: token.to_owned(),
+                target: target.clone(),
+                action,
+                page,
+                expires_at,
+            })
+        }
+
+        fn exact_retained_scope_inner<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: Option<(&super::NativeActionReservation, &str)>,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
             use crate::modules::net::tf_browser_contract::BrowserActionKind;
             if !self.has_control_turn()
                 || !self.ready
@@ -2933,17 +3037,23 @@ mod windows_owner {
             {
                 return Err("native-click-exclusive-control-turn-required".into());
             }
-            let prepared = self
-                .page_contract
-                .prepare_action(
+            let text = match &action {
+                super::NativeRetainedAction::Type(text) => Some(text.as_str()),
+                _ => None,
+            };
+            let prepared = match reservation {
+                Some((reserved, token)) => self.page_contract.prepare_reserved_action(
+                    &reserved.page,
+                    token,
                     action.kind(),
                     (*target).clone(),
-                    match &action {
-                        super::NativeRetainedAction::Type(text) => Some(text.as_str()),
-                        _ => None,
-                    },
-                )
-                .map_err(str::to_owned)?;
+                    text,
+                ),
+                None => self
+                    .page_contract
+                    .prepare_action(action.kind(), (*target).clone(), text),
+            }
+            .map_err(str::to_owned)?;
             // Do not let a changed payload or a malformed alternate option
             // identity be traded for a previously approved action.
             match &action {
@@ -2988,10 +3098,19 @@ mod windows_owner {
                     // Same snapshot, session, page and original retained element
                     // handle. Host independently proves OPTION role and
                     // immediate membership in the exact retained SELECT.
-                    let option = self
-                        .page_contract
-                        .prepare_action(BrowserActionKind::Inspect, option_target, None)
-                        .map_err(str::to_owned)?;
+                    let option = match reservation {
+                        Some((reserved, token)) => self.page_contract.prepare_reserved_related(
+                            &reserved.page,
+                            token,
+                            option_target,
+                        ),
+                        None => self.page_contract.prepare_action(
+                            BrowserActionKind::Inspect,
+                            option_target,
+                            None,
+                        ),
+                    }
+                    .map_err(str::to_owned)?;
                     let option_index = u32::try_from(option.observed_serial)
                         .map_err(|_| "native-select-original-option-index-bounds")?;
                     let option_ordinal = indices
@@ -3014,12 +3133,16 @@ mod windows_owner {
                         element_ref: form_ref.clone(),
                         ..(*target).clone()
                     };
-                    let form_index = u32::try_from(
-                        self.page_contract
-                            .require_retained_form(form_target)
-                            .map_err(str::to_owned)?,
-                    )
-                    .map_err(|_| "native-submit-original-form-index-bounds")?;
+                    let form_serial = match reservation {
+                        Some((reserved, token)) => self
+                            .page_contract
+                            .prepare_reserved_related(&reserved.page, token, form_target)
+                            .map(|prepared| prepared.observed_serial),
+                        None => self.page_contract.require_retained_form(form_target),
+                    }
+                    .map_err(str::to_owned)?;
+                    let form_index = u32::try_from(form_serial)
+                        .map_err(|_| "native-submit-original-form-index-bounds")?;
                     let form_ordinal = indices
                         .iter()
                         .position(|observed| *observed == form_index)
@@ -3086,6 +3209,7 @@ mod windows_owner {
             &mut self,
             approval: super::NativeConsumedExactClickApproval,
             link: &NativeLinkIntent,
+            reservation: &super::NativeActionReservation,
         ) -> Result<
             (
                 crate::modules::net::tf_browser_contract::NativeEffectReceipt,
@@ -3096,8 +3220,12 @@ mod windows_owner {
             if approval.action != super::NativeRetainedAction::Click {
                 return Err("native-click-approved-operation-mismatch".into());
             }
-            self.dispatch_retained_action_with_link_in_control_turn(approval, Some(link))
-                .await
+            self.dispatch_retained_action_with_link_in_control_turn(
+                approval,
+                Some(link),
+                reservation,
+            )
+            .await
         }
 
         /// One centrally consumed and exact-snapshot-scoped native retained
@@ -3107,6 +3235,7 @@ mod windows_owner {
         pub(crate) async fn dispatch_retained_action_in_control_turn(
             &mut self,
             approval: super::NativeConsumedExactClickApproval,
+            reservation: &super::NativeActionReservation,
         ) -> Result<
             (
                 crate::modules::net::tf_browser_contract::NativeEffectReceipt,
@@ -3114,13 +3243,15 @@ mod windows_owner {
             ),
             String,
         > {
-            self.dispatch_retained_action_with_link_in_control_turn(approval, None).await
+            self.dispatch_retained_action_with_link_in_control_turn(approval, None, reservation)
+                .await
         }
 
         async fn dispatch_retained_action_with_link_in_control_turn(
             &mut self,
             approval: super::NativeConsumedExactClickApproval,
             link: Option<&NativeLinkIntent>,
+            reservation: &super::NativeActionReservation,
         ) -> Result<
             (
                 crate::modules::net::tf_browser_contract::NativeEffectReceipt,
@@ -3133,7 +3264,12 @@ mod windows_owner {
             };
             let target = approval.target.clone();
             let action = approval.action.clone();
-            let scope = self.exact_retained_scope_for_central(&target, action.clone())?;
+            let scope = self.exact_retained_scope_with_reservation(
+                &target,
+                action.clone(),
+                reservation,
+                &approval.approval_id,
+            )?;
             if action == super::NativeRetainedAction::Click {
                 let link = link.ok_or("native-click-original-link-intent-required")?;
                 if link.target != target
@@ -3240,6 +3376,13 @@ mod windows_owner {
             let mut flight = FlightFence::new(self.job.0);
             let result = async {
                 self.answer_control_turn("control-turn-claim").await?;
+                // A queued control-turn ACK is not a gesture. If the ORIGINAL
+                // pre-consent budget expired while that ACK was delivered,
+                // never send act-element to the host. The already-burned
+                // snapshot and FlightFence still prevent any replay.
+                if !reservation.matches(&approval_id, &target, &action) {
+                    return Err("native-action-reservation-expired-before-gesture".into());
+                }
                 self.write_parent_frame(frame).await?;
                 let mut reader = self
                     .requests
@@ -3252,7 +3395,19 @@ mod windows_owner {
             }
             .await;
             match result {
-                Ok((terminal, target_digest, stale_reason)) if terminal != NativeEffectTerminal::Unknown => {
+                Err(reason) if reason == "native-action-reservation-expired-before-gesture" => {
+                    // No act-element frame was submitted. The control turn
+                    // itself is non-effectful; FlightFence kills the now
+                    // poisoned owner rather than restoring its references.
+                    self.successor_scope = None;
+                    Ok((
+                        NativeEffectReceipt::classify(NativeEffectTerminal::Stale),
+                        None,
+                    ))
+                }
+                Ok((terminal, target_digest, stale_reason))
+                    if terminal != NativeEffectTerminal::Unknown =>
+                {
                     if terminal != NativeEffectTerminal::Dispatched {
                         self.successor_scope = None;
                     }
@@ -3338,10 +3493,35 @@ mod windows_owner {
             target: &crate::modules::net::tf_browser_contract::ActionTarget,
             action: super::NativeRetainedAction,
         ) -> Result<NativeFormIntent, String> {
+            self.capture_form_inner(target, action, None).await
+        }
+
+        pub(crate) async fn capture_form_with_reservation_in_control_turn(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: &super::NativeActionReservation,
+            token: &str,
+        ) -> Result<NativeFormIntent, String> {
+            self.capture_form_inner(target, action, Some((reservation, token)))
+                .await
+        }
+
+        async fn capture_form_inner(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: Option<(&super::NativeActionReservation, &str)>,
+        ) -> Result<NativeFormIntent, String> {
             if !matches!(action, super::NativeRetainedAction::Submit(_)) {
                 return Err("native-form-capture-submit-only".into());
             }
-            let scope = self.exact_retained_scope_for_central(target, action)?;
+            let scope = match reservation {
+                Some((reserved, token)) => {
+                    self.exact_retained_scope_with_reservation(target, action, reserved, token)?
+                }
+                None => self.exact_retained_scope_for_central(target, action)?,
+            };
             let (form_index, form_ordinal) = scope
                 .selected_native_form
                 .ok_or("native-form-original-form-missing")?;
@@ -5562,8 +5742,23 @@ mod tests {
         let captured = decode(&reply).unwrap();
         assert_eq!(captured.target, target);
         assert_eq!(captured.original_link_index, 7);
-        assert_eq!(captured.destination.as_str(), "https://example.test/clicked");
+        assert_eq!(
+            captured.destination.as_str(),
+            "https://example.test/clicked"
+        );
         assert!(original_link_intent_unchanged(&captured, &captured));
+        // A post-consent DOM href replacement must fail even when a freshly
+        // recomputed digest is internally consistent with the substituted URL.
+        let mut changed_href = captured.clone();
+        changed_href.destination = reqwest::Url::parse("https://example.test/different").unwrap();
+        changed_href.destination_sha256 = format!(
+            "{:x}",
+            Sha256::digest(changed_href.destination.as_str().as_bytes()),
+        );
+        assert!(!original_link_intent_unchanged(&captured, &changed_href));
+        let mut changed_index = captured.clone();
+        changed_index.original_link_index += 1;
+        assert!(!original_link_intent_unchanged(&captured, &changed_index));
         for (field, forged) in [
             ("session", serde_json::json!("other")),
             ("checkSequence", serde_json::json!(5)),
@@ -5646,6 +5841,29 @@ mod tests {
         assert!(
             resource_absolute_deadline(expired_original, Some(successor_expires)) < Instant::now(),
             "an expired source window cannot be resurrected by a fresh successor grant",
+        );
+    }
+    #[test]
+    fn preconsent_approval_deadline_is_intersection_not_renewed_budget() {
+        let now = Instant::now();
+        let central = now + Duration::from_secs(55);
+        let young_original = now - Duration::from_secs(5);
+        assert_eq!(
+            native_action_approval_deadline(central, young_original),
+            central
+        );
+        let aging_original = now - Duration::from_secs(72);
+        assert_eq!(
+            native_action_approval_deadline(central, aging_original),
+            aging_original + RESOURCE_SCOPE_LIFETIME,
+            "human decision may have at most 18s of original resource authority left",
+        );
+        let expired_original = now - Duration::from_secs(91);
+        assert!(native_action_approval_deadline(central, expired_original) < now);
+        let expired_central = now - Duration::from_millis(1);
+        assert_eq!(
+            native_action_approval_deadline(expired_central, young_original),
+            expired_central
         );
     }
     #[test]

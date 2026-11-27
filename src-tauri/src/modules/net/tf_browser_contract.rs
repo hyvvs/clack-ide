@@ -289,6 +289,21 @@ pub(crate) struct BrowserPageContract {
     closed: bool,
 }
 
+/// Private, action-specific pre-consent witness. Issued only while the
+/// original snapshot is still fresh. A central pending token holds this by
+/// value; a cancelled/expired token cannot recover it. It is NOT a new
+/// snapshot, a DOM lookup, or an approval to dispatch.
+#[derive(Clone, Debug)]
+pub(crate) struct PreconsentActionReservation {
+    token: String,
+    target: ActionTarget,
+    kind: BrowserActionKind,
+    text: Option<String>,
+    related_ref: Option<String>,
+    snapshot_created: Instant,
+    pub(crate) expires_at: Instant,
+}
+
 fn handle() -> Result<String, &'static str> {
     let mut random = [0u8; 24];
     getrandom::fill(&mut random).map_err(|_| "NATIVE_RANDOM_UNAVAILABLE")?;
@@ -638,12 +653,155 @@ impl BrowserPageContract {
         target: ActionTarget,
         text: Option<&str>,
     ) -> Result<PreparedAction, &'static str> {
+        self.prepare_action_inner(kind, target, text, false)
+    }
+
+    /// Minted before the OS prompt, after the usual 30-second snapshot check.
+    /// Only the original target, operation, payload and any second original
+    /// FORM/OPTION node are eligible; all other callers keep the old TTL.
+    pub(crate) fn reserve_preconsent_action(
+        &self,
+        token: &str,
+        kind: BrowserActionKind,
+        target: ActionTarget,
+        text: Option<&str>,
+        related_ref: Option<&str>,
+        expires_at: Instant,
+    ) -> Result<PreconsentActionReservation, &'static str> {
+        let now = Instant::now();
+        if !valid_handle(token)
+            || kind == BrowserActionKind::Inspect
+            || expires_at <= now
+            || expires_at.duration_since(now) > Duration::from_secs(60)
+        {
+            return Err("STALE_ELEMENT");
+        }
+        let prepared = self.prepare_action(kind, target.clone(), text)?;
+        if !prepared.requires_approval {
+            return Err("STALE_ELEMENT");
+        }
+        match (kind, related_ref) {
+            (BrowserActionKind::Select, Some(option)) => {
+                if option == target.element_ref {
+                    return Err("STALE_ELEMENT");
+                }
+                let related = ActionTarget {
+                    element_ref: option.to_owned(),
+                    ..target.clone()
+                };
+                self.prepare_action(BrowserActionKind::Inspect, related.clone(), None)?;
+                if self
+                    .element_handles
+                    .get(&related.element_ref)
+                    .is_none_or(|held| held.source.role != SemanticRole::Option)
+                {
+                    return Err("STALE_ELEMENT");
+                }
+            }
+            (BrowserActionKind::Submit, Some(form)) => {
+                if form == target.element_ref {
+                    return Err("STALE_ELEMENT");
+                }
+                self.require_retained_form(ActionTarget {
+                    element_ref: form.to_owned(),
+                    ..target.clone()
+                })?;
+            }
+            (BrowserActionKind::Select | BrowserActionKind::Submit, _) => {
+                return Err("STALE_ELEMENT")
+            }
+            (_, None) => {}
+            (_, Some(_)) => return Err("STALE_ELEMENT"),
+        }
+        Ok(PreconsentActionReservation {
+            token: token.to_owned(),
+            kind,
+            target,
+            text: text.map(str::to_owned),
+            related_ref: related_ref.map(str::to_owned),
+            snapshot_created: self.snapshot_created.ok_or("STALE_ELEMENT")?,
+            expires_at,
+        })
+    }
+
+    fn reservation_live(&self, reserved: &PreconsentActionReservation, token: &str) -> bool {
+        !self.closed
+            && reserved.token == token
+            && reserved.expires_at > Instant::now()
+            && self.snapshot_created == Some(reserved.snapshot_created)
+            && self
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.snapshot_id == reserved.target.snapshot_id)
+    }
+
+    pub(crate) fn prepare_reserved_action(
+        &self,
+        reserved: &PreconsentActionReservation,
+        token: &str,
+        kind: BrowserActionKind,
+        target: ActionTarget,
+        text: Option<&str>,
+    ) -> Result<PreparedAction, &'static str> {
+        if !self.reservation_live(reserved, token)
+            || reserved.kind != kind
+            || reserved.target != target
+            || reserved.text.as_deref() != text
+        {
+            return Err("STALE_ELEMENT");
+        }
+        self.prepare_action_inner(kind, target, text, true)
+    }
+
+    pub(crate) fn prepare_reserved_related(
+        &self,
+        reserved: &PreconsentActionReservation,
+        token: &str,
+        target: ActionTarget,
+    ) -> Result<PreparedAction, &'static str> {
+        if !self.reservation_live(reserved, token)
+            || !matches!(
+                reserved.kind,
+                BrowserActionKind::Select | BrowserActionKind::Submit
+            )
+            || reserved.related_ref.as_deref() != Some(target.element_ref.as_str())
+            || target.browser_session_id != reserved.target.browser_session_id
+            || target.page_id != reserved.target.page_id
+            || target.page_generation != reserved.target.page_generation
+            || target.snapshot_id != reserved.target.snapshot_id
+        {
+            return Err("STALE_ELEMENT");
+        }
+        let prepared =
+            self.prepare_action_inner(BrowserActionKind::Inspect, target.clone(), None, true)?;
+        let required_role = if reserved.kind == BrowserActionKind::Submit {
+            SemanticRole::Form
+        } else {
+            SemanticRole::Option
+        };
+        if self
+            .element_handles
+            .get(&target.element_ref)
+            .is_none_or(|held| held.source.role != required_role)
+        {
+            return Err("STALE_ELEMENT");
+        }
+        Ok(prepared)
+    }
+
+    fn prepare_action_inner(
+        &self,
+        kind: BrowserActionKind,
+        target: ActionTarget,
+        text: Option<&str>,
+        reserved: bool,
+    ) -> Result<PreparedAction, &'static str> {
         if self.closed {
             return Err("STALE_SESSION");
         }
         if self
             .snapshot_created
-            .is_none_or(|when| when.elapsed() > MAX_SNAPSHOT_LIFETIME)
+            .is_none_or(|when| !reserved && when.elapsed() > MAX_SNAPSHOT_LIFETIME)
         {
             return Err("STALE_ELEMENT");
         }
@@ -1185,6 +1343,262 @@ mod tests {
             .unwrap();
         assert_eq!(
             p.prepare_action(BrowserActionKind::Click, original, None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+    }
+    #[test]
+    fn centrally_bounded_original_action_reservation_survives_review_but_not_revocation() {
+        let mut page = session();
+        let link = element(
+            1,
+            SemanticRole::Link,
+            "Read",
+            Some("https://example.org/next"),
+            None,
+            None,
+        );
+        page.observe(1, "https://example.org/form", "", "", vec![link.clone()], 1)
+            .unwrap();
+        let original = target(&page);
+        let token = "a".repeat(48);
+        let expires = Instant::now() + Duration::from_secs(50);
+        let mut reservation = page
+            .reserve_preconsent_action(
+                &token,
+                BrowserActionKind::Click,
+                original.clone(),
+                None,
+                None,
+                expires,
+            )
+            .unwrap();
+        // An unchanged original Node may be reviewed for >30s, but the
+        // ambient snapshot is still expired for every unreserved caller.
+        page.snapshot_created = Some(Instant::now() - Duration::from_secs(40));
+        assert_eq!(page.prepare_reserved_action(&reservation, &token, BrowserActionKind::Click, original.clone(), None).unwrap_err(), "STALE_ELEMENT",
+            "a replaced snapshot timestamp is never eligible merely because the target text looks the same");
+        // Advance only the test's simulated monotonic observation clock;
+        // both recorded timestamps describe the SAME original observation.
+        reservation.snapshot_created = page.snapshot_created.unwrap();
+        assert_eq!(
+            page.prepare_action(BrowserActionKind::Click, original.clone(), None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        assert!(page
+            .prepare_reserved_action(
+                &reservation,
+                &token,
+                BrowserActionKind::Click,
+                original.clone(),
+                None
+            )
+            .is_ok());
+        assert_eq!(
+            page.prepare_reserved_action(
+                &reservation,
+                &"b".repeat(48),
+                BrowserActionKind::Click,
+                original.clone(),
+                None
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        assert_eq!(
+            page.prepare_reserved_action(
+                &reservation,
+                &token,
+                BrowserActionKind::Check,
+                original.clone(),
+                None
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        let mut expired = reservation.clone();
+        expired.expires_at = Instant::now() - Duration::from_millis(1);
+        assert_eq!(
+            page.prepare_reserved_action(
+                &expired,
+                &token,
+                BrowserActionKind::Click,
+                original.clone(),
+                None
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        page.revoke_snapshot();
+        assert_eq!(
+            page.prepare_reserved_action(
+                &reservation,
+                &token,
+                BrowserActionKind::Click,
+                original.clone(),
+                None
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        page.observe(1, "https://example.org/form", "", "", vec![link], 2)
+            .unwrap();
+        assert_eq!(
+            page.prepare_reserved_action(
+                &reservation,
+                &token,
+                BrowserActionKind::Click,
+                original,
+                None
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+    }
+    #[test]
+    fn reserved_type_payload_and_original_form_identity_cannot_be_substituted() {
+        let token = "b".repeat(48);
+        let expires = Instant::now() + Duration::from_secs(48);
+        let mut page = session();
+        page.observe(
+            1,
+            "https://example.org/form",
+            "",
+            "",
+            vec![element(
+                1,
+                SemanticRole::Textbox,
+                "Public input",
+                None,
+                None,
+                Some("text"),
+            )],
+            1,
+        )
+        .unwrap();
+        let input_target = target(&page);
+        let mut typed = page
+            .reserve_preconsent_action(
+                &token,
+                BrowserActionKind::Type,
+                input_target.clone(),
+                Some("one exact value"),
+                None,
+                expires,
+            )
+            .unwrap();
+        page.snapshot_created = Some(Instant::now() - Duration::from_secs(38));
+        typed.snapshot_created = page.snapshot_created.unwrap();
+        assert!(page
+            .prepare_reserved_action(
+                &typed,
+                &token,
+                BrowserActionKind::Type,
+                input_target.clone(),
+                Some("one exact value")
+            )
+            .is_ok());
+        for alternate in [Some("different"), Some(""), None] {
+            assert_eq!(
+                page.prepare_reserved_action(
+                    &typed,
+                    &token,
+                    BrowserActionKind::Type,
+                    input_target.clone(),
+                    alternate
+                )
+                .unwrap_err(),
+                "STALE_ELEMENT"
+            );
+        }
+        let mut another_session = input_target.clone();
+        another_session.browser_session_id = "c".repeat(48);
+        assert_eq!(
+            page.prepare_reserved_action(
+                &typed,
+                &token,
+                BrowserActionKind::Type,
+                another_session,
+                Some("one exact value")
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        assert_eq!(
+            page.reserve_preconsent_action(
+                &token,
+                BrowserActionKind::Type,
+                input_target,
+                Some("one exact value"),
+                None,
+                expires
+            )
+            .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+
+        let mut form_page = session();
+        form_page
+            .observe(
+                1,
+                "https://example.org/form",
+                "",
+                "",
+                vec![
+                    element(1, SemanticRole::Button, "Send", None, None, Some("submit")),
+                    element(
+                        2,
+                        SemanticRole::Form,
+                        "",
+                        None,
+                        Some("https://example.org/send"),
+                        None,
+                    ),
+                ],
+                1,
+            )
+            .unwrap();
+        let submitter = target(&form_page);
+        let form_ref = form_page.snapshot.as_ref().unwrap().elements[1]
+            .element_ref
+            .clone();
+        let mut related_target = submitter.clone();
+        related_target.element_ref = form_ref.clone();
+        let mut form = form_page
+            .reserve_preconsent_action(
+                &token,
+                BrowserActionKind::Submit,
+                submitter.clone(),
+                None,
+                Some(&form_ref),
+                expires,
+            )
+            .unwrap();
+        form_page.snapshot_created = Some(Instant::now() - Duration::from_secs(39));
+        form.snapshot_created = form_page.snapshot_created.unwrap();
+        assert!(form_page
+            .prepare_reserved_action(
+                &form,
+                &token,
+                BrowserActionKind::Submit,
+                submitter.clone(),
+                None
+            )
+            .is_ok());
+        assert!(form_page
+            .prepare_reserved_related(&form, &token, related_target.clone())
+            .is_ok());
+        related_target.element_ref = submitter.element_ref.clone();
+        assert_eq!(
+            form_page
+                .prepare_reserved_related(&form, &token, related_target)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        assert_eq!(
+            form_page
+                .prepare_reserved_action(&form, &token, BrowserActionKind::Click, submitter, None)
                 .unwrap_err(),
             "STALE_ELEMENT"
         );

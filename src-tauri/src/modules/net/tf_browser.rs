@@ -50,7 +50,9 @@ use super::tf_browser_contract::{
 use super::tf_browser_runtime::NativeConsumedExactClickApproval;
 use super::tf_browser_runtime::NativeRetainedAction;
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-use super::tf_browser_runtime::{NativeControlTurnRequester, NativeExactClickApprovalScope};
+use super::tf_browser_runtime::{
+    NativeActionReservation, NativeControlTurnRequester, NativeExactClickApprovalScope,
+};
 
 const TOOL_ID: &str = "tf.browser_operation.v1";
 const ENGINE: &str = "inert_native_text";
@@ -1135,6 +1137,13 @@ enum NativeCommand {
         target: ActionTarget,
         reply: oneshot::Sender<Result<super::tf_browser_runtime::NativeLinkIntent, String>>,
     },
+    ReserveAction {
+        token: String,
+        target: ActionTarget,
+        action: NativeRetainedAction,
+        deadline: Instant,
+        reply: oneshot::Sender<Result<NativeActionReservation, String>>,
+    },
     Screenshot {
         token: String,
         browser_id: String,
@@ -1153,6 +1162,7 @@ enum NativeCommand {
         browser_id: String,
         target: ActionTarget,
         action: NativeRetainedAction,
+        reservation: Box<NativeActionReservation>,
         active: Arc<Active>,
         reply: oneshot::Sender<Result<NativeClickCompletion, String>>,
     },
@@ -1867,6 +1877,7 @@ fn native_pre_dispatch_terminal(reason: &str) -> NativeEffectTerminal {
         "STALE_ELEMENT"
             | "STALE_SESSION"
             | "native-click-observation-stale"
+            | "native-action-reservation-expired-or-changed"
             | "native-click-central-page-or-element-changed"
             | "confined-native-central-page-or-element-changed"
             | "confined-native-snapshot-stale"
@@ -1913,6 +1924,8 @@ struct Pending {
     native_role: Option<SemanticRole>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     native_action: Option<NativeRetainedAction>,
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    native_reservation: Option<NativeActionReservation>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     popup_intent: Option<NativePopupIntent>,
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -2027,8 +2040,23 @@ impl ApprovalPresentation {
             return ApprovalPresentationState::Revoked;
         }
         match self.entries.lock() {
-            Ok(entries) if !entries.approvals_shutdown && entries.pending.get(&self.token)
-                .is_some_and(|p| p.approving && !p.approved && p.expires > now) => ApprovalPresentationState::Live,
+            Ok(entries)
+                if !entries.approvals_shutdown
+                    && entries.pending.get(&self.token).is_some_and(|p| {
+                        p.approving && !p.approved && p.expires > now && {
+                            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+                            {
+                                native_pending_authority_live(&entries, &self.token, p, now)
+                            }
+                            #[cfg(not(all(windows, feature = "tf-browser-native-runtime")))]
+                            {
+                                true
+                            }
+                        }
+                    }) =>
+            {
+                ApprovalPresentationState::Live
+            }
             _ => ApprovalPresentationState::Revoked,
         }
     }
@@ -2041,6 +2069,47 @@ impl ApprovalPresentation {
             ApprovalPresentationState::Live => Err("browser-native-approval-denied".into()),
         }
     }
+}
+
+/// Read-only dialog-liveness fence. Actor/central session changes during
+/// human review revoke this one pending action; no new snapshot or authority
+/// is obtained. The full physical original-node recheck remains at dispatch.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn native_pending_authority_live(
+    entries: &Entries,
+    token: &str,
+    pending: &Pending,
+    now: Instant,
+) -> bool {
+    if !pending.request.operation.native_action() {
+        return true;
+    }
+    let Some(session) = pending
+        .browser_id
+        .as_deref()
+        .and_then(|id| entries.sessions.get(id))
+    else {
+        return false;
+    };
+    let Some(target) = pending.native_target.as_ref() else {
+        return false;
+    };
+    let Some(action) = pending.native_action.as_ref() else {
+        return false;
+    };
+    !entries.approvals_shutdown
+        && pending.expires > now
+        && matches_scope(session, &pending.request, &pending.root)
+        && pending.revision == Some(session.revision)
+        && !session.busy
+        && session.snapshot.url == pending.url.as_deref().unwrap_or_default()
+        && session
+            .native
+            .as_ref()
+            .is_some_and(|native| native.owner_alive.load(Ordering::Acquire))
+        && pending.native_reservation.as_ref().is_some_and(|reserved| {
+            reserved.expires_at == pending.expires && reserved.matches(token, target, action)
+        })
 }
 
 #[cfg(windows)]
@@ -3209,6 +3278,8 @@ pub fn prepare(
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             native_action,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+            native_reservation: None,
+            #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             popup_intent: None,
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             form_intent: None,
@@ -3475,6 +3546,7 @@ type NativeConsumedActionContext = (
 fn consume_native_action_approval(
     token: &str,
     native: &NativeExactClickApprovalScope<'_>,
+    reservation: &NativeActionReservation,
     registry: &WorkspaceRegistry,
     state: &TfBrowserState,
 ) -> Result<NativeConsumedActionContext, String> {
@@ -3494,6 +3566,12 @@ fn consume_native_action_approval(
         || !p.request.operation.native_action()
         || p.native_effect != Some(native.effect)
         || p.native_action.as_ref() != Some(&native.action)
+        || p.native_reservation.as_ref().is_none_or(|held| {
+            held.expires_at != p.expires
+                || held.expires_at != reservation.expires_at
+                || !held.matches(token, native.target, &native.action)
+        })
+        || !reservation.matches(token, native.target, &native.action)
         || p.native_target.as_ref() != Some(native.target)
         || p.request.actor != native.actor
         || p.request.session_id != native.session_id
@@ -3945,7 +4023,27 @@ async fn execute_confined_native(
                                         }
                                     }
                                 }
-                                NativeCommand::CapturePopup { expected_url, reply, _capture_lease } => {
+                                NativeCommand::ReserveAction {
+                                    token,
+                                    target,
+                                    action,
+                                    deadline,
+                                    reply,
+                                } => {
+                                    if !reply.is_closed() {
+                                        // Pure owner-local validation. No COM activation,
+                                        // page refresh, permission grant or network I/O.
+                                        let reserved = browser.reserve_action_for_consent(
+                                            &token, &target, action, deadline,
+                                        );
+                                        let _ = reply.send(reserved);
+                                    }
+                                }
+                                NativeCommand::CapturePopup {
+                                    expected_url,
+                                    reply,
+                                    _capture_lease,
+                                } => {
                                     if !reply.is_closed() {
                                         if let Err(reason) = _capture_lease.admit(&expected_url) {
                                             let _ = reply.send(Err(reason));
@@ -4030,6 +4128,7 @@ async fn execute_confined_native(
                                     browser_id,
                                     target,
                                     action,
+                                    reservation,
                                     active,
                                     reply,
                                 } => {
@@ -4049,14 +4148,21 @@ async fn execute_confined_native(
                                                         .to_owned(),
                                                 );
                                             }
-                                            let scope = browser.exact_retained_scope_for_central(
-                                                &target,
-                                                action.clone(),
-                                            )?;
+                                            let scope = browser
+                                                .exact_retained_scope_with_reservation(
+                                                    &target,
+                                                    action.clone(),
+                                                    &reservation,
+                                                    &token,
+                                                )?;
                                             let authority = service_app.state::<TfBrowserState>();
                                             let registry = service_app.state::<WorkspaceRegistry>();
                                             consume_native_action_approval(
-                                                &token, &scope, &registry, &authority,
+                                                &token,
+                                                &scope,
+                                                &reservation,
+                                                &registry,
+                                                &authority,
                                             )
                                         })();
                                         let mut clicked_source = None;
@@ -4086,9 +4192,8 @@ async fn execute_confined_native(
                                                     // selector lookup, body substitution or page
                                                     // requestSubmit()/fetch() is ever allowed.
                                                     let recaptured = browser
-                                                        .capture_form_in_control_turn(
-                                                            &target,
-                                                            action.clone(),
+                                                        .capture_form_with_reservation_in_control_turn(
+                                                            &target, action.clone(), &reservation, &token,
                                                         )
                                                         .await;
                                                     if !matches!(
@@ -4096,6 +4201,17 @@ async fn execute_confined_native(
                                                         (Some(approved), Ok(current)) if
                                                             super::tf_browser_runtime::original_form_intent_unchanged(approved, current)
                                                     ) {
+                                                        Ok((
+                                                            NativeEffectReceipt::classify(
+                                                                NativeEffectTerminal::Stale,
+                                                            ),
+                                                            None,
+                                                        ))
+                                                    } else if !reservation
+                                                        .matches(&token, &target, &action)
+                                                    {
+                                                        // No late TF3 write after either the
+                                                        // approval or ORIGINAL resource deadline.
                                                         Ok((
                                                             NativeEffectReceipt::classify(
                                                                 NativeEffectTerminal::Stale,
@@ -4178,10 +4294,31 @@ async fn execute_confined_native(
                                                                 if let Ok(mut inner) = active.tf_web_token.lock() {
                                                                     *inner = Some(prepared.token.clone());
                                                                 }
-                                                                match tf_web::execute_browser_bound_post(
+                                                                // A durable-ledger write or TF3 preparation may
+                                                                // exhaust the ORIGINAL reservation. Cancel its
+                                                                // unused TF3 token without a network attempt.
+                                                                if !reservation.matches(&token, &target, &action) {
+                                                                    let _ = tf_web::cancel(&prepared.token, &web);
+                                                                    Ok((NativeEffectReceipt::classify(
+                                                                        NativeEffectTerminal::Stale,
+                                                                    ), None))
+                                                                } else {
+                                                                let mut transport_terminal = NativeEffectTerminal::Dispatched;
+                                                                match tf_web::execute_browser_bound_post_before(
                                                                     &prepared.token, &registry, &web, &origin,
+                                                                    tokio::time::Instant::from_std(reservation.expires_at),
                                                                 ).await {
                                                                     Ok(transport) => {
+                                                                        // TF3 distinguishes an actually submitted
+                                                                        // or ambiguous POST from a proven no-send.
+                                                                        // Neither is entitled to another attempt.
+                                                                        if transport.receipt.effect_state == "NoEffect" {
+                                                                            transport_terminal = if transport.receipt.terminal == "timed_out" {
+                                                                                NativeEffectTerminal::Stale
+                                                                            } else {
+                                                                                NativeEffectTerminal::FailedBeforeDispatch
+                                                                            };
+                                                                        }
                                                                         form_transport = Some(NativeFormTransportProof {
                                                                             method: "POST",
                                                                             destination_sha256: transport.destination_sha256,
@@ -4199,8 +4336,9 @@ async fn execute_confined_native(
                                                                     }
                                                                 }
                                                                 Ok((NativeEffectReceipt::classify(
-                                                                    NativeEffectTerminal::Dispatched,
+                                                                    transport_terminal,
                                                                 ), None))
+                                                                }
                                                             }
                                                             Err(_) => Ok((NativeEffectReceipt::classify(
                                                                 NativeEffectTerminal::FailedBeforeDispatch,
@@ -4248,10 +4386,11 @@ async fn execute_confined_native(
                                                             .dispatch_exact_click_in_control_turn(
                                                                 grant,
                                                                 link,
+                                                                &reservation,
                                                             )
                                                             .await
                                                     } else {
-                                                        browser.dispatch_retained_action_in_control_turn(grant).await
+                                                        browser.dispatch_retained_action_in_control_turn(grant, &reservation).await
                                                     }
                                                 } else {
                                                     Ok((NativeEffectReceipt::classify(NativeEffectTerminal::FailedBeforeDispatch), None))
@@ -5199,12 +5338,20 @@ async fn execute_confined_retained_action(
     receipt.policy_decision = "allowed";
     receipt.retry = "NEVER_REPLAY";
     receipt.uncertainty = "native-exact-click-outcome-unverified";
+    let reservation = p
+        .native_reservation
+        .clone()
+        .ok_or("native-action-preconsent-reservation-required")?;
+    if !reservation.matches(token, &target, &action) || reservation.expires_at != p.expires {
+        return Err("native-action-preconsent-reservation-expired-or-changed".into());
+    }
     let (reply, result) = oneshot::channel();
     let command = NativeCommand::Click {
         token: token.to_owned(),
         browser_id: p.browser_id.clone().ok_or("browser-session-id-required")?,
         target,
         action,
+        reservation: Box::new(reservation),
         active,
         reply,
     };
@@ -5919,6 +6066,128 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         current.form_intent = Some(intent.clone());
         pending.form_intent = Some(intent);
     }
+    // The original retained action must pass ALL normal snapshot checks
+    // before displaying consent. The native owner returns a private witness
+    // bound to this exact central token/action, capped by the ORIGINAL 90s
+    // resource window and the ORIGINAL 60s pending expiry. This does not
+    // refresh a snapshot or grant a page gesture. Cancellation simply removes
+    // the only central copy; ordinary other references still expire at 30s.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if pending.request.operation.native_action() {
+        let (sender, requester, target, action, original_deadline) = {
+            let authority = app.state::<TfBrowserState>();
+            let entries = authority
+                .entries
+                .lock()
+                .map_err(|_| "browser-state-unavailable")?;
+            let current = entries
+                .pending
+                .get(&token)
+                .ok_or("native-action-preconsent-token-missing")?;
+            let id = current
+                .browser_id
+                .as_deref()
+                .ok_or("native-action-session-missing")?;
+            let session = entries
+                .sessions
+                .get(id)
+                .ok_or("native-action-session-expired")?;
+            if !current.approving
+                || current.approved
+                || current.expires <= Instant::now()
+                || current.request_id != pending.request_id
+                || current.request != pending.request
+                || current.native_target != pending.native_target
+                || current.revision != Some(session.revision)
+                || session.busy
+                || !matches_scope(session, &current.request, &current.root)
+                || current.native_reservation.is_some()
+            {
+                return Err("native-action-preconsent-scope-or-revision-changed".into());
+            }
+            let owner = session
+                .native
+                .as_ref()
+                .ok_or("native-action-original-owner-missing")?;
+            if !owner.owner_alive.load(Ordering::Acquire) {
+                return Err("native-action-original-owner-stopped".into());
+            }
+            (
+                owner.command_tx.clone(),
+                owner.turn_requester.clone(),
+                current
+                    .native_target
+                    .clone()
+                    .ok_or("native-action-original-node-missing")?,
+                current
+                    .native_action
+                    .clone()
+                    .ok_or("native-action-original-operation-missing")?,
+                current.expires,
+            )
+        };
+        let (reply, received) = oneshot::channel();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            sender.send(NativeCommand::ReserveAction {
+                token: token.clone(),
+                target: target.clone(),
+                action: action.clone(),
+                deadline: original_deadline,
+                reply,
+            }),
+        )
+        .await
+        .map_err(|_| "native-action-reservation-queue-timeout")?
+        .map_err(|_| "native-action-reservation-queue-closed")?;
+        requester.request();
+        let reserved = tokio::time::timeout(Duration::from_secs(18), received)
+            .await
+            .map_err(|_| "native-action-reservation-timeout")?
+            .map_err(|_| "native-action-reservation-owner-stopped")??;
+        if !reserved.matches(&token, &target, &action) || reserved.expires_at > original_deadline {
+            return Err("native-action-reservation-expired-or-extended".into());
+        }
+        let authority = app.state::<TfBrowserState>();
+        let mut entries = authority
+            .entries
+            .lock()
+            .map_err(|_| "browser-state-unavailable")?;
+        let id = pending
+            .browser_id
+            .as_deref()
+            .ok_or("native-action-session-missing")?;
+        let session = entries
+            .sessions
+            .get(id)
+            .ok_or("native-action-session-expired")?;
+        if session.busy
+            || session.revision != pending.revision.unwrap_or(u64::MAX)
+            || !matches_scope(session, &pending.request, &pending.root)
+        {
+            return Err("native-action-reservation-session-changed".into());
+        }
+        let current = entries
+            .pending
+            .get_mut(&token)
+            .ok_or("native-action-reservation-token-cancelled")?;
+        if !current.approving
+            || current.approved
+            || current.request_id != pending.request_id
+            || current.request != pending.request
+            || current.native_target != Some(target)
+            || current.native_action.as_ref() != Some(&action)
+            || current.revision != pending.revision
+            || current.expires <= Instant::now()
+            || current.native_reservation.is_some()
+        {
+            return Err("native-action-reservation-central-identity-changed".into());
+        }
+        current.expires = current.expires.min(reserved.expires_at);
+        current.native_reservation = Some(reserved.clone());
+        pending.expires = current.expires;
+        pending.native_reservation = Some(reserved);
+    }
     // Explicitly do NOT display an arbitrary query string: it might contain
     // untrusted credentials, even though TF3 later rejects sensitive keys.
     let target = pending.url.as_deref().and_then(|v| Url::parse(v).ok());
@@ -6191,6 +6460,26 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
     if pending.request.operation.opens_child() {
         validate_tab_opener(&entries, &pending.request, &root, pending.revision, false)?;
     }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    if pending.request.operation.native_action() {
+        let live_authority = entries.pending.get(&token).is_some_and(|current| {
+            native_pending_authority_live(&entries, &token, current, Instant::now())
+        });
+        if !live_authority
+            || pending.native_reservation.as_ref().is_none_or(|reserved| {
+                pending
+                    .native_target
+                    .as_ref()
+                    .zip(pending.native_action.as_ref())
+                    .is_none_or(|(target, action)| {
+                        reserved.expires_at != pending.expires
+                            || !reserved.matches(&token, target, action)
+                    })
+            })
+        {
+            return Err("browser-native-approval-original-authority-revoked".into());
+        }
+    }
     let live = entries
         .pending
         .get_mut(&token)
@@ -6204,6 +6493,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         || live.url != pending.url
         || live.browser_id != pending.browser_id
         || live.revision != pending.revision
+        || live.expires != pending.expires
         || {
             #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
             {
@@ -6366,8 +6656,48 @@ mod tests {
         assert!(commit_live_approval(live, before).is_err());
         drop(entries);
         assert_eq!(p.state_at(before), ApprovalPresentationState::Revoked);
-        drop(ApprovalAbandonGuard { entries: state.entries.clone(), token: p.token.clone() });
+        drop(ApprovalAbandonGuard {
+            entries: state.entries.clone(),
+            token: p.token.clone(),
+        });
         assert!(state.entries.lock().unwrap().pending[&p.token].approved);
+    }
+
+    #[test]
+    fn approval_presentation_honors_shortened_effective_deadline_and_late_rejection() {
+        let (dir, registry, state, web) = setup();
+        let mut presentation = approval_fixture(&state, &registry, dir.path());
+        let reduced = Instant::now() + Duration::from_millis(80);
+        {
+            let mut entries = state.entries.lock().unwrap();
+            let live = entries.pending.get_mut(&presentation.token).unwrap();
+            live.expires = live.expires.min(reduced);
+            presentation.deadline = live.expires;
+        }
+        assert_eq!(
+            presentation.state_at(presentation.deadline - Duration::from_millis(1)),
+            ApprovalPresentationState::Live
+        );
+        assert_eq!(
+            presentation
+                .decision_at(presentation.deadline, true)
+                .unwrap_err(),
+            "browser-native-approval-expired"
+        );
+        let mut entries = state.entries.lock().unwrap();
+        let live = entries.pending.get_mut(&presentation.token).unwrap();
+        assert_eq!(
+            commit_live_approval(live, presentation.deadline).unwrap_err(),
+            "browser-native-approval-expired"
+        );
+        assert!(!live.approved);
+        drop(entries);
+        assert!(cancel(&presentation.token, &state, &web).unwrap());
+        assert_eq!(
+            presentation.state_at(presentation.deadline - Duration::from_millis(1)),
+            ApprovalPresentationState::Revoked
+        );
+        assert!(!cancel(&presentation.token, &state, &web).unwrap());
     }
 
     #[test]
@@ -7610,6 +7940,7 @@ mod tests {
             "STALE_ELEMENT",
             "STALE_SESSION",
             "native-click-observation-stale",
+            "native-action-reservation-expired-or-changed",
             "confined-native-snapshot-stale",
             "confined-native-central-page-or-element-changed",
         ] {

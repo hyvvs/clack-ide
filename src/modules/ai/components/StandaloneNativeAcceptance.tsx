@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -6,10 +5,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
-  refreshTfBrowserRuntimeStatus,
   type BrowserRuntimeStatus,
+  refreshTfBrowserRuntimeStatus,
 } from "@/modules/ai/lib/browserRuntimeStatus";
 import { useChatStore } from "@/modules/ai/store/chatStore";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { NativeBrowserOperatorPanel } from "./NativeBrowserOperatorPanel";
 
 /**
@@ -23,7 +23,6 @@ import { NativeBrowserOperatorPanel } from "./NativeBrowserOperatorPanel";
  */
 export function StandaloneNativeAcceptance() {
   const [open, setOpen] = useState(false);
-  const [status, setStatus] = useState<BrowserRuntimeStatus | null>(null);
   const session = useChatStore((state) =>
     state.sessions.find((entry) => entry.id === state.activeSessionId),
   );
@@ -35,21 +34,57 @@ export function StandaloneNativeAcceptance() {
     null;
   const sessionId = session?.id ?? null;
 
-  useEffect(() => {
-    setStatus(null);
-    if (!open || !actor || !workspaceRoot || !sessionId) return;
-    let alive = true;
-    void refreshTfBrowserRuntimeStatus(actor, sessionId, workspaceRoot)
-      .then((next) => {
-        if (alive) setStatus(next);
-      })
-      .catch(() => {
-        if (alive) setStatus(null);
-      });
-    return () => {
-      alive = false;
+  // A new scope (including close/reopen) must never render a previous
+  // scope's sessions, even before effect cleanup has run.
+  const scope = useMemo(
+    () => ({
+      open,
+      actor,
+      sessionId,
+      workspaceRoot,
+      active: false,
+      request: 0,
+    }),
+    [open, actor, sessionId, workspaceRoot],
+  );
+  const [checked, setChecked] = useState<{
+    scope: typeof scope;
+    status: BrowserRuntimeStatus | null;
+  } | null>(null);
+  const status = open && checked?.scope === scope ? checked.status : null;
+
+  const refresh = useCallback(() => {
+    if (
+      !scope.active ||
+      !scope.open ||
+      !scope.actor ||
+      !scope.sessionId ||
+      !scope.workspaceRoot
+    )
+      return;
+    const request = ++scope.request;
+    const publish = (next: BrowserRuntimeStatus | null) => {
+      if (scope.active && scope.request === request) {
+        setChecked({ scope, status: next });
+      }
     };
-  }, [open, actor, workspaceRoot, sessionId]);
+    void refreshTfBrowserRuntimeStatus(
+      scope.actor,
+      scope.sessionId,
+      scope.workspaceRoot,
+    )
+      .then(publish)
+      .catch(() => publish(null));
+  }, [scope]);
+
+  useEffect(() => {
+    scope.active = true;
+    refresh();
+    return () => {
+      scope.active = false;
+      ++scope.request;
+    };
+  }, [scope, refresh]);
 
   if (!sessionId || !actor || !workspaceRoot) return null;
 
@@ -83,20 +118,18 @@ export function StandaloneNativeAcceptance() {
           </p>
           {status?.available ? (
             <NativeBrowserOperatorPanel
-              key={`${actor}:${sessionId}:${workspaceRoot}`}
+              key={JSON.stringify([actor, sessionId, workspaceRoot])}
               actor={actor}
               sessionId={sessionId}
               workspaceRoot={workspaceRoot}
               sessions={status.sessions}
-              onChanged={() => {
-                void refreshTfBrowserRuntimeStatus(actor, sessionId, workspaceRoot)
-                  .then(setStatus)
-                  .catch(() => setStatus(null));
-              }}
+              onChanged={refresh}
             />
           ) : (
             <p role="status">
-              {status ? "Native browser scope unavailable." : "Checking exact native browser scope…"}
+              {status
+                ? "Native browser scope unavailable."
+                : "Checking exact native browser scope…"}
             </p>
           )}
         </PopoverContent>

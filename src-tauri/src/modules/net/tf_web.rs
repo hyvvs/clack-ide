@@ -692,15 +692,32 @@ fn prepare_browser_bound_post_policy(
     Ok(prepared)
 }
 
-/// Only the native owner may execute its one prepared bound write, after the
-/// original-node and body scope has been rechecked. HTTP 2xx remains Unknown,
-/// NEVER_REPLAY, until an independent owned-server receipt proves the effect.
-#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
-pub(super) async fn execute_browser_bound_post(
+/// Only the native owner may execute the prepared bound POST after original
+/// FORM and body revalidation. Carry the original absolute consent/resource
+/// deadline into TF3, checking it again after token consumption, DNS and
+/// before send; HTTP 2xx alone is never independently verified success.
+/// No fresh network deadline or automatic replay is authorized at handoff.
+#[cfg(test)]
+async fn execute_browser_bound_post(
     token: &str,
     registry: &WorkspaceRegistry,
     state: &TfWebState,
     approved_origin: &Url,
+) -> Result<TfBrowserWriteTransport, String> {
+    // Legacy security regressions verify the ordinary bound-POST policy;
+    // production uses only the strictly deadline-capped entry below.
+    execute_browser_bound_post_policy(
+        token, registry, state, approved_origin, NetworkPolicy::Public, None,
+    ).await
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(super) async fn execute_browser_bound_post_before(
+    token: &str,
+    registry: &WorkspaceRegistry,
+    state: &TfWebState,
+    approved_origin: &Url,
+    absolute_deadline: tokio::time::Instant,
 ) -> Result<TfBrowserWriteTransport, String> {
     execute_browser_bound_post_policy(
         token,
@@ -708,6 +725,7 @@ pub(super) async fn execute_browser_bound_post(
         state,
         approved_origin,
         NetworkPolicy::Public,
+        Some(absolute_deadline),
     )
     .await
 }
@@ -1060,6 +1078,7 @@ async fn execute_browser_bound_post_policy(
     state: &TfWebState,
     approved_origin: &Url,
     policy: NetworkPolicy,
+    absolute_deadline: Option<tokio::time::Instant>,
 ) -> Result<TfBrowserWriteTransport, String> {
     let (body_sha256, body_len, destination_sha256) = {
         let entries = state
@@ -1085,7 +1104,7 @@ async fn execute_browser_bound_post_policy(
     };
     // This consumes the same TF3 pending token even on a DNS/TLS/network
     // denial. Never allow the generic GET executor to reinterpret a POST.
-    let receipt = execute_policy_with_output_scoped(
+    let receipt = execute_policy_with_output_scoped_deadline(
         token,
         registry,
         state,
@@ -1097,6 +1116,7 @@ async fn execute_browser_bound_post_policy(
             tls_test_root: None,
         },
         Tf3ExecutionKind::FormPost,
+        absolute_deadline,
     )
     .await?;
     Ok(TfBrowserWriteTransport {
@@ -3487,6 +3507,7 @@ mod tests {
             &state,
             &origin,
             NetworkPolicy::FixtureLoopback,
+            None,
         )
         .await
         .unwrap();
@@ -3521,13 +3542,67 @@ mod tests {
                 &registry,
                 &state,
                 &origin,
-                NetworkPolicy::FixtureLoopback
+                NetworkPolicy::FixtureLoopback,
+                None,
             )
             .await
             .is_err(),
             "no second HTTP effect may be dispatched with this token"
         );
     }
+    #[tokio::test]
+    async fn expired_original_form_reservation_denies_tf3_handoff_without_post() {
+        // A new TF3 five-second relative timeout must not renew the original
+        // authorization after asynchronous ledger/preparation work.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let destination = Url::parse(&format!("http://127.0.0.1:{port}/one-write")).unwrap();
+        let approved_origin = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let (dir, registry, state) = setup();
+        let body = b"public=one".to_vec();
+        let prepared = prepare_browser_bound_post_policy(
+            "native-test",
+            "session-1",
+            &dir.path().to_string_lossy(),
+            TfBrowserBoundPost {
+                destination,
+                approved_origin: approved_origin.clone(),
+                body_sha256: format!("{:x}", Sha256::digest(&body)),
+                body,
+                content_type: "application/x-www-form-urlencoded",
+                source_page_generation: 11,
+                original_form_index: 2,
+                original_submitter_index: 3,
+                consumed_approval_id: "a".repeat(48),
+            },
+            &registry,
+            &state,
+            NetworkPolicy::FixtureLoopback,
+        )
+        .unwrap();
+        let result = execute_browser_bound_post_policy(
+            &prepared.token,
+            &registry,
+            &state,
+            &approved_origin,
+            NetworkPolicy::FixtureLoopback,
+            Some(tokio::time::Instant::now() - Duration::from_millis(1)),
+        )
+        .await;
+        let transport = result.expect("TF3 returns a classified non-effect receipt");
+        assert_eq!(transport.receipt.terminal, "timed_out");
+        assert_eq!(transport.receipt.effect_state, "NoEffect");
+        assert_eq!(transport.receipt.retry, "NEVER_REPLAY");
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        assert!(
+            !cancel(&prepared.token, &state).unwrap(),
+            "TF3 token already consumed one-use"
+        );
+    }
+
     #[test]
     fn scope_token_one_use_approval_cancel_and_provider_status() {
         let (dir, registry, state) = setup();
