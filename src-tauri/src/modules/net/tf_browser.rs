@@ -6163,7 +6163,7 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         #[cfg(not(windows))]
         {
             let _ = (title, summary);
-            Err("browser-native-dismissable-approval-unavailable-on-platform".into())
+            Err::<(), String>("browser-native-dismissable-approval-unavailable-on-platform".into())
         }
     }).await.map_err(|_| "browser-native-dialog-unavailable".to_owned())??;
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
