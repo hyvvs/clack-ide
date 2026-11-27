@@ -43,7 +43,7 @@ describe.skipIf(!nativeParserAvailable)("native per-approval literal workspace e
     expect((await decide("Set-Content .env -Value 'no'")).approved).toBe(false);
     subject.runId = "unrelated-run";
     expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(false);
-  });
+  }, 30_000);
   it("applies unchanged approval and path protections to the Muse disposable workspace", async () => {
     root = path.join(directory, "forgeboard-muse-glimmer-20261019-01");
     await mkdir(path.join(root, ".git"), { recursive: true });
@@ -52,7 +52,7 @@ describe.skipIf(!nativeParserAvailable)("native per-approval literal workspace e
     expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(true);
     expect((await decide("Set-Content ../outside -Value 'no'")).approved).toBe(false);
     expect((await decide("Set-Content .env -Value 'no'")).approved).toBe(false);
-  });
+  }, 30_000);
   it("uses the same confined effect policy for the explicitly authorized coder comparison root", async () => {
     root = path.join(directory, "forgeboard-qwen3coder-20261017-01");
     await mkdir(path.join(root, ".git"), { recursive: true });

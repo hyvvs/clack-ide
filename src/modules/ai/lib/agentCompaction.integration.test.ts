@@ -756,7 +756,12 @@ describe("automatic compaction in the real agent request path", () => {
     expect(JSON.stringify(originals)).toBe(transcript);
     expect(JSON.stringify(view)).toBe(durableMemory);
     expect(globalThis.fetch).toHaveBeenCalledTimes(preparationCalls);
-  }, 15000);
+  // This exercises full cross-provider extraction, live model-switch
+  // admission and a second real SDK stream (not a synthetic single function).
+  // On high-core hosts Vitest can run two dozen suites concurrently; allow
+  // the complete proof to settle without changing a single production budget,
+  // response assertion or modeled transport deadline.
+  }, 30000);
   it("answers in a small target from project and task evidence absent from its own transcript", async () => {
     fixture.shared = true;
     originals = [

@@ -20,8 +20,9 @@ import { operationCapabilities, resolveToolObjective, type ToolCapability, type 
 import { getTodos } from "@/modules/ai/store/todoStore";
 import { capabilityIndexFromTools, providerCapabilityCandidates } from "@/modules/ai/lib/capabilityIndex";
 import { isTfWebSearchProviderAvailable, refreshTfWebSearchProviderStatus } from "@/modules/ai/lib/webSearchAdapters";
+import { isTfBrowserRuntimeAvailable, refreshTfBrowserRuntimeStatus } from "@/modules/ai/lib/browserRuntimeStatus";
 
-export const EXPOSURE_POLICY = "tf-exposure-v6";
+export const EXPOSURE_POLICY = "tf-exposure-v7";
 export const EXPOSURE_LIMITS = {
   candidates: 192,
   optional: 16,
@@ -165,6 +166,14 @@ function taskRequestsSensitiveNativeTool(name: string, query: string): boolean {
     return /\b(web|internet|online|public|search engine|research|look up|lookup|browse|news|website|websites)\b/i.test(query);
   if(name==="tf_http_fetch" || name==="tf_http_head")
     return /\b(web|http|https|url|uri|internet|online|fetch|research|website|page|article|browse|link|news)\b/i.test(query);
+  if(name==="tf_browser_click")
+    return /\b(click|follow (?:the |a )?link|open (?:the |a )?link|hyperlink|activate (?:the |a )?link)\b/i.test(query);
+  if(name==="tf_browser_back")
+    return /\b(back|previous page|history|return to (?:the )?page)\b/i.test(query);
+  if(name==="tf_browser_close")
+    return /\b(close|stop browser|end (?:the )?browser|exit browser)\b/i.test(query);
+  if(name.startsWith("tf_browser_"))
+    return /\b(browser|browse|website|webpage|web page|navigate|page|inspect site|site|url)\b/i.test(query);
   return true;
 }
 export function selectToolSchemas(input: {
@@ -389,11 +398,21 @@ export async function prepareToolExposure(
       ...(input.mandatory ?? []),
     ]),
   ].sort(compare);
+  if(Object.keys(tools).some(name=>name.startsWith("tf_browser_") &&
+      (mandatory.includes(name) || taskRequestsSensitiveNativeTool(name,researchQuery))))
+    await refreshTfBrowserRuntimeStatus(input.context.getAgentId(),
+      input.context.getSessionId(),input.context.getWorkspaceRoot());
   const registry=capabilityIndexFromTools(tools);
   const eligible = Object.fromEntries(
     Object.entries(tools).filter(
       ([name]) => {
         if(name==="tf_web_search" && !isTfWebSearchProviderAvailable())return false;
+        if(name.startsWith("tf_browser_") &&
+           !isTfBrowserRuntimeAvailable(input.context.getAgentId(),
+             input.context.getSessionId()??"",input.context.getWorkspaceRoot()??""))
+          return false;
+        if(name.startsWith("tf_browser_") && !mandatory.includes(name) &&
+           !taskRequestsSensitiveNativeTool(name,researchQuery))return false;
         if(["tf_web_search","tf_http_fetch","tf_http_head"].includes(name) &&
           !mandatory.includes(name) &&
           !taskRequestsSensitiveNativeTool(name,researchQuery))return false;
@@ -411,7 +430,8 @@ export async function prepareToolExposure(
         !(
           input.context.getMutationMode?.() === "read-only" &&
           (requiresWorkspaceWriteLease(name) ||
-            ["tf_http_fetch","tf_http_head","tf_web_search"].includes(name))
+            (["tf_http_fetch","tf_http_head","tf_web_search"].includes(name) ||
+              name.startsWith("tf_browser_")))
         );
       },
     ),

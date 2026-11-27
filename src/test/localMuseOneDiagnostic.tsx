@@ -198,7 +198,7 @@ export function createOneMuseBrowserDiagnostic() {
         );
         if (![nativeCapture.loss, nativeCapture.pending, nativeCapture.dispatches,
           nativeCapture.terminals].every(value =>
-          Number.isSafeInteger(value) && value >= 0)) throw new Error("Invalid native collector count");
+          Number.isSafeInteger(value) && value >= 0)) observerFailed = true;
       } catch { observerFailed = true; }
       if (nativeCapture.dispatches !== nativeDispatches ||
           nativeCapture.terminals !== nativeTerminals) observerFailed = true;

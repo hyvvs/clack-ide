@@ -436,6 +436,45 @@ describe("truthful activity", () => {
       "HTML_PRIVATE_BODY","PRIVATE_RESPONSE_BODY"])
       expect(JSON.stringify(result)).not.toContain(value);
   });
+  it("projects TF4 browser link/session evidence without page text or URL query secrets",()=>{
+    const result=events(message([{
+      type:"tool-tf_browser_click",toolCallId:"tf-browser-action",state:"output-available",
+      input:{browserSessionId:"s".repeat(48),snapshotId:"a".repeat(48),
+        elementId:"b".repeat(48),text:"PRIVATE_MODEL_INPUT"},
+      output:{ok:true,effectReceipt:{
+        toolId:"tf.browser_operation.v1",requestId:"browser-native-1",
+        actor:"builtin:coder",operation:"click_link",browserSessionId:"s".repeat(48),
+        snapshotId:"a".repeat(48),engine:"inert_native_text",
+        terminal:"completed",effectState:"Observed",
+        requestedUrl:"https://docs.example.org/start?code=SECRET_QUERY",
+        finalUrl:"https://docs.example.org/guide?auth=PRIVATE_QUERY",
+        redirectChain:["https://docs.example.org/guide?auth=PRIVATE_QUERY"],
+        dnsEvidence:[{host:"docs.example.org",addresses:["93.184.215.14"],
+          classification:"all-allowed",pinning:"reqwest-resolve-to-addrs",
+          socketIpObserved:false}],
+        statusCode:200,contentType:"text/html",bytesReceived:481,
+        bytesRetained:481,truncated:false,contentSha256:"c".repeat(64),
+        elements:[{id:"z".repeat(48),text:"SECRET_LINK_TEXT",
+          url:"https://docs.example.org/login?token=LINK_SECRET"}],
+        unsupported:["type","form_submit","screenshot"],
+        policyDecision:"allowed",reasonCode:"completed",retry:"SAFE_RETRY",
+        autoRetry:false,uncertainty:"none",isolation:"native_inert_no_webview",
+        body:"HTML_PRIVATE_BODY",authorization:"Bearer SECRET_HEADER",
+      }},
+    }]));
+    const detail=result.find(event=>
+      event.source==="Native TF effect receipt (historical)")?.detail;
+    expect(detail).toContain("Browser operation: click_link");
+    expect(detail).toContain("Browser session:");
+    expect(detail).toContain("Page snapshot:");
+    expect(detail).toContain("inert bounded native text");
+    expect(detail).toContain("Redirect transitions: 1");
+    expect(detail).toContain("Page links observed: 1");
+    expect(detail).toContain("Unsupported browser operations:");
+    for(const value of ["SECRET_QUERY","PRIVATE_QUERY","PRIVATE_MODEL_INPUT",
+      "LINK_SECRET","SECRET_LINK_TEXT","HTML_PRIVATE_BODY","SECRET_HEADER"])
+      expect(JSON.stringify(result)).not.toContain(value);
+  });
   it("bounds detail while leaving source transcript intact", () => {
     const m = message([{ type: "reasoning", text: "x".repeat(50000) }]);
     expect(events(m)[0].detail?.length).toBeLessThanOrEqual(4000);

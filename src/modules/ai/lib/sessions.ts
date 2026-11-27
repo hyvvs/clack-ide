@@ -277,11 +277,19 @@ export function recoverInterruptedSessions(
   return { sessions: recovered, interruptedIds };
 }
 
-export async function loadMessages(id: string): Promise<UIMessage[] | null> {
-  const messages = await invoke<UIMessage[] | null>(
+/** Unmodified native session-source JSON for a LIVE same-run checkpoint, before
+ * the restart-only interrupted-answer projection. This is the native session
+ * store's write-through cached value, not an independent disk attestation.
+ * The owned Chat's checkpoint hash must not cover a transformed restart view. */
+export async function loadExactStoredMessages(id: string): Promise<UIMessage[] | null> {
+  return invoke<UIMessage[] | null>(
     "conversation_session_get",
     { key: messagesKey(id) },
   );
+}
+
+export async function loadMessages(id: string): Promise<UIMessage[] | null> {
+  const messages = await loadExactStoredMessages(id);
   if (!messages) return null;
   const migrated = await migrateLegacyDataUrlAttachments(messages);
   if (migrated.changed) await saveMessages(id, migrated.messages);

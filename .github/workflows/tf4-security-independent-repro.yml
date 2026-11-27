@@ -1,0 +1,198 @@
+# Security qualification only; NOT a release, executable distribution, trust
+# endorsement or permission to reinstall the Defender-detected TF4 candidate.
+# Builds exact source 91a571b on a freshly allocated Microsoft-hosted Windows
+# runner. No candidate executable is executed or uploaded: only JSON digests.
+name: TF4 isolated security build evidence
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/tf4-security-independent-repro.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  independently-build-pinned-source:
+    name: Rebuild 91a571b; hashes only; never execute produced binary
+    if: github.repository == 'hyvvs/clack-ide'
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout exact candidate, not the PR or release ref
+        uses: actions/checkout@v6
+        with:
+          ref: 91a571b9fdcc8ffb9f98ef46458e0622cec73402
+          persist-credentials: false
+
+      - name: Verify source and tracked build inputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '91a571b9fdcc8ffb9f98ef46458e0622cec73402'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $expected) { throw "Wrong source: $actual" }
+          if ((git status --porcelain=v1 --untracked-files=no)) {
+            throw 'Tracked checkout unexpectedly dirty'
+          }
+          git log -1 --format='%H %cI %s'
+          git ls-files --stage package-lock.json src-tauri/Cargo.lock scripts/Build-Tf4NativeBundle.ps1 src-tauri/build.rs src-tauri/tauri.tf4-native.conf.json
+          Get-FileHash package-lock.json,src-tauri/Cargo.lock,scripts/Build-Tf4NativeBundle.ps1,src-tauri/build.rs,src-tauri/tauri.tf4-native.conf.json -Algorithm SHA256 | Format-Table
+          Write-Output "EXACT_SECURITY_SOURCE=$actual" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
+
+      - name: Set up independent locked Node 22 toolchain
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.20.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Pin Rust compiler to original build toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install 1.94.0 --profile minimal
+          rustup override set 1.94.0
+          rustc -Vv
+          cargo -V
+          node -v
+          npm -v
+          $version = (rustc --version)
+          if ($version -notmatch '^rustc 1\.94\.0 ') { throw "Rust compiler unpinned: $version" }
+          if ((node -v) -ne 'v22.20.0') { throw 'Node compiler unpinned' }
+
+      - name: Fresh lock-respecting npm dependency install and manifest
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          cargo metadata --manifest-path src-tauri/Cargo.toml --locked --no-deps --format-version 1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'cargo metadata lock verification failed' }
+
+      - name: Build original native host, main app and NSIS once
+        id: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Build-Tf4NativeBundle.ps1 -Bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw "Qualified source build failed" }
+
+      - name: Read-only hashes of output and independently unpacked payload
+        id: provenance
+        if: steps.build.outcome == 'success'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = '91a571b9fdcc8ffb9f98ef46458e0622cec73402'
+          if ((git rev-parse HEAD).Trim() -ne $expected) { throw 'Source drift' }
+          $root = (Get-Location).Path
+          $installer = Join-Path $root 'src-tauri/target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe'
+          $app = Join-Path $root 'src-tauri/target/release/clack.exe'
+          $hostBinary = Join-Path $root 'src-tauri/target/release/clack-browser-host.exe'
+          $hostStaged = Join-Path $root 'src-tauri/target/tf4-native-stage/clack-browser-host.exe'
+          $unpacker = 'C:\Program Files\7-Zip\7z.exe'
+          if (-not (Test-Path -LiteralPath $unpacker)) { throw 'Windows-hosted 7z not available' }
+          $extracted = Join-Path $env:RUNNER_TEMP 'tf4-security-static-extraction'
+          New-Item -ItemType Directory -Force -Path $extracted | Out-Null
+          & $unpacker x "-o$extracted" '-y' $installer | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS static extraction failed' }
+          $extractedApp = Join-Path $extracted 'clack.exe'
+          $extractedHost = Join-Path $extracted 'tf4-native-host/clack-browser-host.exe'
+          $paths = [ordered]@{
+            compiledApp = $app
+            compiledHost = $hostBinary
+            stagedHost = $hostStaged
+            installer = $installer
+            extractedApp = $extractedApp
+            extractedHost = $extractedHost
+          }
+          $artifacts = [ordered]@{}
+          foreach ($kind in $paths.Keys) {
+            $entry = Get-Item -LiteralPath $paths[$kind] -ErrorAction Stop
+            $sig = Get-AuthenticodeSignature -LiteralPath $entry.FullName
+            $artifacts[$kind] = [ordered]@{
+              sha256 = (Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              bytes = $entry.Length
+              authenticodeStatus = [string]$sig.Status
+              fileVersion = $entry.VersionInfo.FileVersion
+            }
+          }
+          # A previous isolated runner confirmed a hash mismatch here but
+          # discarded the entire hash table on throw. Preserve all measured
+          # digests before reporting a failing security-provenance assertion.
+          # This changes only the evidence collector, never any build input.
+          $hostConsistent = ($artifacts.compiledHost.sha256 -eq $artifacts.stagedHost.sha256 -and
+            $artifacts.stagedHost.sha256 -eq $artifacts.extractedHost.sha256)
+          $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          $report = [ordered]@{
+            intent = 'Independent source-pinned build provenance only; NOT a safety verdict'
+            repository = $env:GITHUB_REPOSITORY
+            workflowRun = $env:GITHUB_RUN_ID
+            observedAt = (Get-Date).ToUniversalTime().ToString('o')
+            requestedSource = $expected
+            verifiedSource = (git rev-parse HEAD).Trim()
+            runnerImage = $env:ImageOS
+            runnerVersion = $env:ImageVersion
+            windowsVersion = [Environment]::OSVersion.VersionString
+            rustc = (& rustc -Vv | Out-String).Trim()
+            cargo = (& cargo -V).Trim()
+            node = (& node -v).Trim()
+            npm = (& npm -v).Trim()
+            lockedNpmInstall = $true
+            lockedCargoBuild = $true
+            bundleScriptBlob = (git rev-parse 'HEAD:scripts/Build-Tf4NativeBundle.ps1').Trim()
+            cargoLockBlob = (git rev-parse 'HEAD:src-tauri/Cargo.lock').Trim()
+            npmLockBlob = (git rev-parse 'HEAD:package-lock.json').Trim()
+            artifacts = $artifacts
+            compiledStagedAndPackagedHostIdentical = [bool]$hostConsistent
+            nativeHostIdentityStatus = if ($hostConsistent) { 'PASS' } else { 'FAIL_NEEDS_FORENSIC_REVIEW' }
+            avRunningMode = if ($mp) { [string]$mp.AMRunningMode } else { 'NOT_REPORTED' }
+            avRealTimeEnabled = if ($mp) { [bool]$mp.RealTimeProtectionEnabled } else { $null }
+            appExecuted = $false
+            binariesUploaded = $false
+            verdict = 'NOT_ADJUDICATED'
+          }
+          $outfile = Join-Path $env:RUNNER_TEMP 'tf4-independent-security-build-hashes.json'
+          [IO.File]::WriteAllText($outfile,($report | ConvertTo-Json -Depth 10),[Text.Encoding]::UTF8)
+          $validated = Get-Content $outfile -Raw | ConvertFrom-Json
+          if ($validated.verifiedSource -ne $expected) { throw 'Report source mismatch' }
+          if (-not $hostConsistent) {
+            Write-Warning 'Host mismatch: digests recorded in retained JSON before failing.'
+            throw 'Native host identity drifted during independent build/packaging'
+          }
+          Write-Output 'Independent static build hashes generated; no binaries executed/uploaded' | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
+          Write-Output "SECURITY_EVIDENCE_JSON=$outfile"
+
+      - name: Preserve hosted Defender status and any build-time detections
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          $events = @(Get-MpThreatDetection -ErrorAction SilentlyContinue |
+            Where-Object { @($_.Resources) -match '(?i)clack(.exe|[-\\])|tf4-native-host' } |
+            Select-Object ThreatID,InitialDetectionTime,ActionSuccess,Resources)
+          $record = [ordered]@{
+            observedAt = (Get-Date).ToUniversalTime().ToString('o')
+            intent = 'Isolated hosted source build; do not execute or upload EXE'
+            source = '91a571b9fdcc8ffb9f98ef46458e0622cec73402'
+            buildOutcome = '${{ steps.build.outcome }}'
+            provenanceOutcome = '${{ steps.provenance.outcome }}'
+            defenderAvailable = [bool]$mp
+            defenderRealtime = if ($mp) { [bool]$mp.RealTimeProtectionEnabled } else { $null }
+            defenderEngine = if ($mp) { [string]$mp.AMEngineVersion } else { $null }
+            defenderIntelligence = if ($mp) { [string]$mp.AntivirusSignatureVersion } else { $null }
+            matchingDefenderEvents = $events
+            zeroMatchingEventsDoesNotProveSafety = $true
+          }
+          $outfile = Join-Path $env:RUNNER_TEMP 'tf4-security-defender-status.json'
+          [IO.File]::WriteAllText($outfile,($record | ConvertTo-Json -Depth 8),[Text.Encoding]::UTF8)
+
+      - name: Upload hash-only build and Defender evidence, no executables
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tf4-security-source-91a571b-hashes-only
+          path: ${{ runner.temp }}/tf4-*security*.json
+          if-no-files-found: warn
+          retention-days: 30

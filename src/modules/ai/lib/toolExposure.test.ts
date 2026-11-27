@@ -27,6 +27,8 @@ import {
 import { SYSTEM_PROMPT, selectSystemPrompt } from "@/modules/ai/config";
 import { buildStableSystem } from "@/modules/ai/lib/agent";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { invoke } from "@tauri-apps/api/core";
+import { invalidateTfBrowserRuntimeStatus } from "@/modules/ai/lib/browserRuntimeStatus";
 import type { ToolContext } from "@/modules/ai/tools/context";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
@@ -49,6 +51,7 @@ it("retains bounded task selection intent across ordinary continuation turns but
 beforeEach(() => clearExposureCache());
 afterEach(() => {
   usePreferencesStore.setState(preferences);
+  invalidateTfBrowserRuntimeStatus();
   vi.restoreAllMocks();
 });
 function context(): ToolContext {
@@ -107,6 +110,36 @@ async function select(
   });
 }
 describe("relevance and bounded fallback", () => {
+  it("hides browser model tools unless native scoped runtime is verified and the task needs browsing",async()=>{
+    invalidateTfBrowserRuntimeStatus();
+    const mock=vi.mocked(invoke);
+    mock.mockReset();
+    const candidates:ToolSet=Object.fromEntries([
+      "tf_browser_open","tf_browser_inspect","tf_browser_click","read_file",
+    ].map(name=>[name,tool({description:`${name} inspect a public website browser page`,
+      inputSchema:jsonSchema({type:"object",properties:{}})})]));
+    const absent=await select("Open a browser to inspect a website",{},candidates);
+    expect(absent.names.every(name=>!name.startsWith("tf_browser_"))).toBe(true);
+    mock.mockResolvedValue({available:true,engine:"inert_native_text",
+      isolation:"tf3_dns_pinned_inert_text",sessions:[]});
+    invalidateTfBrowserRuntimeStatus();
+    const local=await select("Inspect the local file configuration",{},candidates);
+    expect(local.names.every(name=>!name.startsWith("tf_browser_"))).toBe(true);
+    const browser=await select("Open a browser website for inspection",{},candidates);
+    expect(browser.names).toContain("tf_browser_open");
+    expect(browser.names).not.toContain("tf_browser_click");
+    invalidateTfBrowserRuntimeStatus();
+    const linkContinuation=await select("Click the link shown in the current snapshot",{},candidates);
+    expect(linkContinuation.names).toContain("tf_browser_click");
+    const readonly={...context(),getMutationMode:()=>"read-only" as const};
+    const forbidden=await prepareToolExposure(candidates,{
+      context:readonly,target:"model",
+      messages:message("Open a browser website for inspection")});
+    expect(forbidden.names.every(name=>!name.startsWith("tf_browser_"))).toBe(true);
+    expect(mock).toHaveBeenCalledWith("tf_browser_status",{
+      actor:"builtin:coder",sessionId:"chat",workspaceRoot:"/work",browserSessionId:null,
+    });
+  });
   it("native web tools require explicit web intent and hide unconfigured search providers", async()=>{
     const candidates:ToolSet=Object.fromEntries(
       ["tf_http_fetch","tf_http_head","tf_web_search","read_file"].map(name=>[

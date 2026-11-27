@@ -1,6 +1,6 @@
 // Offline forensic control: never calls an inference endpoint or Ollama.
 // Uses preserved November 3 settings; only the mocked Tauri IPC is callable.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { createRequestPreflight } from "@/modules/ai/lib/requestPreflight";
@@ -13,12 +13,24 @@ import type { ProbeSnapshot } from "@/modules/ai/lib/selfHostedProbe";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const RUN = "src-tauri/target/real-qwen-product/museparallelnotes-20261103-01";
+const originalSettings = RUN + "/data/terax-settings.json";
+// This suite cross-checks an ORIGINAL November 3 evidence artifact, not a
+// reproducible offline fixture. Ordinary clean CI cannot manufacture it.
+// Explicit evidence mode must FAIL if the exact original is unavailable.
+const historicalRequested = process.env.CLACK_MUSE_NOV3_EVIDENCE === "1";
+const originalAvailable = existsSync(originalSettings);
+if (historicalRequested && !originalAvailable) {
+  throw new Error("Muse historical evidence requested but original November 3 settings absent");
+}
+if (!historicalRequested) {
+  console.info("MUSE_NOV3_HISTORICAL_ACCEPTANCE=NOT_RUN (requires original preserved settings and explicit CLACK_MUSE_NOV3_EVIDENCE=1)");
+}
 const FINAL_PREFLIGHT_AT = 1793692399200;
 const CONTEXT = 49152;
 const OUTPUT = 6144;
 
 function preserved() {
-  const json = JSON.parse(readFileSync(RUN + "/data/terax-settings.json", "utf8"));
+  const json = JSON.parse(readFileSync(originalSettings, "utf8"));
   const state = readSelfHostedState(json.selfHostedInference);
   const profile = state.profiles.find(p => p.transportModelId === "muse-glimmer:30b");
   if (!profile?.contextCalibration) throw new Error("Original Muse calibration missing");
@@ -95,7 +107,7 @@ afterEach(() => {
   vi.mocked(invoke).mockReset();
 });
 
-describe("Nov 3 Muse terminal preflight, strictly offline (preserved evidence)", () => {
+describe.skipIf(!historicalRequested)("Nov 3 Muse terminal preflight, strictly offline (preserved evidence)", () => {
   it("reproduces the precise stale pre-dispatch error with matching runtime, fresh allocation and expired calibration", async () => {
     const f = preserved();
     expect(f.profile.contextCalibration!.expiresAt).toBe(1793692395881);

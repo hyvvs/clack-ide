@@ -150,6 +150,16 @@ fn paced_server_with_gap(
     pace: Duration,
     gap: Option<(usize, Duration)>,
 ) -> Server {
+    paced_server_with_feedback(parts, close, heartbeat, pace, gap, None)
+}
+fn paced_server_with_feedback(
+    parts: Vec<Vec<u8>>,
+    close: bool,
+    heartbeat: bool,
+    pace: Duration,
+    gap: Option<(usize, Duration)>,
+    delivery_ack: Option<std::sync::mpsc::Receiver<()>>,
+) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -198,6 +208,15 @@ fn paced_server_with_gap(
         }
         let _ = accepted_tx.send(());
         for (index, part) in parts.into_iter().enumerate() {
+            // For the chunked diagnostic fixture, the application must have
+            // independently observed the previous body before we offer the
+            // next one. TCP and HTTP write boundaries alone cannot promise
+            // distinct reqwest streaming deliveries on every operating system.
+            if index > 1 && delivery_ack.as_ref().is_some_and(|ack| {
+                ack.recv_timeout(Duration::from_secs(1)).is_err()
+            }) {
+                break;
+            }
             std::thread::sleep(gap.filter(|(at, _)| *at == index).map_or(pace, |(_, d)| d));
             if socket.write_all(&part).is_err() {
                 break;
@@ -254,19 +273,43 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
             b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()]
     };
     if mode == "idle" {
+        // TCP write boundaries are not HTTP body boundaries: macOS can merge
+        // the five paced writes into one or two reqwest bytes_stream items.
+        // Make each body observation an actual HTTP chunk without completing
+        // the response, so five Body/IPC sequences remain a real assertion.
+        let chunk = |body: &[u8]| {
+            let mut framed = format!("{:X}\r\n", body.len()).into_bytes();
+            framed.extend_from_slice(body);
+            framed.extend_from_slice(b"\r\n");
+            framed
+        };
+        parts[0] = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec();
+        let meaningful = std::mem::take(&mut parts[1]);
+        parts[1] = chunk(&meaningful);
         for _ in 0..4 {
-            parts.push(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n".to_vec());
+            parts.push(chunk(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n"));
         }
     } else if mode == "done" {
         parts.push(b"{\"done\":true,\"done_reason\":\"stop\"}\n".to_vec());
     } else if mode == "sse-done" {
         parts.push(b"data: [DONE]\n\n".to_vec());
     }
-    let fixture = paced_server(
+    let (delivery_tx, delivery_rx) = std::sync::mpsc::channel();
+    let fixture = paced_server_with_feedback(
         parts,
         mode == "eof" || mode == "done",
         false,
-        Duration::from_millis(15),
+        // The idle case already has five *wire-framed* body chunks. Artificial
+        // per-write sleeps can overshoot the unchanged 100ms idle deadline on
+        // macOS, dropping later chunks before the test can check them. Send
+        // them promptly; the test still proves no whitespace renews progress.
+        if mode == "idle" {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(15)
+        },
+        None,
+        (mode == "idle").then_some(delivery_rx),
     );
     let captured = Arc::new(Mutex::new(None));
     let output = captured.clone();
@@ -284,12 +327,34 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
     req.body = Some(b"SECRET_PROMPT".to_vec());
     req.trace = diagnostics.request(&id);
     let emitted = Mutex::new(0);
-    let result = execute(&lease, req, limits(), &|payload| {
+    let mut fixture_limits = limits();
+    // This fixture measures ordering *after* real body delivery. Under loaded
+    // macOS CI the 150ms first-output limit can expire during localhost HTTP
+    // setup, before the 15ms-paced body begins. Give header-producing cases
+    // room to start; retain the strict 150ms no-headers negative and the
+    // unchanged 100ms meaningful-output idle deadline/assertions.
+    if mode != "no-headers" {
+        fixture_limits.first = Some(Duration::from_secs(1));
+    }
+    // Completion/EOF diagnostics compare *event ordering*, not enforcement of
+    // the idle bound. macOS can schedule the local fixture writer >100ms after
+    // the preceding meaningful chunk; those modes need room to finish without
+    // misclassifying a delayed writer as a provider stream-idle failure. The
+    // dedicated "idle" diagnostic keeps its exact 100ms limit and timing check.
+    if matches!(mode, "done" | "eof" | "sse-done") {
+        fixture_limits.idle = Some(Duration::from_secs(1));
+    }
+    let result = execute(&lease, req, fixture_limits, &|payload| {
         if matches!(payload, Payload::Chunk { .. }) {
             if mode == "reject" {
                 return false;
             }
             *emitted.lock().unwrap() += 1;
+            if mode == "idle" {
+                // One acknowledgment only after the *actual* application
+                // callback receives this chunk, not after a server write.
+                delivery_tx.send(()).unwrap();
+            }
             if mode == "cancel" {
                 state.close_owner("main");
             }
@@ -985,25 +1050,51 @@ async fn cancel_accepted_connection_before_response_headers() {
 }
 #[tokio::test]
 async fn slow_first_output_then_meaningful_chunks_extend_idle_until_completion() {
-    let fixture = paced_server(
-        vec![
-            headers(),
-            delta(),
-            delta(),
-            delta(),
-            b"data: [DONE]\n\n".to_vec(),
-        ],
-        false,
-        false,
-        Duration::from_millis(40),
-    );
+    // The dedicated 100ms idle-denial tests use the unchanged limits(). This
+    // positive case must prove that REAL delivered content resets an idle
+    // deadline despite loaded macOS CI scheduling delays. Send enough genuine
+    // SSE deltas to span a wider *test-only* idle period, and verify the native
+    // callbacks themselves span that period (not merely the server's writes).
+    const DELTAS: usize = 32;
+    let mut parts = vec![headers()];
+    parts.extend((0..DELTAS).map(|_| delta()));
+    parts.push(b"data: [DONE]\n\n".to_vec());
+    let fixture = paced_server(parts, false, false, Duration::from_millis(40));
     let state = InferenceState::default();
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     let start = Instant::now();
-    let result = execute(&lease, request(fixture.url), limits(), &|_| true).await;
+    // Network delivery and 40ms localhost writes can each be delayed by
+    // heavily loaded CI. These are fixture-only allowances: production
+    // timeouts and strict 100ms negative idle tests remain untouched.
+    let mut slow_fixture_limits = limits();
+    slow_fixture_limits.first = Some(Duration::from_secs(2));
+    slow_fixture_limits.idle = Some(Duration::from_millis(750));
+    slow_fixture_limits.overall = Duration::from_secs(8);
+    let delivered = Mutex::new(Vec::new());
+    let callback_times = Mutex::new(Vec::new());
+    let result = execute(&lease, request(fixture.url), slow_fixture_limits, &|payload| {
+        if let Payload::Chunk { bytes } = payload {
+            delivered.lock().unwrap().extend_from_slice(&bytes);
+            callback_times.lock().unwrap().push(Instant::now());
+        }
+        true
+    }).await;
     assert!(result.is_ok(), "{result:?}");
-    assert!(start.elapsed() > limits().first.unwrap());
+    assert!(start.elapsed() > Duration::from_millis(750));
+    {
+        let times = callback_times.lock().unwrap();
+        assert!(times.len() >= 2, "stream must deliver distinct native chunks");
+        assert!(
+            times.last().unwrap().duration_since(times[0]) > Duration::from_millis(750),
+            "actual native content callbacks must span more than the test idle window"
+        );
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&delivered.lock().unwrap()).matches("hello").count(),
+        DELTAS,
+        "every meaningful SSE delta reached the native IPC callback"
+    );
     drop(lease);
     assert_eq!(state.len(), 0);
     fixture.closed.await.unwrap();

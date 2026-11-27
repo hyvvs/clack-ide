@@ -130,6 +130,7 @@ pub async fn shell_run_command(
     .map_err(|e| e.to_string())?
 }
 
+#[cfg(test)]
 pub(crate) fn run_blocking_inner(
     command: String,
     cwd: Option<String>,
@@ -139,6 +140,7 @@ pub(crate) fn run_blocking_inner(
     run_blocking(command, cwd, workspace, dur)
 }
 
+#[cfg(test)]
 fn run_blocking(
     command: String,
     cwd: Option<String>,
@@ -698,12 +700,9 @@ mod foreground_lifecycle_tests {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("owned-pid.txt");
         let path = marker.to_string_lossy().replace('\'', "''");
-        let script = format!(
-            "{0}",
-            // Place marker before long sleep, so the checked PID belongs
-            // only to this disposable command tree.
-            format!("$p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -NoNewWindow -PassThru; [IO.File]::WriteAllText('{path}', [string]$p.Id); Start-Sleep -Seconds 30"),
-        );
+        // Place marker before long sleep, so the checked PID belongs
+        // only to this disposable command tree.
+        let script = format!("$p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -NoNewWindow -PassThru; [IO.File]::WriteAllText('{path}', [string]$p.Id); Start-Sleep -Seconds 30");
         let mut unrelated = Command::new("powershell.exe")
             .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
             .spawn()

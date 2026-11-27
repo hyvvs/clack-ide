@@ -1,8 +1,10 @@
 import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "path";
-import { defineConfig, type PluginOption, type UserConfig } from "vite";
+import { type PluginOption, type UserConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 import Inspect from "vite-plugin-inspect";
 import { createDevWatchIgnore } from "./scripts/dev-watch.mjs";
 
@@ -15,8 +17,36 @@ const analyze = process.env.ANALYZE === "true";
 // `npm run dev` from paying its transform-tracking overhead on every run.
 const inspectGraph = process.env.INSPECT === "true";
 
+// Node's own test runner and Vitest both discover *.test.mjs in scripts/.
+// Only exclude genuine node:test files from Vitest; the adjacent Vitest
+// *.test.mjs suites must remain discovered. CI separately executes EVERY
+// node:test script through scripts/run-node-script-tests.mjs.
+function nodeNativeScriptSuites(dir = path.resolve(__dirname, "scripts")): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return nodeNativeScriptSuites(full);
+    if (!entry.isFile() || !entry.name.endsWith(".test.mjs")) return [];
+    if (!readFileSync(full, "utf8").includes("node:test")) return [];
+    return [path.relative(__dirname, full).replaceAll("\\", "/")];
+  });
+}
+
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
+  test: {
+    // Exclude only actual node:test suites, not all scripts/*.test.mjs.
+    exclude: [
+      ...configDefaults.exclude,
+      // Cargo's target directory contains archived source checkouts and test
+      // evidence from earlier acceptance runs. Those copies are not the live
+      // frontend suite and can execute stale tests against today's workspace.
+      "**/src-tauri/target/**",
+      // The root outputs/ directory is operator-owned generated evidence and
+      // external worktree material, not checked-in application test source.
+      "outputs/**",
+      ...nodeNativeScriptSuites(),
+    ],
+  },
   plugins: [
     babel({
       presets: [reactCompilerPreset({ target: "19" })],
@@ -125,8 +155,13 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
             id.includes("/scheduler/")
           )
             return "react";
+          // React already statically imports the Radix chunk in the emitted
+          // production graph. Co-locate these eager dependencies so gzip can
+          // share its dictionary across them without changing lazy boundaries.
+          // Measured with gzip9 per emitted JS file: -1,610 B total and
+          // -747 B against the startup size-limit patterns (TF4 audit).
           if (id.includes("@radix-ui/") || id.includes("/radix-ui/"))
-            return "radix";
+            return "react";
 
           return null;
         },

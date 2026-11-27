@@ -760,6 +760,7 @@ name = "clack"
 version = "0.8.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "bytes",
  "dirs 6.0.0",
  "flatbuffers",
@@ -804,6 +805,8 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wat",
+ "webview2-com",
+ "windows",
  "windows-sys 0.61.2",
  "zip",
 ]

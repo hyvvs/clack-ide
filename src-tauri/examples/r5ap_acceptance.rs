@@ -144,7 +144,7 @@ fn acceptance_confirmed_agent_variant_match(
         || body.get("think").and_then(serde_json::Value::as_bool) != observed_variant
         || body["options"]["num_predict"] != contract.agent.output
         || body["options"]["num_ctx"] != contract.agent.context
-        || !body["tools"].as_array().is_some_and(|tools| !tools.is_empty())
+        || body["tools"].as_array().is_none_or(|tools| tools.is_empty())
     {
         return false;
     }
@@ -623,7 +623,6 @@ fn main() {
                             let model = std::env::var("CLACK_ACCEPTANCE_MODEL")
                                 .unwrap_or_else(|_| "qwen38-uncensored:latest".into());
                             assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b" | "qwen38-iq4xs:latest" | "muse-glimmer:30b") || matches!(model.as_str(),
-                                "muse-glimmer:30b" |
                                 "muse-glimmer:30b" |
                                 "nemotron-3.5-lightning:30b-a3b-q4_K_M" |
                                 "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"

@@ -66,6 +66,7 @@ impl TfOperation {
                 | Self::BuildCargoBuild
         )
     }
+    #[cfg(windows)]
     fn is_repo(self) -> bool {
         matches!(
             self,
@@ -84,6 +85,7 @@ impl TfOperation {
                 | Self::RepoSwitchBranch
         )
     }
+    #[cfg(windows)]
     fn is_build(self) -> bool {
         matches!(
             self,
@@ -193,7 +195,59 @@ pub struct TfOperationReceipt {
     pub isolation: &'static str,
 }
 
+/// A private native browser evidence result. The PNG bytes never appear in
+/// this receipt; only its independent TF2-verified workspace file identity.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tf4ScreenshotEvidence {
+    pub format: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub captured_at_ms: u64,
+    pub page_id: String,
+    pub page_generation: u64,
+    pub snapshot_id: String,
+    pub url_sha256: String,
+    pub content_sha256: String,
+    pub bytes_verified: usize,
+    pub workspace_relative_file: String,
+    pub effect_state: &'static str,
+    pub retry: &'static str,
+}
+
+/// Private bounded original-file payload read by TF2, never by renderer or
+/// the model. Only this owning process may move the bytes into one TF3 POST.
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) struct Tf4NativeUploadBytes {
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+    pub relative_path: String,
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tf4DownloadEvidence {
+    pub method: &'static str,
+    pub source_url_sha256: String,
+    pub response_sha256: String,
+    pub bytes_verified: usize,
+    pub workspace_relative_file: String,
+    pub page_id: String,
+    pub page_generation: u64,
+    pub snapshot_id: String,
+    pub tf3_request_id: String,
+    pub file_effect_state: &'static str,
+    pub retry: &'static str,
+}
+
 #[derive(Clone)]
+// Linux/macOS retain the pending approval type for portable construction and
+// cancellation tests, but never execute the Windows-only native file effect.
+// Keep its complete authority scope intact without treating unread fields in
+// those unsupported builds as a production dead-code regression.
+#[cfg_attr(not(windows), allow(dead_code))]
 struct Pending {
     request_id: String,
     request: TfOperationRequest,
@@ -1023,6 +1077,247 @@ mod windows {
         // Best effort persistence on Windows; NamedTempFile is in destination directory.
         Ok(())
     }
+
+    /// Translate only a trusted, already-canonical internal workspace path
+    /// back to DOS spelling for the existing public TF2 lexical scope checker.
+    /// Never accepts arbitrary browser/model verbatim paths or alters TF2's
+    /// public symlink/reparse/traversal rules.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    fn native_tf2_workspace_root(
+        registry: &WorkspaceRegistry,
+        approved: &Path,
+    ) -> Result<PathBuf, String> {
+        let raw = approved.to_string_lossy();
+        let scoped = if let Some(plain) = raw.strip_prefix(r"\\?\") {
+            if plain.as_bytes().get(1) != Some(&b':')
+                || plain.as_bytes().get(2) != Some(&b'\\')
+                || !plain.as_bytes()[0].is_ascii_alphabetic()
+            {
+                return Err("TF2 native canonical workspace must be a local disk".into());
+            }
+            plain.to_owned()
+        } else {
+            raw.into_owned()
+        };
+        let (root, cwd) = scope(registry, &scoped, &scoped)?;
+        if root != approved || cwd != root {
+            return Err("TF2 native workspace root changed".into());
+        }
+        Ok(root)
+    }
+
+    /// Source file bytes are obtained via TF2's existing authoritative
+    /// root/target/reparse/parent leases and read-only handle. The original
+    /// digest is shown at consent, re-read immediately before dispatch, and
+    /// the immutable returned Vec (not a live filesystem path) is sent to TF3.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    pub(crate) fn read_native_browser_upload_file(
+        registry: &WorkspaceRegistry,
+        approved_workspace: &Path,
+        relative_path: &str,
+    ) -> Result<Tf4NativeUploadBytes, String> {
+        if relative_path.is_empty() || relative_path.len() > 256 {
+            return Err("TF2 browser upload exact bounded source path required".into());
+        }
+        let root = native_tf2_workspace_root(registry, approved_workspace)?;
+        let relative = check_lexical(relative_path)?;
+        if relative.is_absolute() {
+            return Err("TF2 browser upload path must be workspace relative".into());
+        }
+        let path = target(relative_path, &root, &root, false, false)?;
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 browser upload original source path changed".into());
+        }
+        let _lease = lease_write_parents(&root, std::slice::from_ref(&path))?;
+        inspect_components(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        // A bound file handle does not share DELETE or WRITE while read,
+        // preventing junction/replace and ordinary concurrent file mutation
+        // during this exact bounded capture.
+        options.share_mode(0x00000001);
+        let mut file = options.open(&path).map_err(failure)?;
+        let metadata = file.metadata().map_err(failure)?;
+        if !metadata.is_file()
+            || metadata.file_attributes() & 0x400 != 0
+            || metadata.len() == 0
+            || metadata.len() > 64 * 1024
+        {
+            return Err("TF2 browser upload source must be regular 1..64KiB".into());
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(64 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(failure)?;
+        if bytes.is_empty() || bytes.len() > 64 * 1024 || bytes.len() as u64 != metadata.len() {
+            return Err("TF2 browser upload original file changed during read".into());
+        }
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 browser upload source identity changed after read".into());
+        }
+        Ok(Tf4NativeUploadBytes {
+            sha256: sha(&bytes),
+            bytes,
+            relative_path: relative_path.to_owned(),
+        })
+    }
+
+    /// Final download is a real TF2 workspace file effect, distinct from TF3
+    /// HTTP transport. The original TF4 one-use native grant is MOVED here;
+    /// no server-suggested filename or model path is used.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    pub(crate) fn commit_native_browser_download(
+        grant: crate::modules::net::tf_browser::NativeTransferConsent,
+        resource: crate::modules::net::tf_web::TfBrowserResource,
+        registry: &WorkspaceRegistry,
+    ) -> Result<Tf4DownloadEvidence, String> {
+        let receipt = &resource.receipt;
+        if grant.original_source().is_some()
+            || receipt.terminal != "completed"
+            || receipt.actual_method != "GET"
+            || receipt.operation
+                != crate::modules::net::tf_web::TfWebOperation::BrowserBoundDownload
+            || receipt.status_code != Some(200)
+            || receipt.content_type.as_deref().is_none_or(|c| {
+                c.split(';').next().unwrap_or("").trim() != "application/octet-stream"
+            })
+            || receipt.truncated
+            || !receipt.redirect_chain.is_empty()
+            || receipt.credential_used
+            || receipt.body.is_some()
+            || resource.bytes.is_empty()
+            || resource.bytes.len() > 64 * 1024
+            || receipt.content_sha256.as_deref() != Some(sha(&resource.bytes).as_str())
+            || receipt.requested_url.as_deref() != Some(grant.approved_url().as_str())
+            || receipt.final_url.as_deref() != Some(grant.approved_url().as_str())
+            || receipt.bytes_received != Some(resource.bytes.len() as u64)
+        {
+            return Err("TF2 download requires exact bounded TF3 one-origin bytes".into());
+        }
+        let root = native_tf2_workspace_root(registry, grant.approved_workspace())?;
+        let filename = grant.output_filename();
+        let path = target(&filename, &root, &root, true, false)?;
+        if path.exists() {
+            return Err("TF2 browser download destination already exists; replay denied".into());
+        }
+        let _lease = lease_write_parents(&root, std::slice::from_ref(&path))?;
+        inspect_components(&path)?;
+        if path.exists() {
+            return Err("TF2 browser download file appeared during commit".into());
+        }
+        let digest = sha(&resource.bytes);
+        // Even a partially persisted file is an external effect, UNKNOWN on
+        // error and NEVER_REPLAY; the server cannot choose a second pathname.
+        same_dir_write(&path, &resource.bytes, false)?;
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 browser download postcommit target changed; outcome unknown".into());
+        }
+        let independently_read = read_small(&path)?;
+        if independently_read.len() != resource.bytes.len() || sha(&independently_read) != digest {
+            return Err("TF2 browser download final readback mismatch; outcome unknown".into());
+        }
+        Ok(Tf4DownloadEvidence {
+            method: "GET",
+            source_url_sha256: sha(grant.approved_url().as_str().as_bytes()),
+            response_sha256: digest,
+            bytes_verified: independently_read.len(),
+            workspace_relative_file: filename,
+            page_id: grant.page_id().to_owned(),
+            page_generation: grant.source_page_generation(),
+            snapshot_id: grant.snapshot_id().to_owned(),
+            tf3_request_id: receipt.request_id.clone(),
+            file_effect_state: "Observed",
+            retry: "NEVER_REPLAY",
+        })
+    }
+
+    /// The native TF4 Screenshot caller must move its genuine, consumed
+    /// application-approval witness into this existing TF2 path/lease/write
+    /// authority. No separate filesystem policy, caller-supplied destination,
+    /// browser process file handle or unapproved raw model download exists.
+    #[cfg(feature = "tf-browser-native-runtime")]
+    pub(crate) fn commit_native_screenshot_evidence(
+        grant: crate::modules::net::tf_browser::NativeScreenshotConsent,
+        capture: crate::modules::net::tf_browser_runtime::NativeScreenshotCapture,
+        registry: &WorkspaceRegistry,
+    ) -> Result<Tf4ScreenshotEvidence, String> {
+        if !grant.matches_capture(&capture)
+            || capture.png.len() < 45
+            || capture.png.len() > 64 * 1024
+            || !capture.png.starts_with(b"\x89PNG\r\n\x1a\n")
+            || !capture.png.ends_with(b"\x00\x00\x00\x00IEND\xaeB\x60\x82")
+            || !matches!(capture.width, 1..=1024)
+            || !matches!(capture.height, 1..=768)
+        {
+            return Err("TF2 native screenshot: consumed consent or PNG scope denied".into());
+        }
+        // Rust's Windows canonicalize may return a \\?\C:\... result.
+        // The existing TF2 public lexical boundary intentionally refuses
+        // device/verbatim user input. Translate ONLY this authenticated,
+        // already-canonical internal path to its plain DOS spelling, then
+        // let the identical TF2 scope()/reparse checks independently resolve
+        // it and require exact equality with the consumed grant's path.
+        let raw_root = grant.approved_workspace().to_string_lossy();
+        let scoped_root = if let Some(plain) = raw_root.strip_prefix(r"\\?\") {
+            if plain.as_bytes().get(1) != Some(&b':')
+                || plain.as_bytes().get(2) != Some(&b'\\')
+                || !plain.as_bytes()[0].is_ascii_alphabetic()
+            {
+                return Err("TF2 native screenshot canonical path is not a local disk".into());
+            }
+            plain.to_owned()
+        } else {
+            raw_root.into_owned()
+        };
+        let (root, cwd) = scope(registry, &scoped_root, &scoped_root)?;
+        if root != grant.approved_workspace() || cwd != root {
+            return Err("TF2 screenshot selected workspace identity changed".into());
+        }
+        let filename = grant.evidence_file_name();
+        let path = target(&filename, &root, &cwd, true, false)?;
+        if path.exists() {
+            return Err("TF2 screenshot evidence already exists; never replay".into());
+        }
+        let _leases = lease_write_parents(&root, std::slice::from_ref(&path))?;
+        inspect_components(&path)?;
+        if path.exists() {
+            return Err("TF2 screenshot evidence appeared before write".into());
+        }
+        let digest = sha(&capture.png);
+        if digest != capture.sha256 {
+            return Err("TF2 screenshot changed before write".into());
+        }
+        // After this point even an error may mean an external file effect.
+        // No retry-to-PASS, overwrite or second destination is ever issued.
+        same_dir_write(&path, &capture.png, false)?;
+        inspect_components(&path)?;
+        if fs::canonicalize(&path).map_err(failure)? != path {
+            return Err("TF2 screenshot final path identity changed; effect unknown".into());
+        }
+        let independently_read = read_small(&path)?;
+        if independently_read.len() != capture.png.len() || sha(&independently_read) != digest {
+            return Err("TF2 screenshot independent final digest mismatch; effect unknown".into());
+        }
+        Ok(Tf4ScreenshotEvidence {
+            format: "png",
+            width: capture.width,
+            height: capture.height,
+            captured_at_ms: capture.captured_at_ms,
+            page_id: capture.page_id,
+            page_generation: capture.page_generation,
+            snapshot_id: capture.snapshot_id,
+            url_sha256: sha(capture.url.as_bytes()),
+            content_sha256: digest,
+            bytes_verified: independently_read.len(),
+            workspace_relative_file: filename,
+            effect_state: "Observed",
+            retry: "NEVER_REPLAY",
+        })
+    }
     fn checked_file_mutation(
         p: &Pending,
         cancelled: &AtomicBool,
@@ -1112,8 +1407,8 @@ mod windows {
             for path in &p.canonical_paths {
                 inspect_components(path)?;
                 let current = fs::canonicalize(path);
-                if !(op == TfOperation::FileDelete && path == &p.canonical_paths[0])
-                    && !(op == TfOperation::FileMove && path == &p.canonical_paths[0])
+                if !(matches!(op, TfOperation::FileDelete | TfOperation::FileMove)
+                    && path == &p.canonical_paths[0])
                     && current.map_err(failure)? != *path
                 {
                     return Err("Post-effect path identity changed".into());
@@ -1209,32 +1504,31 @@ mod windows {
         result.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Ok((result, false))
     }
-    fn walk(
-        path: &Path,
-        root: &Path,
-        depth: u64,
+    struct WalkScope<'a> {
+        root: &'a Path,
         max_depth: u64,
-        visited: &mut usize,
-        bytes: &mut u64,
-        req: &TfOperationRequest,
-        matches: &mut Vec<serde_json::Value>,
-        cancelled: &AtomicBool,
+        visited: usize,
+        bytes: u64,
+        req: &'a TfOperationRequest,
+        matches: Vec<serde_json::Value>,
+        cancelled: &'a AtomicBool,
         deadline: Instant,
-        truncated: &mut bool,
-    ) -> Result<(), String> {
-        if depth > max_depth || matches.len() >= 200 {
-            *truncated = true;
+        truncated: bool,
+    }
+    fn walk(path: &Path, depth: u64, scope: &mut WalkScope<'_>) -> Result<(), String> {
+        if depth > scope.max_depth || scope.matches.len() >= 200 {
+            scope.truncated = true;
             return Ok(());
         }
         for item in fs::read_dir(path).map_err(failure)? {
-            if Instant::now() >= deadline {
+            if Instant::now() >= scope.deadline {
                 return Err("Directory search wall-time budget exhausted".into());
             }
-            if cancelled.load(Ordering::Acquire) {
+            if scope.cancelled.load(Ordering::Acquire) {
                 return Err("Search cancelled".into());
             }
-            *visited += 1;
-            if *visited > SEARCH_ENTRY_CAP {
+            scope.visited += 1;
+            if scope.visited > SEARCH_ENTRY_CAP {
                 return Err("Directory search entry budget exhausted".into());
             }
             let item = item.map_err(failure)?;
@@ -1248,22 +1542,10 @@ mod windows {
                 continue;
             }
             if meta.is_dir() {
-                if depth < max_depth {
-                    walk(
-                        &p,
-                        root,
-                        depth + 1,
-                        max_depth,
-                        visited,
-                        bytes,
-                        req,
-                        matches,
-                        cancelled,
-                        deadline,
-                        truncated,
-                    )?;
+                if depth < scope.max_depth {
+                    walk(&p, depth + 1, scope)?;
                 } else {
-                    *truncated = true;
+                    scope.truncated = true;
                 }
                 continue;
             }
@@ -1271,53 +1553,53 @@ mod windows {
                 continue;
             }
             let relative = p
-                .strip_prefix(root)
+                .strip_prefix(scope.root)
                 .map_err(failure)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if req.operation == TfOperation::FileFind {
-                let glob_match = match req.pattern.as_deref() {
+            if scope.req.operation == TfOperation::FileFind {
+                let glob_match = match scope.req.pattern.as_deref() {
                     Some(pattern) => globset::Glob::new(pattern)
                         .map_err(failure)?
                         .compile_matcher()
                         .is_match(&relative),
                     None => true,
                 };
-                let query_match = req.query.as_deref().is_none_or(|q| {
+                let query_match = scope.req.query.as_deref().is_none_or(|q| {
                     relative
                         .to_ascii_lowercase()
                         .contains(&q.to_ascii_lowercase())
                 });
                 if glob_match && query_match {
-                    matches.push(serde_json::json!({"path": relative, "bytes": meta.len()}));
+                    scope.matches.push(serde_json::json!({"path": relative, "bytes": meta.len()}));
                 }
             } else {
                 if meta.len() > FILE_CAP {
                     continue;
                 }
-                *bytes += meta.len();
-                if *bytes > SEARCH_BYTES_CAP {
+                scope.bytes += meta.len();
+                if scope.bytes > SEARCH_BYTES_CAP {
                     return Err("Search scanned byte budget exhausted".into());
                 }
                 let content = read_small(&p)?;
                 if let Ok(content) = std::str::from_utf8(&content) {
-                    let needle = req.query.as_deref().ok_or("Search query missing")?;
+                    let needle = scope.req.query.as_deref().ok_or("Search query missing")?;
                     for (line, content) in content.lines().enumerate() {
                         if content.contains(needle) {
-                            matches.push(serde_json::json!({
+                            scope.matches.push(serde_json::json!({
                                 "path": relative, "line": line + 1,
                                 "text": content.chars().take(256).collect::<String>()
                             }));
-                            if matches.len() >= 200 {
-                                *truncated = true;
+                            if scope.matches.len() >= 200 {
+                                scope.truncated = true;
                                 break;
                             }
                         }
                     }
                 }
             }
-            if matches.len() >= 200 {
-                *truncated = true;
+            if scope.matches.len() >= 200 {
+                scope.truncated = true;
                 break;
             }
         }
@@ -1364,25 +1646,20 @@ mod windows {
                 Ok(out)
             }
             TfOperation::FileFind | TfOperation::TextSearch => {
-                let mut visited = 0;
-                let mut bytes = 0;
-                let mut results = Vec::new();
-                let mut truncated = false;
-                walk(
-                    path,
-                    path,
-                    0,
-                    p.request.depth.unwrap_or(4),
-                    &mut visited,
-                    &mut bytes,
-                    &p.request,
-                    &mut results,
+                let mut scope = WalkScope {
+                    root: path,
+                    max_depth: p.request.depth.unwrap_or(4),
+                    visited: 0,
+                    bytes: 0,
+                    req: &p.request,
+                    matches: Vec::new(),
                     cancelled,
-                    Instant::now() + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
-                    &mut truncated,
-                )?;
-                let mut out = Outcome::no_effect(serde_json::to_string(&results).map_err(failure)?);
-                out.stdout_truncated = truncated;
+                    deadline: Instant::now() + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
+                    truncated: false,
+                };
+                walk(path, 0, &mut scope)?;
+                let mut out = Outcome::no_effect(serde_json::to_string(&scope.matches).map_err(failure)?);
+                out.stdout_truncated = scope.truncated;
                 Ok(out)
             }
             _ => Err("Unsupported filesystem read".into()),
@@ -2280,8 +2557,12 @@ mod windows {
     }
 }
 
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) use windows::commit_native_screenshot_evidence;
 #[cfg(windows)]
 pub use windows::{approve, execute, prepare};
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+pub(crate) use windows::{commit_native_browser_download, read_native_browser_upload_file};
 
 #[tauri::command]
 pub fn tf_operation_prepare(

@@ -67,10 +67,13 @@ vi.mock("@/modules/ai/lib/todos", async (original) => ({
 }));
 
 import { agentPermissionAuthoritySnapshot } from "@/modules/ai/lib/permissions";
+import { contextDigest } from "@/modules/ai/lib/targetContext";
 import {
   awaitSessionWrites,
+  loadExactStoredMessages,
   loadMessages,
   recoverInterruptedSessions,
+  saveMessages,
 } from "@/modules/ai/lib/sessions";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { getOrCreateChat, retryInterruptedRun, shouldAutomaticallySendSession } from "./chatRuntime";
@@ -511,6 +514,31 @@ afterEach(async () => {
 });
 
 describe("Track R same-logical-Agent request-failure recovery (real Chat and transport)", () => {
+  it("compares exact persisted live answer metadata without restart-only interruption rewriting", async () => {
+    const source = [{
+      id: "partial-answer", role: "assistant", parts: [{ type: "text", text: "partial, not final" }],
+      metadata: {
+        clackAnswer: {
+          version: 1, runId: `${sessionId}:1`, state: "streaming",
+          continuations: 0, repairs: 0,
+          segments: [{
+            id: "partial-segment", previous: null, provider: "fixture",
+            model: "gpt-5.4-mini", startedAt: 1, finish: "unknown",
+            inputTokens: 0, outputTokens: 0, pending: [],
+          }],
+        },
+      },
+    }] as Parameters<typeof saveMessages>[1];
+    await saveMessages(sessionId, source);
+    const exact = await loadExactStoredMessages(sessionId);
+    const restartedView = await loadMessages(sessionId);
+    expect(exact).toEqual(source);
+    expect(readAnswer(exact![0])?.state).toBe("streaming");
+    expect(readAnswer(restartedView![0])?.state).toBe("incomplete");
+    expect(await contextDigest(exact)).toBe(await contextDigest(source));
+    expect(await contextDigest(restartedView)).not.toBe(await contextDigest(source));
+  });
+
   it.each([
     { label: "campaign04 stream-idle", code: "stream-idle-timeout", prefix: "c04",
       mkdirCount: 4, writeCount: 5 },
@@ -644,9 +672,19 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
         expect(run().agentRequestRecovery).toBeUndefined();
         await vi.advanceTimersByTimeAsync(1);
         await initial;
-        for (let n = 0; n < 500 &&
-            !(chat.status === "ready" && requestCount === completedTools + 3); n++)
-          await vi.advanceTimersByTimeAsync(10);
+        // The simulated 120-second silence and exact expiry edge were already
+        // proven above. Now allow REAL WebCrypto/native-fixture asynchronous
+        // work to complete under CI contention, without artificially advancing
+        // the 10s preflight deadline: only one fake millisecond per 20 real
+        // event-loop turns, bounded by 7 real seconds and 20k turns. Neither
+        // the production deadline nor the assertion is relaxed or skipped.
+        // setImmediate/performance.now remain real (only timeouts are faked).
+        const settledBy = performance.now() + 7_000;
+        for (let n = 0; n < 20_000 && performance.now() < settledBy &&
+            !(chat.status === "ready" && requestCount === completedTools + 3); n++) {
+          if (n % 20 === 0) await vi.advanceTimersByTimeAsync(1);
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
         expect(chat.status).toBe("ready");
         expect(requestCount).toBe(completedTools + 3);
       } finally {
@@ -1083,6 +1121,28 @@ describe("Track R same-logical-Agent request-failure recovery (real Chat and tra
       expect(mutateDuringDispatchedSave).toBeNull();
     },
   );
+
+  it("denies a second native session-store writer changing messages after the first transcript checkpoint", async () => {
+    requests = [{ kind: "fail", code: "stream-idle-timeout" }];
+    const chat = getOrCreateChat(sessionId);
+    mutateDuringDispatchedSave = () => {
+      const key = `messages:${sessionId}`;
+      const persisted = disk.get(key) as Parameters<typeof saveMessages>[1] | undefined;
+      if (!persisted) throw new Error("Missing persisted transcript for other-writer race");
+      disk.set(key, [...structuredClone(persisted), {
+        id: "another-native-writer", role: "assistant",
+        parts: [{ type: "text", text: "independently changed stored transcript" }],
+      }]);
+      // The original Chat is intentionally unchanged: this tests the durable
+      // store read, not the already-covered in-memory mutation detection.
+    };
+    await chat.sendMessage({ text: "Task" });
+    await settle(() => run().state === "failed");
+    expect(requestCount).toBe(1);
+    expect(run().agentRequestRecovery?.phase).toBe("dispatched");
+    expect(run().error?.message).toContain("Persisted Agent transcript changed before recovery dispatch");
+    expect(mutateDuringDispatchedSave).toBeNull();
+  });
 
   it.each(["agent-owner", "permissions", "workspace"] as const)(
     "explicit interrupted-run retry rejects $0 changes while persisting its preflight", async change => {

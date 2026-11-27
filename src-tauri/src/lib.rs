@@ -241,6 +241,7 @@ pub fn run() {
         .manage(tf_command::TfCommandState::default())
         .manage(tf_operations::TfOperationState::default())
         .manage(net::tf_web::TfWebState::default())
+        .manage(net::tf_browser::TfBrowserState::default())
         .manage(modules::conversation_memory::project::freshness::FreshnessState::default())
         .manage(history::HistoryState::default())
         .manage(fs::grep::ContentSearchState::default())
@@ -377,6 +378,11 @@ pub fn run() {
             net::tf_web::tf_web_execute,
             net::tf_web::tf_web_cancel,
             net::tf_web::tf_web_provider_status,
+            net::tf_browser::tf_browser_prepare,
+            net::tf_browser::tf_browser_approve,
+            net::tf_browser::tf_browser_execute,
+            net::tf_browser::tf_browser_cancel,
+            net::tf_browser::tf_browser_status,
             shell::shell_identity,
             shell::shell_session_open,
             shell::shell_session_run,
@@ -468,6 +474,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // An application-owned TF4 security presentation must be revoked
+            // before the desktop event loop tears down. A pending native
+            // dialog can never outlive its central one-use authority.
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                app.state::<net::tf_browser::TfBrowserState>()
+                    .shutdown_approvals();
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 modules::managed_local_runtime::shutdown();
                 modules::remote_ssh::shutdown();

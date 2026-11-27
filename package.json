@@ -26,6 +26,7 @@
     "analyze:bundle": "ANALYZE=true vite build",
     "analyze:eager": "node scripts/eager-graph.mjs src/main.tsx && node scripts/eager-graph.mjs src/settings/main.tsx",
     "size": "size-limit",
+    "size:report": "node scripts/emitted-js-budget.mjs snapshot --dist dist",
     "knip": "knip"
   },
   "dependencies": {

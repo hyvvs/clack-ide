@@ -117,7 +117,7 @@ export async function evaluateAcceptanceApproval(subject, expected) {
       const effect = bind(command);
       const operand = effect.operand;
       const segments = operand.split(/[\\/]/);
-      if (!operand || (process.platform !== "win32" && operand.includes("\\")) || /[\x00-\x1f*?[\]~$%]/.test(operand) || /^(?:\\\\|\/\/)/.test(operand) ||
+      if (!operand || (process.platform !== "win32" && (operand.includes("\\") || /^[A-Za-z]:/.test(operand))) || /[\x00-\x1f*?[\]~$%]/.test(operand) || /^(?:\\\\|\/\/)/.test(operand) ||
         (/^[A-Za-z]:/.test(operand) && !/^[A-Za-z]:[\\/]/.test(operand)) ||
         operand.replace(/^[A-Za-z]:/, "").includes(":") || segments.some(s => s === ".." || /[. ]$/.test(s) ||
           /^(?:\.git|\.ssh|\.aws|\.azure|\.gnupg|\.ollama|\.env.*|credentials|models)$/i.test(s) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s))) throw new Error("Ambiguous, secret or non-project path");

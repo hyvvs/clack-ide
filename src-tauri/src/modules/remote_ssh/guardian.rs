@@ -57,6 +57,7 @@ pub fn run(mut command: Command, mut parent: impl Read + Send + 'static) -> i32 
 }
 
 #[cfg(unix)]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(super) fn command(original: Command) -> Result<Command, String> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(std::env::current_exe().map_err(|_| "ssh-ownership-failed")?);

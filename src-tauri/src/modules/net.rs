@@ -4,6 +4,13 @@ use std::time::Duration;
 
 pub mod inference;
 pub mod research;
+pub mod tf_browser;
+// Pure native identity/effect contract; no WebView2 launcher, IPC route or model
+// authority is enabled by registering this module.
+pub(crate) mod tf_browser_contract;
+// Native-only per-session restricted browser broker; no Tauri command or model
+// capability is exposed by importing this module.
+pub(crate) mod tf_browser_runtime;
 pub mod tf_web;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Method;

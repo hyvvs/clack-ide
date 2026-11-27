@@ -20,6 +20,11 @@ const operations: Readonly<Record<string, readonly ToolCapability[]>> = {
   tf_http_fetch: ["read"],
   tf_http_head: ["read"],
   tf_web_search: ["read"],
+  tf_browser_open:["read"],tf_browser_navigate:["read"],
+  tf_browser_inspect:["read"],tf_browser_find:["read"],
+  tf_browser_click:["read"],tf_browser_scroll:["read"],
+  tf_browser_back:["read"],tf_browser_forward:["read"],
+  tf_browser_refresh:["read"],tf_browser_screenshot:["read"],
   request_peer_task: ["peer"],
   communicate_peer_task: ["peer"],
 };

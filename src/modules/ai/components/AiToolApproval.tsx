@@ -31,7 +31,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ToolUIPart } from "ai";
-import { memo } from "react";
+import { memo, useRef } from "react";
 
 type Props = {
   part: Extract<ToolUIPart, { state: "approval-requested" }>;
@@ -64,6 +64,12 @@ const TOOL_META: Record<string, { label: string; icon: typeof FilePlusIcon }> =
     tf_http_fetch: { label: "Fetch public web content", icon: ToolsIcon },
     tf_http_head: { label: "Inspect HTTP resource", icon: ToolsIcon },
     tf_web_search: { label: "Search public web", icon: ToolsIcon },
+    tf_browser_open:{label:"Open an isolated browser session",icon:ToolsIcon},
+    tf_browser_navigate:{label:"Navigate a browser page",icon:ToolsIcon},
+    tf_browser_inspect:{label:"Inspect a browser snapshot",icon:ToolsIcon},
+    tf_browser_click:{label:"Follow a snapshot-verified link",icon:ToolsIcon},
+    tf_browser_back:{label:"Navigate browser history",icon:ToolsIcon},
+    tf_browser_close:{label:"Close browser session",icon:ToolsIcon},
     bash_background: { label: "Spawn background process", icon: TerminalIcon },
     request_peer_task: { label: "Start peer agent task", icon: ToolsIcon },
     cancel_peer_task: { label: "Cancel peer agent task", icon: ToolsIcon },
@@ -76,19 +82,27 @@ const NATIVE_TF_EFFECTFUL_TOOLS = new Set([
   "tf_build_run",
 ]);
 const NATIVE_TF_WEB_TOOLS = new Set(["tf_http_fetch","tf_http_head","tf_web_search"]);
-/** Query strings can contain secret tokens, even when rejected at native
- * admission. Show only the normalized origin and pathname in approvals. */
+const NATIVE_TF_BROWSER_TOOLS = new Set([
+  "tf_browser_open","tf_browser_navigate","tf_browser_inspect",
+  "tf_browser_click","tf_browser_back","tf_browser_close",
+]);
+/** URL paths and query strings can both contain untrusted secret tokens.
+ * Show only the parsed origin and redacted path/query in approvals. */
 function previewNetworkDestination(raw:unknown):string {
   if(typeof raw!=="string" || raw.length>2048)return "Native-validated destination only";
   try {
     const url=new URL(raw);
     if(!["http:","https:"].includes(url.protocol) || url.username || url.password)
       return "Unsupported or credential-bearing URL · deny";
-    return `${url.origin}${url.pathname.slice(0,240)}${url.search?"?… (query withheld)":""}`;
+    return `${url.origin}${url.pathname!=="/"?"/…":""}${url.search?"?…":""}`;
   }catch{return "Invalid URL · deny";}
 }
 
 function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
+  // UI-level double-click guard, not a grant store or authorization. The
+  // permission authority below still consumes its proof exactly once.
+  const respondedApproval = useRef<string | null>(null);
+  const approvalKey = `${sessionId}:${part.toolCallId}:${part.approval.id}`;
   const meta = TOOL_META[toolName];
   const label = meta?.label ?? toolName;
   const Icon = meta?.icon ?? ToolsIcon;
@@ -145,6 +159,27 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
     );
     if (granted) onRespond(true);
   };
+  const respondOnce = (choice: "deny" | "once") => {
+    if (respondedApproval.current === approvalKey) return;
+    respondedApproval.current = approvalKey;
+    if (choice === "deny") {
+      respondToApprovalChoice("deny", onRespond);
+      return;
+    }
+    if ((toolName === "bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) ||
+      NATIVE_TF_WEB_TOOLS.has(toolName) || NATIVE_TF_BROWSER_TOOLS.has(toolName)) &&
+      !recordTfApprovedToolCall({
+        toolCallId: part.toolCallId, sessionId,
+        agentId: permissionContext.getAgentId(),
+        workspaceRoot: permissionContext.getWorkspaceRoot(),
+        cwd: permissionContext.getCwd(),
+        toolName, parameters: input,
+      })) {
+      onRespond(false);
+      return;
+    }
+    respondToApprovalChoice("once", onRespond);
+  };
 
   return (
     <div className="clack-ai-block min-w-0 overflow-hidden shadow-sm [overflow-wrap:anywhere]" data-approval-session={sessionId}>
@@ -169,7 +204,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         {typeof input.path === "string" && <p className="mb-1 font-medium text-[var(--clack-text-1)] [overflow-wrap:anywhere]">Target: {input.path.split(/[\\/]/).filter(Boolean).pop() || input.path}</p>}
         <details className="mb-2 text-[10.5px] text-[var(--clack-text-2)] [overflow-wrap:anywhere]">
           <summary className="cursor-pointer">Workspace and full target</summary>
-          <p>{owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
+          <p>{owner?.run?.checkoutRoot ?? owner?.run?.workspaceRoot ?? owner?.profile?.workspaceRoot ?? "Workspace unavailable"}</p>
           {typeof input.path === "string" && <p>{input.path}</p>}
         </details>
         <PreviewBlock toolName={toolName} input={input} />
@@ -218,6 +253,22 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
             </dl>
           </details>
         ) : null}
+        {NATIVE_TF_BROWSER_TOOLS.has(toolName) ? (
+          <details className="mt-2 rounded-md border border-[color:var(--clack-border-subtle)] px-2 py-1.5 text-[10.5px] text-[var(--clack-text-2)]">
+            <summary className="cursor-pointer font-medium">Browser ownership, page target and effect details</summary>
+            <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 [overflow-wrap:anywhere]">
+              <dt>Action</dt><dd>{toolName.replace(/^tf_browser_/,"")} · bounded native text-page engine</dd>
+              <dt>Destination</dt><dd>{typeof input.url==="string"?previewNetworkDestination(input.url):"Native-owned browser session; URL revalidated from native state"}</dd>
+              <dt>Session</dt><dd>{typeof input.browserSessionId==="string"?input.browserSessionId.slice(0,64):"New temporary isolated session"}</dd>
+              {typeof input.snapshotId==="string"?<><dt>Snapshot</dt><dd>{input.snapshotId.slice(0,64)}</dd></>:null}
+              {typeof input.elementId==="string"?<><dt>Element</dt><dd>{input.elementId.slice(0,64)}</dd></>:null}
+              <dt>Effect</dt><dd>Public network GET may be logged by remote site. Only snapshot-scoped link navigation is supported; no form submissions, scripts, credential injection, file transfer or raw desktop actions.</dd>
+              <dt>Security</dt><dd>TF3 bounded fetch, per-hop DNS/IP/SSRF checks, native session ownership and snapshot checks, no OS browser sandbox or peer socket IP attestation</dd>
+              <dt>Approval</dt><dd>Exact Allow once from this chat; native separately confirms navigation effects. Unknown/unsupported actions are not silently executed.</dd>
+              <dt>Evidence</dt><dd>Bounded untrusted text and link identities, content hash, policy/redirect evidence and terminal receipt</dd>
+            </dl>
+          </details>
+        ) : null}
         <p className="mt-2 text-[11px] text-[var(--clack-text-2)]">Allow once approves only this action. Broader permissions are separate.</p>
       </div>
 
@@ -225,7 +276,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         <Button
           size="sm"
           variant="destructive"
-          onClick={() => respondToApprovalChoice("deny", onRespond)}
+          onClick={() => respondOnce("deny")}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
@@ -234,20 +285,7 @@ function AiToolApprovalImpl({ part, toolName, sessionId, onRespond }: Props) {
         <Button
           size="sm"
           variant="default"
-          onClick={() => {
-            if((toolName==="bounded_command" || NATIVE_TF_EFFECTFUL_TOOLS.has(toolName) || NATIVE_TF_WEB_TOOLS.has(toolName)) &&
-              !recordTfApprovedToolCall({
-                toolCallId:part.toolCallId,sessionId,
-                agentId:permissionContext.getAgentId(),
-                workspaceRoot:permissionContext.getWorkspaceRoot(),
-                cwd:permissionContext.getCwd(),
-                toolName,parameters:input,
-              })){
-              onRespond(false);
-              return;
-            }
-            respondToApprovalChoice("once", onRespond);
-          }}
+          onClick={() => respondOnce("once")}
           className="h-7 gap-1.5 text-[11px]"
         >
           <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2} />
@@ -304,6 +342,14 @@ function PreviewBlock({
   toolName: string;
   input: Record<string, unknown>;
 }) {
+  if(NATIVE_TF_BROWSER_TOOLS.has(toolName))return (
+    <div className="space-y-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2 font-mono text-[10.5px] [overflow-wrap:anywhere]">
+      <p>Browser action: {toolName.replace(/^tf_browser_/,"")}</p>
+      <p>Target: {typeof input.url==="string"?previewNetworkDestination(input.url):
+        `Native session ${typeof input.browserSessionId==="string"?input.browserSessionId.slice(0,24):"not specified"}`}</p>
+      <p>Snapshot/element targets are checked natively; no model-owned browser or implicit website permission.</p>
+    </div>
+  );
   if(NATIVE_TF_WEB_TOOLS.has(toolName)){
     return (
       <div className="space-y-1 rounded-[var(--clack-radius-button)] bg-[var(--clack-surface-2)] p-2 font-mono text-[10.5px] [overflow-wrap:anywhere]">

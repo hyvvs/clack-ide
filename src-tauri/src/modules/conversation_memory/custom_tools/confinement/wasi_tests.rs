@@ -273,6 +273,10 @@ fn pure_loop_is_fuel_bounded_and_wall_clock_cancellable() {
     );
     let (_root, mut p, input) = fixture(LOOP);
     p.limits.timeout_ms = 100;
+    // Isolate the wall-clock deadline from the *separate* fuel cap. Fast
+    // Ubuntu runners can exhaust the normal 100-million-fuel fixture in
+    // under 100 ms, correctly returning FuelLimit before Timeout.
+    p.limits.cpu_time_ms = 10_000;
     let started = Instant::now();
     assert_eq!(
         Prepared::new(p, vec![input], vec![])
@@ -283,7 +287,10 @@ fn pure_loop_is_fuel_bounded_and_wall_clock_cancellable() {
         Some(Failure::Timeout)
     );
     assert!(started.elapsed() < Duration::from_secs(5));
-    let (_root, p, input) = fixture(LOOP);
+    let (_root, mut p, input) = fixture(LOOP);
+    // Likewise keep cancellation as the first terminal limiter even on fast
+    // processors; the first branch above still independently proves fuel.
+    p.limits.cpu_time_ms = 10_000;
     let started = Instant::now();
     assert_eq!(
         Prepared::new(p, vec![input], vec![])

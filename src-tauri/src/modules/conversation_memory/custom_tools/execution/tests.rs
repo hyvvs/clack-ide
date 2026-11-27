@@ -156,6 +156,69 @@ fn mcp_restart_interrupted_effects_are_unknown_and_never_replayed() {
     );
 }
 
+#[test]
+fn grouped_case11_native_browser_ledger_recovers_unknown_and_blocks_duplicate_and_pruning() {
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let token = "fixture-consumed-approval";
+    let mut record = native_browser_effect_record(owner.clone(), token);
+    record.epoch = "old-process".into();
+    let id = record.id.clone();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    let mut ledger = Ledger {
+        version: 1,
+        records: vec![],
+    };
+    append_native_browser_effect(&mut ledger, record, |_| Ok(owner.clone())).unwrap();
+    write_ledger(&store, &path, &ledger).unwrap();
+    let disk = fs::read_to_string(&path).unwrap();
+    assert!(!disk.contains(token));
+    assert_eq!(ledger.records[0].effect, "possible");
+    let mut reopened = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    let interrupted = &reopened.records[0];
+    assert_eq!(interrupted.id, id);
+    assert_eq!(interrupted.state, "interrupted");
+    assert_eq!(interrupted.effect, "unknown");
+    assert_eq!(interrupted.error.as_deref(), Some("interrupted-no-replay"));
+    assert!(!prunable(interrupted, Err("owner-unavailable".into())));
+    assert!(!prunable(interrupted, Ok(owner.clone())));
+    assert!(append_native_browser_effect(
+        &mut reopened,
+        native_browser_effect_record(owner.clone(), token),
+        |_| Ok(owner.clone())
+    )
+    .is_err());
+    assert_eq!(reopened.records.len(), 1);
+    assert_eq!(
+        read_ledger(&session_file::SessionFile::default(), &path)
+            .unwrap()
+            .records[0]
+            .effect,
+        "unknown"
+    );
+    // A full ledger of unresolved effects must deny new dispatch rather than
+    // remove the only durable uncertainty record.
+    for i in 1..MAX_RECORDS {
+        let mut row = native_browser_effect_record(owner.clone(), &format!("fixture-{i}"));
+        row.epoch = "old-process".into();
+        append_native_browser_effect(&mut reopened, row, |_| Ok(owner.clone())).unwrap();
+    }
+    recover(&mut reopened, &MEMORY_EPOCH);
+    assert!(append_native_browser_effect(
+        &mut reopened,
+        native_browser_effect_record(owner.clone(), "new"),
+        |_| Ok(owner.clone())
+    )
+    .is_err());
+    assert_eq!(reopened.records.len(), MAX_RECORDS);
+}
+
 #[tokio::test]
 async fn mcp_success_preserves_external_provenance_and_untrusted_output_in_t2_history() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -277,29 +340,33 @@ fn output_schema_is_deterministic_and_bounded() {
 fn real_file_read_is_bounded_and_rejects_traversal_secrets_and_other_workspace() {
     let root = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
     fs::write(root.path().join("ok.txt"), "actual input").unwrap();
     fs::write(root.path().join(".env"), "ENV_CANARY").unwrap();
     fs::write(other.path().join("private.txt"), "OTHER_CANARY").unwrap();
     let cancel = AtomicBool::new(false);
-    assert_eq!(
-        io::read_file(root.path(), "ok.txt", 100, &cancel).unwrap(),
-        json!("actual input")
-    );
+    let read = io::read_file(&workspace, "ok.txt", 100, &cancel);
+    #[cfg(any(windows, target_os = "linux"))]
+    assert_eq!(read.unwrap(), json!("actual input"));
+    // macOS has no open-handle path verifier for this native operation yet.
+    #[cfg(target_os = "macos")]
+    assert_eq!(read.unwrap_err(), "unsupported-platform");
     for path in [
         "../private.txt".to_string(),
         ".env".into(),
         other.path().join("private.txt").to_string_lossy().into(),
     ] {
-        assert!(io::read_file(root.path(), &path, 100, &cancel).is_err());
+        assert!(io::read_file(&workspace, &path, 100, &cancel).is_err());
     }
-    assert!(io::read_file(root.path(), "ok.txt", 2, &cancel).is_err());
+    assert!(io::read_file(&workspace, "ok.txt", 2, &cancel).is_err());
     fs::write(root.path().join("binary"), [255, 0]).unwrap();
-    assert!(io::read_file(root.path(), "binary", 100, &cancel).is_err());
+    assert!(io::read_file(&workspace, "binary", 100, &cancel).is_err());
     cancel.store(true, Ordering::Release);
-    assert_eq!(
-        io::read_file(root.path(), "ok.txt", 100, &cancel).unwrap_err(),
-        "cancelled"
-    );
+    let interrupted = io::read_file(&workspace, "ok.txt", 100, &cancel);
+    #[cfg(any(windows, target_os = "linux"))]
+    assert_eq!(interrupted.unwrap_err(), "cancelled");
+    #[cfg(target_os = "macos")]
+    assert_eq!(interrupted.unwrap_err(), "unsupported-platform");
 }
 #[test]
 fn file_symlink_escape_is_denied() {
@@ -656,13 +723,20 @@ fn reference(registry: &Registry) -> Reference {
 fn registry_to_real_native_execution_keeps_recipient_scope_and_version() {
     let registry = authorized();
     let reference = reference(&registry);
-    let version = authorized_version(&registry, &owner(), &reference).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("result.txt"), "verified output").unwrap();
-    let args = json!({"path":"result.txt"});
-    schema::arguments(&version.definition, &args).unwrap();
-    let value = io::read_file(dir.path(), "result.txt", 1024, &AtomicBool::new(false)).unwrap();
-    schema::value_matches(&version.definition.output_schema, &value, 0).unwrap();
+    let version = authorized_version(&registry, &owner(), &reference);
+    #[cfg(any(windows, target_os = "linux"))]
+    assert!(version.is_ok());
+    #[cfg(target_os = "macos")]
+    assert!(matches!(&version, Err(error) if error == "tool-revoked"));
+    if let Ok(version) = version {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("result.txt"), "verified output").unwrap();
+        let args = json!({"path":"result.txt"});
+        schema::arguments(&version.definition, &args).unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let value = io::read_file(&workspace, "result.txt", 1024, &AtomicBool::new(false)).unwrap();
+        schema::value_matches(&version.definition.output_schema, &value, 0).unwrap();
+    }
     for access in [
         Access {
             agent: "builtin:reviewer".into(),
@@ -731,21 +805,28 @@ fn source_qualified_index_identity_resolves_to_real_guarded_native_read() {
         version: latest(resolved).version,
         hash: latest(resolved).hash.clone(),
     };
-    let selected = authorized_version(&registry, &owner(), &reference).unwrap();
-    assert_eq!(
-        selected.definition.binding,
-        Binding::Native {
-            operation: "read_file".into()
-        }
-    );
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("capability.txt"), "native index fixture").unwrap();
-    let arguments = json!({"path":"capability.txt"});
-    schema::arguments(&selected.definition, &arguments).unwrap();
-    let output =
-        io::read_file(dir.path(), "capability.txt", 8192, &AtomicBool::new(false)).unwrap();
-    schema::value_matches(&selected.definition.output_schema, &output, 0).unwrap();
-    assert_eq!(output, json!("native index fixture"));
+    let selected = authorized_version(&registry, &owner(), &reference);
+    #[cfg(any(windows, target_os = "linux"))]
+    assert!(selected.is_ok());
+    #[cfg(target_os = "macos")]
+    assert!(matches!(&selected, Err(error) if error == "tool-revoked"));
+    if let Ok(selected) = selected {
+        assert_eq!(
+            selected.definition.binding,
+            Binding::Native {
+                operation: "read_file".into()
+            }
+        );
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("capability.txt"), "native index fixture").unwrap();
+        let arguments = json!({"path":"capability.txt"});
+        schema::arguments(&selected.definition, &arguments).unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let output =
+            io::read_file(&workspace, "capability.txt", 8192, &AtomicBool::new(false)).unwrap();
+        schema::value_matches(&selected.definition.output_schema, &output, 0).unwrap();
+        assert_eq!(output, json!("native index fixture"));
+    }
     let revoked = apply(
         &registry,
         &owner(),

@@ -1,0 +1,102 @@
+name: Historical Node acceptance
+
+# This deliberately is not an ordinary PR/push CI gate. Dispatch only when
+# the evidence owner has authorized an existing artifact containing the exact
+# original files, with paths relative to src-tauri/target. Never regenerate
+# the files to make this check pass.
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_run_id:
+        description: 'Authorized evidence artifact producer run ID (same repository)'
+        required: true
+        type: string
+      evidence_artifact_id:
+        description: 'Exact immutable evidence artifact ID'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  historical-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Record and verify artifact provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.evidence_run_id }}
+          ARTIFACT_ID: ${{ inputs.evidence_artifact_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ && "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/evidence-artifact.json"
+          jq -e --arg id "$ARTIFACT_ID" --arg run "$RUN_ID" '.id == ($id | tonumber) and .workflow_run.id == ($run | tonumber) and .expired == false and (.digest | test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/evidence-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/evidence-producer.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --slurpfile artifact "$RUNNER_TEMP/evidence-artifact.json" '
+            .repository.full_name == $repo and .head_repository.full_name == $repo and
+            .conclusion == "success" and (.head_sha | test("^[a-f0-9]{40}$")) and
+            .head_sha == $artifact[0].workflow_run.head_sha
+          ' "$RUNNER_TEMP/evidence-producer.json"
+          {
+            echo '### Historical evidence provenance'
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Verifier checkout: $GITHUB_SHA"
+            jq -r '"Artifact ID: \(.id)\nProducer run: \(.workflow_run.id)\nProducer commit: \(.workflow_run.head_sha)\nArtifact digest: \(.digest)"' "$RUNNER_TEMP/evidence-artifact.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Download and verify exact evidence archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ inputs.evidence_artifact_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/evidence.zip"
+          expected=$(jq -r '.digest | sub("^sha256:"; "")' "$RUNNER_TEMP/evidence-artifact.json")
+          echo "$expected  $RUNNER_TEMP/evidence.zip" | sha256sum -c -
+          # Reject untrusted archive names, links, duplicate paths and zip
+          # bombs BEFORE extracting anything into the historical target tree.
+          python3 - "$RUNNER_TEMP/evidence.zip" <<'PY'
+          import pathlib
+          import stat
+          import sys
+          import zipfile
+
+          total = 0
+          seen = set()
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              entries = archive.infolist()
+              if not entries or len(entries) > 1000:
+                  raise SystemExit("historical evidence archive entry count denied")
+              for entry in entries:
+                  name = entry.filename
+                  path = pathlib.PurePosixPath(name)
+                  if (not name or "\\" in name or name.startswith("/") or
+                      any(part in ("", ".", "..") for part in name.rstrip("/").split("/")) or
+                      path.is_absolute() or ":" in name or "\x00" in name):
+                      raise SystemExit("historical evidence archive path denied")
+                  key = name.rstrip("/").lower()
+                  if key in seen:
+                      raise SystemExit("historical evidence duplicate path denied")
+                  seen.add(key)
+                  mode = (entry.external_attr >> 16) & 0xffff
+                  if stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR):
+                      raise SystemExit("historical evidence special file denied")
+                  if entry.file_size > 32 * 1024 * 1024:
+                      raise SystemExit("historical evidence oversized entry denied")
+                  total += entry.file_size
+                  if total > 128 * 1024 * 1024:
+                      raise SystemExit("historical evidence expanded size denied")
+          PY
+          mkdir -p src-tauri/target
+          unzip -n "$RUNNER_TEMP/evidence.zip" -d src-tauri/target
+      - name: Verify original historical evidence
+        run: node scripts/run-node-script-tests.mjs --evidence-bound
+      - name: Record historical verification scope
+        if: success()
+        run: |
+          echo 'Historical Node evidence assertions passed. This is not current TF4 physical or release acceptance.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'LM11 T01 persisted-selector evidence: NOT_RUN here. It requires the original Windows production/legacy Stores matching an authorized T15 BEFORE inventory. Run the existing local LM11 selector evidence harness; do not upload private Stores to this workflow.' >> "$GITHUB_STEP_SUMMARY"

@@ -1,8 +1,9 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { isTfOperationTool, tfOperationEffectful, validateTfOperationInput } from
-  "@/modules/ai/tools/tfOperations";
-import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWeb";
+  "@/modules/ai/tools/tfOperationSchemas";
+import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWebSchemas";
+import { isTfBrowserTool, validateTfBrowserInput } from "@/modules/ai/tools/tfBrowserSchemas";
 import {
   setAgentWorkspacePermissions,
   type AgentWorkspacePermission,
@@ -92,7 +93,7 @@ export const PERMISSION_CATEGORY_LABELS: Record<PermissionCategory, string> = {
   "create-files": "Create directories",
   "run-commands": "Run terminal commands",
   "delegate-runs": "Start another agent run",
-  "research-network": "Search and fetch public web sources",
+  "research-network": "Search, fetch and inspect public web pages",
 };
 
 export const PERMISSION_CATEGORIES = Object.keys(
@@ -105,6 +106,12 @@ const TOOL_CATEGORIES: Readonly<Record<string, PermissionCategory>> = {
   tf_http_fetch: "research-network",
   tf_http_head: "research-network",
   tf_web_search: "research-network",
+  tf_browser_open:"research-network",
+  tf_browser_navigate:"research-network",
+  tf_browser_inspect:"research-network",
+  tf_browser_click:"research-network",
+  tf_browser_back:"research-network",
+  tf_browser_close:"research-network",
   write_file: "write-files",
   edit: "write-files",
   multi_edit: "write-files",
@@ -169,6 +176,10 @@ function sha256Identity(value:string):string {
   return h.map(n=>n.toString(16).padStart(8,"0")).join("");
 }
 function exactTfInputIdentity(toolName:string,input:Record<string,unknown>):string|null {
+  if(isTfBrowserTool(toolName)){
+    if(!validateTfBrowserInput(toolName,input))return null;
+    return sha256Identity(canonicalJson([toolName,input]));
+  }
   if(isTfWebTool(toolName)){
     if(!validateTfWebInput(toolName,input))return null;
     return sha256Identity(canonicalJson([toolName,input]));
@@ -189,7 +200,8 @@ export function recordTfApprovedToolCall(input:{toolCallId:string;sessionId:stri
   agentId:string;workspaceRoot:string|null;toolName:string;
   parameters:Record<string,unknown>;cwd?:string|null},now=Date.now()):boolean {
   if((input.toolName!=="bounded_command" &&
-      !tfOperationEffectful(input.toolName) && !isTfWebTool(input.toolName)) || !input.toolCallId ||
+      !tfOperationEffectful(input.toolName) && !isTfWebTool(input.toolName) &&
+      !isTfBrowserTool(input.toolName)) || !input.toolCallId ||
       input.toolCallId.length>256 || !input.sessionId || !input.agentId ||
       !input.workspaceRoot || !Number.isSafeInteger(now))return false;
   const identity=exactTfInputIdentity(input.toolName,input.parameters);
@@ -338,7 +350,8 @@ export function canPersistPermission(
 ): boolean {
   // Exact native effects cannot be promoted into chat/workspace permission;
   // even Full Access must produce a fresh SDK Allow once proof.
-  if(tfOperationEffectful(toolName) || isTfWebTool(toolName) || toolName==="bounded_command")return false;
+  if(tfOperationEffectful(toolName) || isTfWebTool(toolName) ||
+    isTfBrowserTool(toolName) || toolName==="bounded_command")return false;
   if (isStrictPermissionRequest(toolName, input)) return false;
   const category = permissionCategoryForTool(toolName);
   // Network destinations are chosen per invocation. Neither chat nor a
@@ -572,6 +585,7 @@ export function resolveCurrentToolFabricDecision(
   }
   const nativeOp=isTfOperationTool(toolName);
   const nativeWeb=isTfWebTool(toolName);
+  const nativeBrowser=isTfBrowserTool(toolName);
   if(nativeOp && phase==="execution"){
     if(!validateTfOperationInput(toolName,input))
       return {decision:"DENY",reasonCode:"tf-operation-invalid-input",
@@ -590,6 +604,14 @@ export function resolveCurrentToolFabricDecision(
         policyVersion:"tf-security-v1",approval:null,retry:"safe"};
     effects=toolName==="tf_web_search"
       ? ["network-read","credential-use"] : ["network-read"];
+  }
+  if(nativeBrowser && phase==="execution"){
+    if(!validateTfBrowserInput(toolName,input))
+      return {decision:"DENY",reasonCode:"tf-browser-invalid-input",
+        policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+    // The currently supported native engine performs only pinned GET reads,
+    // not a form submit, JavaScript click or a state-changing browser action.
+    effects=toolName==="tf_browser_close"?["read-only"]:["network-read"];
   }
   if(phase==="execution"){
     if(nativeWeb){
@@ -637,6 +659,38 @@ export function resolveCurrentToolFabricDecision(
           provider:"brave_web",toolId:security.id,
           destination:"https://api.search.brave.com:443",
           operation:"GET",state:"native-verified-at-dispatch"});
+      }
+    }
+    if(nativeBrowser){
+      // A model cannot assert the origin of an existing session or element.
+      // A symbolic destination can only be resolved using the native-owned
+      // actor/session/root+snapshot record and is rechecked there before GET.
+      const hasUrl=toolName==="tf_browser_open" || toolName==="tf_browser_navigate";
+      let uri:URL;
+      try{ uri=new URL(hasUrl?String(input.url??""):
+        "https://native-bound-browser-session.invalid/"); }
+      catch{
+        return {decision:"DENY",reasonCode:"tf-browser-url-invalid",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+      }
+      if((uri.protocol!=="https:" && uri.protocol!=="http:") ||
+        !uri.hostname || uri.username || uri.password || uri.hash)
+        return {decision:"DENY",reasonCode:"tf-browser-url-unsupported",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
+      const host=uri.hostname.toLowerCase();
+      if(!hasUrl || (!/^(localhost|metadata)$/.test(host) &&
+        !/\.(localhost|local|internal|lan|home\.arpa)$/.test(host))){
+        scopes.push({kind:"network",
+          protocol:uri.protocol.slice(0,-1) as "http"|"https",host,
+          port:uri.port?Number(uri.port):uri.protocol==="https:"?443:80,
+          path:uri.pathname,queryPresent:uri.search.length>0,method:"GET",
+          operation:"read",resolution:"native-pending",
+          tls:uri.protocol==="https:"?"required":"not-applicable",
+          credentialReference:null,maxBytes:65536,maxRedirects:5,
+          timeoutMs:typeof input.timeoutMs==="number"?input.timeoutMs:15000});
+      }else{
+        return {decision:"DENY",reasonCode:"tf-browser-local-host-denied",
+          policyVersion:"tf-security-v1",approval:null,retry:"safe"};
       }
     }
     if(nativeOp){
@@ -719,7 +773,7 @@ export function resolveCurrentToolFabricDecision(
             typeof input.timeout_secs==="number"?input.timeout_secs*1000:30_000});
       }
     }
-    if(!nativeWeb && security.resources.includes("network")){
+    if(!nativeWeb && !nativeBrowser && security.resources.includes("network")){
       const urls=typeof input.url==="string"?[input.url]:
         Array.isArray(input.urls)?input.urls:[];
       const malformed=urls.length===0 || urls.some(url=>typeof url!=="string" ||
@@ -753,11 +807,11 @@ export function resolveCurrentToolFabricDecision(
       `tf-preflight:${ctx.getSessionId()??"none"}:${toolName}`,
     actor:{agentId,sessionId:ctx.getSessionId(),workspaceId:root?workspacePermissionKey(root):null,
       workspaceRoot:root},tool:effectiveTool,operation:toolName,
-    requestedEffects:effects,resourceIdentity:nativeOp||nativeWeb
+    requestedEffects:effects,resourceIdentity:nativeOp||nativeWeb||nativeBrowser
       ? `tf-operation:${exactTfInputIdentity(toolName,input)??"missing"}`
       : JSON.stringify([toolName,input.path??null,input.cwd??null,
         input.url??null,input.executable??null,input.args??null]).slice(0,2048),
-    scopes,sandbox:nativeWeb?tfWebSandbox:nativeOp?tfOperationSandbox:
+    scopes,sandbox:nativeBrowser||nativeWeb?tfWebSandbox:nativeOp?tfOperationSandbox:
       toolName==="bounded_command" ? {...tfWindowSandbox,configuration:{
       workspaceRoot:root,mounts:[],tempDirectory:null,
       environment:{forwardedNames:[],inheritParent:false},
@@ -825,7 +879,7 @@ export function applyAgentPermissionPolicy<
     };
     if (originalExecute) {
       next.execute = async (input, options) => {
-        if(isTfWebTool(toolName) && ctx.getMutationMode?.()==="read-only")
+        if((isTfWebTool(toolName) || isTfBrowserTool(toolName)) && ctx.getMutationMode?.()==="read-only")
           return {error:"Network research is not available to a read-only delegated task.",
             code:"tf_web_read_only_run_denied",effectState:"NoEffect",
             retry:"no_auto_retry"};
@@ -860,7 +914,7 @@ export function applyAgentPermissionPolicy<
         if(lookupRegistrySecurity &&
           ((toolName==="bounded_command" &&
             (input as {action?:unknown}|null)?.action==="write_marker") ||
-           tfOperationEffectful(toolName) || isTfWebTool(toolName))){
+           tfOperationEffectful(toolName) || isTfWebTool(toolName) || isTfBrowserTool(toolName))){
           const toolCallId=options && typeof options==="object" &&
             "toolCallId" in options && typeof options.toolCallId==="string"
             ? options.toolCallId : "";

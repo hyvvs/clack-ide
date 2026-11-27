@@ -56,6 +56,7 @@ import {
 import { native } from "@/modules/ai/lib/native";
 import {
   loadMessages,
+  loadExactStoredMessages,
   workspaceEnvironmentFromId,
   awaitSessionWrites,
 } from "../lib/sessions";
@@ -684,7 +685,11 @@ async function resumeAgentAfterProviderFailure(
     };
     const checkpoint = await wait(captureAgentRequestCheckpoint(session, chat.messages, evidence));
     check("preparing");
-    const stored = await wait(loadMessages(sessionId));
+    // loadMessages() intentionally rewrites still-streaming answer metadata
+    // into an interrupted view for APPLICATION RESTART. During live same-run
+    // recovery that projection is *not* the saved transcript: compare the
+    // exact native source to the exact captured Chat/receipt digest instead.
+    const stored = await wait(loadExactStoredMessages(sessionId));
     if (!stored || await wait(contextDigest(stored)) !== checkpoint.transcriptDigest)
       throw new Error("Persisted mission transcript or immutable tool receipts changed.");
     const updated = useChatStore.getState().sessions.map(item => item.id === sessionId && item.run?.agentRequestRecovery?.phase === "preparing"
@@ -759,6 +764,21 @@ async function resumeAgentAfterProviderFailure(
         useChatStore.getState().pendingApprovalsBySession[sessionId]?.length ||
         chat.status !== "error")
       throw new Error("Recovery owner or transcript became stale before dispatch.");
+    // A second native owner can persist messages while the dispatched phase
+    // write or workspace checks are settling, without modifying this Chat's
+    // in-memory transcript. Recheck the original session-store value at the
+    // last dispatch boundary too. This remains point-in-time, not a disk CAS.
+    const finalStored = await wait(loadExactStoredMessages(sessionId));
+    if (!finalStored || await wait(contextDigest(finalStored)) !== checkpoint.transcriptDigest)
+      throw new Error("Persisted Agent transcript changed before recovery dispatch.");
+    if (current()?.run?.state !== "running" ||
+        current()?.run?.agentRequestRecovery?.phase !== "dispatched" ||
+        current()?.run?.stop ||
+        !sameAgentRequestOwner(checkpoint, current()) ||
+        useChatStore.getState().pendingApprovalsBySession[sessionId]?.length ||
+        chat.status !== "error" ||
+        await wait(contextDigest(chat.messages)) !== checkpoint.transcriptDigest)
+      throw new Error("Recovery owner changed during final transcript verification.");
     chat.clearError();
     clearTimeout(deadline);
     // A new provider segment, *not* an SDK regenerate() of old tool calls.

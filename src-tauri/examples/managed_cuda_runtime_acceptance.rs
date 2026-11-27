@@ -83,6 +83,7 @@ fn native_case(app:tauri::AppHandle,root:&Path)->Result<Value,String> {
     let pid=accepted.process_id.ok_or("CUDA start did not return a real native PID")?;
     let epoch=accepted.epoch.clone();
     let deadline=Instant::now()+Duration::from_secs(115);
+    #[cfg(feature="managed-cuda-native-acceptance")]
     let mut last_log_capture=Instant::now();
     while Instant::now()<deadline {
         std::thread::sleep(Duration::from_millis(750));

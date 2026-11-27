@@ -88,8 +88,8 @@ function compactCall(f: ReturnType<typeof compactionFixture>) {
     return {
       text: JSON.stringify({
         claims: request.sources.map(
-          (s: { id: string; passages: string[] }) => ({
-            source: s.id,
+          (s: { sourceIndex: number; passages: string[] }) => ({
+            sourceIndex: s.sourceIndex,
             section: s.passages[0].startsWith("Completed")
               ? "completed-work"
               : "decisions",

@@ -1,5 +1,6 @@
 [package]
 name = "clack"
+default-run = "clack"
 version = "0.8.0"
 description = "Clack - an AI-native IDE and agent workspace"
 authors = ["crynta"]
@@ -29,6 +30,33 @@ lm11-authenticated-webview-acceptance = []
 ## Isolated real NVIDIA CUDA native acceptance log introspection; NEVER enabled
 ## in production builds or exposed through Tauri invoke permissions.
 managed-cuda-native-acceptance = []
+# Real Windows AppContainer browser host dependencies. The production host may
+# be compiled only when an independently authenticated launcher owns its Job,
+# broker channel and effective UDF. No interactive model tools are enabled by
+# this feature alone.
+tf-browser-native-runtime = ["dep:webview2-com", "dep:windows", "dep:base64"]
+# Non-default, owned-network fixture only; never allow this broader fixture
+# policy to become production browser network authority.
+tf-browser-isolation-acceptance = ["tf-browser-native-runtime"]
+
+[[bin]]
+name = "clack-browser-host"
+path = "src/bin/clack-browser-host.rs"
+required-features = ["tf-browser-native-runtime"]
+
+# This Windows-only, operator-invoked LM11 acceptance example has a crate-wide
+# cfg(windows); without an opt-in target gate Cargo --all-targets tries to
+# build an empty Linux/macOS crate and emits E0601 (missing main). Keep it out
+# of normal CI/production and preserve explicit feature-gated acceptance.
+[[example]]
+name = "lm11_b03_native_restart_acceptance"
+path = "examples/lm11_b03_native_restart_acceptance.rs"
+required-features = ["lm11-b03-acceptance-harness"]
+
+[[example]]
+name = "lm11_authenticated_webview_acceptance"
+path = "examples/lm11_authenticated_webview_acceptance.rs"
+required-features = ["lm11-authenticated-webview-acceptance"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -87,6 +115,9 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSUserDefaults"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+base64 = { version = "=0.22.1", optional = true }
+webview2-com = { version = "=0.38.2", optional = true }
+windows = { version = "=0.61.3", optional = true, features = ["Win32_System_Com", "Win32_UI_Shell"] }
 keyring = { version = "3.6", default-features = false, features = [
 	"windows-native",
 ] }
@@ -102,8 +133,11 @@ windows-sys = { version = "=0.61.2", features = [
 	"Win32_System_LibraryLoader",
 	"Win32_System_Registry",
 	"Win32_System_JobObjects",
+	"Win32_System_IO",
 	"Win32_System_Threading",
 	"Win32_System_Diagnostics_ToolHelp",
+	"Win32_UI_Controls",
+	"Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

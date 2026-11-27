@@ -1,0 +1,8710 @@
+//! Windows TF4 browser session owner. No model or Tauri IPC entry point.
+//!
+//! A production host is an untrusted, zero-network-capability AppContainer
+//! child. The parent is the *only* network authority and forwards bounded GET
+//! requests through the existing TF3 prepare/execute/receipt implementation.
+//! Browser readiness requires retained kernel process identity, matching SID,
+//! job membership and the WebView2 COM effective UDF *before navigation*.
+//! The acceptance-only host/fixture mode is never launched by this module.
+// The portable wire contract remains available to unit tests and shared TF3
+// types even when the native session owner is not packaged on this target.
+#![cfg_attr(
+    not(all(windows, feature = "tf-browser-native-runtime")),
+    allow(dead_code)
+)]
+
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+use super::tf_browser_contract::BrowserPageContract;
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+use super::tf_browser_contract::PageSnapshot;
+use super::tf_browser_contract::{ObservedElement, SemanticRole, SemanticState};
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+use super::tf_web::TfWebOperation;
+use super::tf_web::TfWebReceipt;
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+use super::tf_web::{self, TfWebRequest, TfWebState};
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+use crate::modules::workspace::WorkspaceRegistry;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+const FRAME_MAX: usize = 128 * 1024;
+const RESOURCE_MAX: usize = 32 * 1024;
+const REQUEST_MAX: usize = 20;
+const SESSION_NONCE_BYTES: usize = 24;
+const RESOURCE_SCOPE_MAX: usize = 8;
+const RESOURCE_SCOPE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Exactly pre-authorized passive request. The renderer or a downloaded
+/// document cannot create one of these: only the TF4-owned launcher passes
+/// an explicit manifest after the original navigation approval. A MIME,
+/// extension, GET method or same-origin check cannot grant it.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserPassiveClass {
+    Stylesheet,
+    Image,
+    Font,
+}
+impl BrowserPassiveClass {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Stylesheet => "stylesheet",
+            Self::Image => "image",
+            Self::Font => "font",
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserResourceCapability {
+    pub url: String,
+    pub class: BrowserPassiveClass,
+    pub max_bytes: usize,
+}
+
+/// One WebView2 NewWindowRequested that was *already vetoed*, observed only
+/// through the sealed original host. Its identity is not a grant; the central
+/// TF4 owner must separately bind and consume visible user approval.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NativePopupIntent {
+    pub id: String,
+    pub destination: String,
+    pub page_generation: u64,
+    pub source_sha256: String,
+    /// Parent-side one-use central-consent deadline, independent of pending
+    /// token expiry. The host separately enforced its own original 30s TTL.
+    pub expires_at: Instant,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentPopupCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    page_generation: u64,
+    expected_url: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildPopupCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    page_generation: u64,
+    state: String,
+    intent_id: Option<String>,
+    destination: Option<String>,
+    source_sha256: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_popup_lifetime")]
+    remaining_lifetime_ms: Option<u64>,
+}
+
+// Missing is permitted only for DENIED. Explicit null is not a lifetime.
+fn deserialize_popup_lifetime<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(deserializer).map(Some)
+}
+
+fn popup_capture_result(
+    bytes: &[u8],
+    expected: &ParentPopupCapture<'_>,
+    original: &str,
+    capture_started: Instant,
+    received_at: Instant,
+) -> Result<Option<NativePopupIntent>, &'static str> {
+    if bytes.is_empty() || bytes.len() > 4096 {
+        return Err("popup-capture-response-bounds");
+    }
+    let reply: ChildPopupCapture =
+        serde_json::from_slice(bytes).map_err(|_| "popup-capture-response-malformed")?;
+    if reply.version != 2 || reply.kind != "popup-capture"
+        || reply.session != expected.session
+        || reply.check_sequence != expected.check_sequence
+        || reply.page_generation != expected.page_generation
+    {
+        return Err("popup-capture-original-owner-or-epoch-changed");
+    }
+    if reply.state == "DENIED"
+        && reply.intent_id.is_none() && reply.destination.is_none()
+        && reply.source_sha256.is_none() && reply.remaining_lifetime_ms.is_none()
+    {
+        return Ok(None);
+    }
+    let Some((id, destination, source_sha256)) = reply.intent_id
+        .zip(reply.destination)
+        .zip(reply.source_sha256)
+        .map(|((id, destination), source_sha256)| (id, destination, source_sha256))
+    else { return Err("popup-capture-original-identity-missing"); };
+    if reply.state != "CAPTURED"
+        || id.len() != 64
+        || !id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || destination != expected.expected_url
+        || source_sha256 != format!("{:x}", Sha256::digest(original.as_bytes()))
+    {
+        return Err("popup-capture-intent-rebound-or-forged");
+    }
+    let remaining = reply.remaining_lifetime_ms
+        .filter(|ms| (1..=30_000).contains(ms))
+        .ok_or("popup-capture-lifetime-invalid")?;
+    // The host measured the original intent's remaining lifetime while
+    // answering this capture. Anchor it at our earlier request start to
+    // conservatively subtract the entire claim/write/queue/read round trip.
+    // Never renew the original host's 30-second authority on receipt.
+    let expires_at = capture_started.checked_add(Duration::from_millis(remaining))
+        .ok_or("popup-capture-lifetime-invalid")?;
+    if received_at < capture_started || expires_at <= received_at {
+        return Err("popup-capture-lifetime-expired");
+    }
+    Ok(Some(NativePopupIntent {
+        id, destination, page_generation: reply.page_generation, source_sha256,
+        expires_at,
+    }))
+}
+
+pub(crate) fn validate_resource_manifest(
+    original: &str,
+    entries: &[BrowserResourceCapability],
+) -> Result<(), &'static str> {
+    if entries.len() > RESOURCE_SCOPE_MAX {
+        return Err("browser-resource-manifest-capacity");
+    }
+    let source = reqwest::Url::parse(original).map_err(|_| "browser-resource-source-invalid")?;
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        if entry.url.len() > 2048 {
+            return Err("browser-resource-manifest-url-bounds");
+        }
+        let url = reqwest::Url::parse(&entry.url).map_err(|_| "browser-resource-url-invalid")?;
+        if url.as_str() != entry.url || url.origin() != source.origin()
+            || url.scheme() != "https" || url.query().is_some() || url.fragment().is_some()
+            || url.username() != "" || url.password().is_some() || entry.url == original
+            || entry.max_bytes == 0 || entry.max_bytes > RESOURCE_MAX
+            || !seen.insert(entry.url.as_str())
+        {
+            return Err("browser-resource-manifest-scope-denied");
+        }
+    }
+    Ok(())
+}
+
+/// A resource is admitted only by the exact consumed, trusted start scope.
+/// A successor navigation and all active page-generated GETs require a new
+/// authority that is not exposed by this intercepted protocol.
+fn resource_scope_index(
+    req: &ChildGet,
+    initial: &str,
+    claims: &[BrowserResourceCapability],
+    consumed: &std::collections::HashSet<usize>,
+    previous_request_id: u64,
+    original_document_delivered: bool,
+    elapsed: std::time::Duration,
+) -> Result<Option<usize>, &'static str> {
+    if req.resource_class == "document"
+        && req.url == initial && previous_request_id == 0
+        && req.request_id == 1 && req.page_generation == 1
+        && elapsed < RESOURCE_SCOPE_LIFETIME
+    {
+        return Ok(None);
+    }
+    if !original_document_delivered || previous_request_id == 0 || req.page_generation != 1
+        || elapsed >= RESOURCE_SCOPE_LIFETIME
+    {
+        return Err("browser-resource-lifecycle-denied");
+    }
+    let Some((index, _)) = claims.iter().enumerate().find(|(index, claim)| {
+        !consumed.contains(index)
+            && claim.url == req.url
+            && claim.class.wire() == req.resource_class
+    }) else {
+        return Err("browser-unmanifested-resource-denied");
+    };
+    Ok(Some(index))
+}
+
+fn size_allowed_for_class(
+    class: &str,
+    mime: Option<&str>,
+    size: usize,
+    budget: usize,
+) -> bool {
+    if size == 0 || size > budget || size > RESOURCE_MAX {
+        return false;
+    }
+    matches!(
+        (class, mime),
+        ("document", Some("text/html" | "application/xhtml+xml"))
+            | ("stylesheet", Some("text/css"))
+            | ("image", Some("image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"))
+            | ("font", Some("font/woff" | "font/woff2" | "font/ttf" | "font/otf" | "application/font-woff"))
+    )
+}
+
+fn resource_timeout_ms(elapsed: std::time::Duration) -> Option<u64> {
+    let remaining = RESOURCE_SCOPE_LIFETIME.checked_sub(elapsed)?;
+    let millis = remaining.as_millis().min(5_000) as u64;
+    (millis > 0).then_some(millis)
+}
+
+/// Must be built by trusted TF4 native prepare/approve/execute ownership.
+/// Actor, session and workspace are *not* authenticated by arbitrary IPC text.
+pub(crate) struct BrowserRuntimeStart {
+    pub actor: String,
+    pub session_id: String,
+    pub workspace_root: PathBuf,
+    pub initial_url: String,
+    /// Exact capability list from TF4-owned consent, never discovered from
+    /// untrusted HTML/CSS or derived from a URL extension.
+    pub resource_manifest: Vec<BrowserResourceCapability>,
+    /// Existing trusted application-owned directory; one new child per flight.
+    pub private_parent: PathBuf,
+    /// Installed production-capable host, never the acceptance fixture runner.
+    pub host_executable: PathBuf,
+    /// Digest pinned by the installed application, independent of the child.
+    pub host_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrokerResourceReceipt {
+    pub request_id: u64,
+    pub page_generation: u64,
+    /// True only after the native UI-apartment COM deferral was completed.
+    pub native_com_completed: bool,
+    pub terminal: &'static str,
+    pub reason: String,
+    pub bytes: usize,
+    pub tf3: Option<TfWebReceipt>,
+    /// An authenticated native navigation/dispatch edge, NOT a URL match or
+    /// broker sequence. The current WebResourceRequested contract has no
+    /// WebView2 causal proof, so the production parent MUST leave this None.
+    /// Consequently unrelated requests can never confirm a retained click.
+    pub causal_native_action_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildReady {
+    version: u8,
+    session: String,
+    request_id: u64,
+    kind: String,
+    effective_udf: String,
+    host_pid: u32,
+    browser_pid: u32,
+    renderer_pid: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildGet {
+    version: u8,
+    session: String,
+    request_id: u64,
+    method: String,
+    url: String,
+    /// Native WebView2 ResourceContext, not a URL-derived guess.
+    resource_class: String,
+    /// Production requests must carry the actual native page epoch.
+    /// The acceptance-only v1 fixture has its own unchanged wire contract.
+    page_generation: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildComAck {
+    version: u8,
+    session: String,
+    request_id: u64,
+    kind: String,
+    status: u16,
+    page_generation: u64,
+}
+
+/// The child broker worker, not the parent, decides when both sealed pipes
+/// are free of a v1 GET/COM completion. This offer is a scheduling lease and
+/// NEVER evidence of human consent or authority to perform an action.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildControlTurnOffer {
+    version: u8,
+    kind: String,
+    session: String,
+    turn_id: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentControlTurnChoice<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    turn_id: u64,
+}
+
+fn validate_control_turn_offer(
+    bytes: &[u8],
+    session: &str,
+    previous_id: u64,
+) -> Result<u64, &'static str> {
+    let offer: ChildControlTurnOffer =
+        serde_json::from_slice(bytes).map_err(|_| "browser-control-turn-offer-invalid")?;
+    if offer.version != 2
+        || offer.kind != "control-turn-offer"
+        || offer.session != session
+        || offer.turn_id == 0
+        || Some(offer.turn_id) != previous_id.checked_add(1)
+    {
+        return Err("browser-control-turn-offer-stale");
+    }
+    Ok(offer.turn_id)
+}
+
+/// Exact scope presented to an EXISTING central native approval owner. Only
+/// that owner may atomically consume a previously approved, expiring one-use
+/// grant and return its real 48-hex approval ID. This type neither creates a
+/// grant nor provides a model/Tauri IPC endpoint. A host control-turn offer
+/// is only a scheduling lease, never a substitute for this separate consent.
+pub(crate) struct NativeExactClickApprovalScope<'a> {
+    pub actor: &'a str,
+    pub session_id: &'a str,
+    pub workspace_root: &'a Path,
+    pub target: &'a super::tf_browser_contract::ActionTarget,
+    pub effect: super::tf_browser_contract::BrowserEffect,
+    pub source_id: String,
+    pub observation_id: u64,
+    pub index: u32,
+    pub ordinal: u32,
+    pub check_sequence: u64,
+    /// The same closed operation and parameter value that the central owner
+    /// displayed/approved. Its native ordinal is independently derived below.
+    pub action: NativeRetainedAction,
+    pub selected_native_option: Option<(u32, u32)>,
+    pub selected_native_form: Option<(u32, u32)>,
+}
+
+/// Closed, non-model native action vocabulary. The only string carried by a
+/// TYPE gesture is prevalidated printable text; SELECT carries a retained
+/// opaque option reference, never a selector, label or untrusted option value.
+/// SCROLL's only permitted amounts are the native fixed +/-120-pixel steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NativeRetainedAction {
+    Click,
+    PopupClick,
+    Type(String),
+    Clear,
+    Select(String),
+    Check,
+    Uncheck,
+    Scroll(i32),
+    Submit(String),
+}
+
+impl NativeRetainedAction {
+    pub(crate) fn kind(&self) -> super::tf_browser_contract::BrowserActionKind {
+        use super::tf_browser_contract::BrowserActionKind as K;
+        match self {
+            Self::Click | Self::PopupClick => K::Click,
+            Self::Type(_) => K::Type,
+            Self::Clear => K::Clear,
+            Self::Select(_) => K::Select,
+            Self::Check => K::Check,
+            Self::Uncheck => K::Uncheck,
+            Self::Scroll(_) => K::Scroll,
+            Self::Submit(_) => K::Submit,
+        }
+    }
+
+    fn wire_action(&self) -> &'static str {
+        match self {
+            Self::Click => "click",
+            Self::PopupClick => "popup-click",
+            Self::Type(_) => "type",
+            Self::Clear => "clear",
+            Self::Select(_) => "select",
+            Self::Check => "check",
+            Self::Uncheck => "uncheck",
+            Self::Scroll(_) => "scroll",
+            Self::Submit(_) => "submit",
+        }
+    }
+}
+
+/// Authenticated owner-issued, pre-consent *eligibility* for one exact
+/// central token. Not user consent; the central token must still be approved
+/// and consumed, and host COM must recheck the same original nodes.
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+#[derive(Clone)]
+pub(crate) struct NativeActionReservation {
+    token: String,
+    target: super::tf_browser_contract::ActionTarget,
+    action: NativeRetainedAction,
+    page: super::tf_browser_contract::PreconsentActionReservation,
+    pub(super) expires_at: Instant,
+}
+
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+impl NativeActionReservation {
+    pub(super) fn matches(
+        &self,
+        token: &str,
+        target: &super::tf_browser_contract::ActionTarget,
+        action: &NativeRetainedAction,
+    ) -> bool {
+        self.expires_at > Instant::now()
+            && self.token == token
+            && self.target == *target
+            && self.action == *action
+    }
+}
+
+pub(crate) fn valid_native_type_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && !value.chars().any(|c| {
+            c.is_control()
+                || matches!(c,
+                    '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+        })
+}
+
+fn native_action_payload_bytes(
+    action: &NativeRetainedAction,
+    selected: Option<(u32, u32)>,
+    form: Option<(u32, u32)>,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    if !matches!(action, NativeRetainedAction::Select(_)) && selected.is_some() {
+        return Err("native-action-unexpected-option-parameter");
+    }
+    if !matches!(action, NativeRetainedAction::Submit(_)) && form.is_some() {
+        return Err("native-action-unexpected-form-parameter");
+    }
+    let bytes = match action {
+        NativeRetainedAction::Click => return Ok(None), // unchanged v2 click frame
+        NativeRetainedAction::PopupClick => b"popup-click".to_vec(),
+        NativeRetainedAction::Type(text) if valid_native_type_text(text) => {
+            let mut bytes = b"type\0".to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            bytes
+        }
+        NativeRetainedAction::Clear => b"clear".to_vec(),
+        NativeRetainedAction::Select(_) => {
+            let (index, ordinal) = selected.ok_or("native-select-original-option-missing")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-select-original-option-bounds");
+            }
+            format!("select:{index}:{ordinal}").into_bytes()
+        }
+        NativeRetainedAction::Check => b"check".to_vec(),
+        NativeRetainedAction::Uncheck => b"uncheck".to_vec(),
+        NativeRetainedAction::Submit(_) => {
+            let (index, ordinal) = form.ok_or("native-submit-original-form-missing")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-submit-original-form-bounds");
+            }
+            format!("submit:{index}:{ordinal}").into_bytes()
+        }
+        NativeRetainedAction::Scroll(delta) if matches!(*delta, -120 | 120) => {
+            format!("scroll:{delta}").into_bytes()
+        }
+        _ => return Err("native-action-parameter-shape-denied"),
+    };
+    Ok(Some(bytes))
+}
+
+/// Scheduling signal only. The native owner may clone this handle into its
+/// bounded command mailbox, and request a future exclusive host control turn
+/// while `serve_one` is awaiting input. It creates NO consent or action grant.
+/// Multiple requests coalesce; pending commands still need their own exact
+/// central approval and an independently held native control turn.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct NativeControlTurnRequester(Arc<AtomicBool>);
+
+impl NativeControlTurnRequester {
+    #[allow(dead_code)] // owner mailbox integration is in tf_browser.rs
+    pub(crate) fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Unforgeable-to-callers consumed central consent witness. Fields and
+/// construction are intentionally private; this transport module cannot mint
+/// approval and NO current public/native/model path creates a witness. A later
+/// central TF4 approval owner must supply a genuinely consumed grant from its
+/// authoritative transaction before the click sender can be wired.
+/// Moving the witness into dispatch prevents reuse by the Rust type system.
+#[allow(dead_code)]
+pub(crate) struct NativeConsumedExactClickApproval {
+    approval_id: String,
+    actor: String,
+    session_id: String,
+    workspace_root: PathBuf,
+    target: super::tf_browser_contract::ActionTarget,
+    effect: super::tf_browser_contract::BrowserEffect,
+    source_id: String,
+    observation_id: u64,
+    index: u32,
+    ordinal: u32,
+    check_sequence: u64,
+    action: NativeRetainedAction,
+    selected_native_option: Option<(u32, u32)>,
+    selected_native_form: Option<(u32, u32)>,
+    expires_at: std::time::Instant,
+}
+
+impl NativeConsumedExactClickApproval {
+    pub(super) fn action_id(&self) -> &str {
+        &self.approval_id
+    }
+    pub(super) fn tf3_identity(&self) -> (&str, &str, &Path) {
+        (&self.actor, &self.session_id, &self.workspace_root)
+    }
+    /// This witness originates from the existing atomic TF4 consent owner.
+    /// Binding it to an exact form/submitter consumes the witness by value at
+    /// the TF3 entrypoint; a 48-hex string cannot stand in for consent.
+    pub(super) fn matches_bound_form_post(
+        &self,
+        actor: &str,
+        session_id: &str,
+        workspace_root: &str,
+        post: &super::tf_web::TfBrowserBoundPost,
+    ) -> bool {
+        self.expires_at > std::time::Instant::now()
+            && matches!(self.action, NativeRetainedAction::Submit(_))
+            && self.selected_native_option.is_none()
+            && self.actor == actor
+            && self.session_id == session_id
+            && self.workspace_root.as_path() == Path::new(workspace_root)
+            && self.target.page_generation == post.source_page_generation
+            && self.index == post.original_submitter_index
+            && self.selected_native_form.map(|(index, _)| index) == Some(post.original_form_index)
+            && self.approval_id == post.consumed_approval_id
+    }
+    /// Called ONLY by the trusted sibling native central-approval owner after
+    /// its existing one-use approval token was atomically consumed. This is a
+    /// value constructor, not a consent issuer: it cannot authenticate a UI
+    /// decision, and must never be called with a synthetic/random approval ID.
+    /// `pub(super)` deliberately excludes frontend, IPC and model callers.
+    pub(super) fn from_consumed_central_token(
+        approval_id: String,
+        scope: &NativeExactClickApprovalScope<'_>,
+        expires_at: std::time::Instant,
+    ) -> Result<Self, String> {
+        let now = std::time::Instant::now();
+        if approval_id.len() != 48
+            || !approval_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            || expires_at <= now
+            || expires_at.duration_since(now) > std::time::Duration::from_secs(60)
+        {
+            return Err("native-click-central-token-invalid-or-expired".into());
+        }
+        Ok(Self {
+            approval_id,
+            actor: scope.actor.to_owned(),
+            session_id: scope.session_id.to_owned(),
+            workspace_root: scope.workspace_root.to_path_buf(),
+            target: (*scope.target).clone(),
+            effect: scope.effect,
+            source_id: scope.source_id.clone(),
+            observation_id: scope.observation_id,
+            index: scope.index,
+            ordinal: scope.ordinal,
+            check_sequence: scope.check_sequence,
+            action: scope.action.clone(),
+            selected_native_option: scope.selected_native_option,
+            selected_native_form: scope.selected_native_form,
+            expires_at,
+        })
+    }
+
+    fn matches_exact(&self, scope: &NativeExactClickApprovalScope<'_>) -> bool {
+        self.expires_at > std::time::Instant::now()
+            && self.actor == scope.actor
+            && self.session_id == scope.session_id
+            && self.workspace_root.as_path() == scope.workspace_root
+            && &self.target == scope.target
+            && self.effect == scope.effect
+            && self.source_id == scope.source_id
+            && self.observation_id == scope.observation_id
+            && self.index == scope.index
+            && self.ordinal == scope.ordinal
+            && self.check_sequence == scope.check_sequence
+            && self.action == scope.action
+            && self.selected_native_option == scope.selected_native_option
+            && self.selected_native_form == scope.selected_native_form
+    }
+}
+
+/// This is deliberately only a non-sensitive DOM *structure* probe. It is not
+/// a semantic or accessible-name snapshot and cannot authorize an action.
+/// Arbitrary page strings are omitted because heuristic redaction cannot
+/// establish that visible text/ARIA labels/URLs are secret-free.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeElementStructure {
+    pub index: u32,
+    pub role: String,
+    pub depth: u8,
+    pub heading_level: Option<u8>,
+    /// Native DOM state, never a model action authority. These fields are
+    /// restricted to booleans and a closed non-secret control-type vocabulary;
+    /// the child never transports labels, URLs, text or input values.
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub checked: Option<bool>,
+    #[serde(default)]
+    pub selected: Option<bool>,
+    #[serde(default)]
+    pub expanded: Option<bool>,
+    #[serde(default)]
+    pub control_type: Option<String>,
+    #[serde(default)]
+    pub required: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeDomStructure {
+    pub version: u8,
+    pub kind: String,
+    pub session: String,
+    pub observation_id: u64,
+    pub page_generation: u64,
+    pub source_id: String,
+    pub terminal: String,
+    pub reason: String,
+    pub truncated: bool,
+    pub visited: u32,
+    /// Sensitive/unsupported fields withheld by the fixed native DOM walker.
+    /// This is a bounded count, never a serialized list of private data.
+    #[serde(default)]
+    pub omitted_fields: u32,
+    pub elements: Vec<NativeElementStructure>,
+}
+
+/// Transform only the exact closed native COM control observation into the
+/// existing TF4 page-reference contract. Names, page text, HTML, URLs, form
+/// targets, raw attributes and values are NEVER supplied by this bridge.
+/// This allocates opaque snapshot/element references but does not authorize
+/// execution, and is intentionally not registered as a model-facing tool.
+fn structural_observed_elements(
+    value: &NativeDomStructure,
+) -> Result<Vec<ObservedElement>, &'static str> {
+    if value.terminal != "completed" || value.reason != "ok" {
+        return Err("browser-structure-no-valid-observation");
+    }
+    value
+        .elements
+        .iter()
+        .map(|element| {
+            let role = match element.role.as_str() {
+                "link" => SemanticRole::Link,
+                "button" => SemanticRole::Button,
+                "checkbox" => SemanticRole::Checkbox,
+                "radio" => SemanticRole::Radio,
+                "select" => SemanticRole::Combobox,
+                "textbox" => SemanticRole::Textbox,
+                "input" => match element.control_type.as_deref() {
+                    Some("button" | "submit" | "reset") => SemanticRole::Button,
+                    Some(_) => SemanticRole::Textbox,
+                    None => return Err("browser-structure-untyped-control-denied"),
+                },
+                "option" => SemanticRole::Option,
+                "heading" => SemanticRole::Heading,
+                "main" => SemanticRole::Main,
+                "paragraph" => SemanticRole::Paragraph,
+                "img" | "image" => SemanticRole::Image,
+                "label" => SemanticRole::Label,
+                "form" => SemanticRole::Form,
+                "navigation" | "article" | "listitem" => SemanticRole::Other,
+                _ => return Err("browser-structure-unrecognized-role"),
+            };
+            Ok(ObservedElement {
+                serial: u64::from(element.index),
+                role,
+                depth: element.depth,
+                heading_level: element.heading_level,
+                accessible_name: String::new(),
+                state: SemanticState {
+                    enabled: Some(element.enabled),
+                    checked: element.checked,
+                    selected: element.selected,
+                    expanded: element.expanded,
+                    visible: Some(element.visible),
+                },
+                href: None,
+                form_target: None,
+                form_method: None,
+                field_type: element.control_type.clone(),
+                required: element.required,
+                // No page metadata can prove the absence of unobservable
+                // handlers or external effects. Remain maximally conservative.
+                has_script_handler: true,
+            })
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentObserve<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    #[cfg(debug_assertions)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_baseline_probe: Option<bool>,
+}
+
+/// Production sealed-pipe action frame shape. No public sender is connected
+/// yet: central TF4 approval must bind a PreparedAction before it can send.
+/// Only one closed action kind exists in this first native host slice.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentElementAction<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+    action: &'static str,
+    approval_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approved_destination: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_ordinal: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    form_ordinal: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delta_y: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_sha256: Option<&'a str>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeFormIntent {
+    pub target: crate::modules::net::tf_browser_contract::ActionTarget,
+    pub observation_id: u64,
+    pub original_form_index: u32,
+    pub original_submitter_index: u32,
+    pub destination: reqwest::Url,
+    pub body: Vec<u8>,
+    pub body_sha256: String,
+}
+
+/// Exact private original-link intention, captured by the attested native
+/// host from its retained DOM Node BEFORE central human consent. No selector,
+/// renderer-issued navigation authority or model-facing URL is involved.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeLinkIntent {
+    pub target: crate::modules::net::tf_browser_contract::ActionTarget,
+    pub observation_id: u64,
+    pub original_link_index: u32,
+    pub destination: reqwest::Url,
+    pub destination_sha256: String,
+}
+
+impl std::fmt::Debug for NativeLinkIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeLinkIntent")
+            .field("original_link_index", &self.original_link_index)
+            .field("destination_sha256", &self.destination_sha256)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(super) fn original_link_intent_unchanged(
+    approved: &NativeLinkIntent,
+    current: &NativeLinkIntent,
+) -> bool {
+    approved == current
+        && approved.destination_sha256
+            == format!("{:x}", Sha256::digest(approved.destination.as_str().as_bytes()))
+}
+
+/// A centrally consumed original-link action may admit precisely ONE
+/// successor DOCUMENT to its exact captured href. This is network authority,
+/// not proof that WebResourceRequested was caused by the original gesture.
+/// The latter remains UNKNOWN without independent native causality.
+struct NativeSuccessorScope {
+    destination: String,
+    source_generation: u64,
+    consumed_action_id: String,
+    request_floor: u64,
+    deadline: Instant,
+    claimed: bool,
+}
+
+fn successor_scope_matches(
+    scope: &NativeSuccessorScope,
+    request: &ChildGet,
+    original_delivered: bool,
+    resource_window_elapsed: std::time::Duration,
+) -> bool {
+    !scope.claimed
+        && original_delivered
+        && !scope.consumed_action_id.is_empty()
+        && request.resource_class == "document"
+        && request.url == scope.destination
+        && request.page_generation == scope.source_generation.saturating_add(1)
+        && request.request_id > scope.request_floor
+        && Instant::now() < scope.deadline
+        && resource_window_elapsed < RESOURCE_SCOPE_LIFETIME
+}
+
+/// Neither the original page budget nor a separately approved successor may
+/// gain lifetime while TF3 prepares, waits for a lock, or starts a socket.
+/// Always carry the minimum ORIGINAL absolute deadline into TF3 execution.
+fn resource_absolute_deadline(
+    original_started: Instant,
+    successor: Option<Instant>,
+) -> Instant {
+    let original_expires = original_started + RESOURCE_SCOPE_LIFETIME;
+    successor.map_or(original_expires, |expires| expires.min(original_expires))
+}
+
+/// One action's pre-consent authority is no longer than either the original
+/// central approval token or the original native resource window. Never
+/// derive a new deadline from the moment the human opens a consent dialog.
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+fn native_action_approval_deadline(central_expires: Instant, original_started: Instant) -> Instant {
+    central_expires.min(original_started + RESOURCE_SCOPE_LIFETIME)
+}
+
+// Original successful FORM controls can contain CSRF tokens and other secrets.
+// Even internal error/diagnostic formatting must never serialize their values,
+// URL, original node reference, or opaque per-session identities.
+impl std::fmt::Debug for NativeFormIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFormIntent")
+            .field("form_index", &self.original_form_index)
+            .field("submitter_index", &self.original_submitter_index)
+            .field("body_byte_count", &self.body.len())
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct NativeScreenshotCapture {
+    pub browser_session_id: String,
+    pub page_id: String,
+    pub page_generation: u64,
+    pub snapshot_id: String,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+    pub captured_at_ms: u64,
+    pub sha256: String,
+    /// Only the trusted native parent and existing TF2 evidence authority may
+    /// access these bytes; never place them in a Tauri/model/browser receipt.
+    pub png: Vec<u8>,
+}
+
+// PNG pixels can contain passwords, account details and any currently visible
+// sensitive information. Do not allow a Result/Debug log to dump raw bytes,
+// page URLs, evidence hashes or opaque session identity by accident.
+impl std::fmt::Debug for NativeScreenshotCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeScreenshotCapture")
+            .field("page_generation", &self.page_generation)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("png_byte_count", &self.png.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentScreenshotCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildScreenshotCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    state: String,
+    format: String,
+    width: u32,
+    height: u32,
+    captured_at_ms: u64,
+    sha256: Option<String>,
+    bytes_base64: Option<String>,
+}
+
+// Sealed child wire data carries base64 pixels until the parent has verified
+// their shape. Prevent accidental diagnostics from disclosing that data.
+impl std::fmt::Debug for ChildScreenshotCapture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildScreenshotCapture")
+            .field("state", &self.state)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("image_payload_present", &self.bytes_base64.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn native_png_crc(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = !0;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 == 1 { 0xedb8_8320 } else { 0 };
+        }
+    }
+    !crc
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn independently_verify_native_png(png: &[u8]) -> Result<(u32, u32), &'static str> {
+    if png.len() < 57
+        || png.len() > 64 * 1024
+        || !png.starts_with(b"\x89PNG\r\n\x1a\n")
+        || &png[12..16] != b"IHDR"
+        || u32::from_be_bytes(png[8..12].try_into().unwrap()) != 13
+    {
+        return Err("parent-native-screenshot-png-structure-invalid");
+    }
+    let w = u32::from_be_bytes(png[16..20].try_into().unwrap());
+    let h = u32::from_be_bytes(png[20..24].try_into().unwrap());
+    if w == 0
+        || w > 1024
+        || h == 0
+        || h > 768
+        || png[24] != 8
+        || !matches!(png[25], 2 | 6)
+        || png[26..29] != [0, 0, 0]
+    {
+        return Err("parent-native-screenshot-png-dimensions-invalid");
+    }
+    let mut at = 8usize;
+    let mut count = 0usize;
+    let mut has_idat = false;
+    let mut has_iend = false;
+    while at < png.len() {
+        if png.len() - at < 12 || count >= 128 {
+            return Err("parent-native-screenshot-png-chunks-invalid");
+        }
+        let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+        let end = at
+            .checked_add(len + 12)
+            .filter(|v| *v <= png.len())
+            .ok_or("parent-native-screenshot-png-chunk-bounds")?;
+        let tag = &png[at + 4..at + 8];
+        if (count == 0 && tag != b"IHDR")
+            || (tag != b"IHDR" && tag != b"IDAT" && tag != b"IEND")
+            || (tag == b"IHDR" && (count != 0 || len != 13))
+            || (tag == b"IDAT" && len == 0)
+            || (tag == b"IEND" && (len != 0 || !has_idat || end != png.len()))
+            || native_png_crc(&png[at + 4..end - 4])
+                != u32::from_be_bytes(png[end - 4..end].try_into().unwrap())
+        {
+            return Err("parent-native-screenshot-png-corrupt-or-unsupported");
+        }
+        has_idat |= tag == b"IDAT";
+        has_iend |= tag == b"IEND";
+        at = end;
+        count += 1;
+    }
+    if !has_idat || !has_iend {
+        return Err("parent-native-screenshot-png-incomplete");
+    }
+    Ok((w, h))
+}
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+fn validate_native_screenshot_capture(
+    frame: &[u8],
+    request: &ParentScreenshotCapture<'_>,
+    page: &PageSnapshot,
+) -> Result<NativeScreenshotCapture, &'static str> {
+    if frame.is_empty() || frame.len() > 96 * 1024 {
+        return Err("native-screenshot-reply-bounds");
+    }
+    let captured: ChildScreenshotCapture =
+        serde_json::from_slice(frame).map_err(|_| "native-screenshot-reply-invalid")?;
+    if captured.version != 2
+        || captured.kind != "screenshot-capture"
+        || captured.session != request.session
+        || captured.check_sequence != request.check_sequence
+        || captured.observation_id != request.observation_id
+        || captured.page_generation != request.page_generation
+        || captured.page_generation != page.page_generation
+        || captured.source_id != request.source_id
+        || captured.state != "CAPTURED"
+        || captured.format != "png"
+        || captured.width == 0
+        || captured.width > 1024
+        || captured.height == 0
+        || captured.height > 768
+        || captured.captured_at_ms == 0
+    {
+        return Err("native-screenshot-identity-or-viewport-denied");
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64;
+    if captured.captured_at_ms > now.saturating_add(2_000)
+        || now.saturating_sub(captured.captured_at_ms) > 10_000
+    {
+        return Err("native-screenshot-capture-clock-outside-bounded-turn");
+    }
+    let encoded = captured
+        .bytes_base64
+        .as_deref()
+        .ok_or("native-screenshot-bytes-absent")?;
+    if encoded.len() > 90 * 1024 {
+        return Err("native-screenshot-bytes-oversize");
+    }
+    let png = BASE64
+        .decode(encoded.as_bytes())
+        .map_err(|_| "native-screenshot-base64-denied")?;
+    if independently_verify_native_png(&png) != Ok((captured.width, captured.height)) {
+        return Err("native-screenshot-png-invalid");
+    }
+    let digest = format!("{:x}", Sha256::digest(&png));
+    if captured.sha256.as_deref() != Some(digest.as_str()) {
+        return Err("native-screenshot-sha-mismatch");
+    }
+    Ok(NativeScreenshotCapture {
+        browser_session_id: page.browser_session_id.clone(),
+        page_id: page.page_id.clone(),
+        page_generation: page.page_generation,
+        snapshot_id: page.snapshot_id.clone(),
+        url: page.url.clone(),
+        width: captured.width,
+        height: captured.height,
+        captured_at_ms: captured.captured_at_ms,
+        sha256: digest,
+        png,
+    })
+}
+
+/// Both observations must name the ORIGINAL native node pair, source epoch,
+/// verbatim destination and exact successful-control bytes. A self-consistent
+/// replacement digest is not consent; only equality to the preconsent
+/// captured values allows moving the original one-use TF4 grant to TF3.
+pub(super) fn original_form_intent_unchanged(
+    approved: &NativeFormIntent,
+    current: &NativeFormIntent,
+) -> bool {
+    approved == current
+        && approved.original_form_index != approved.original_submitter_index
+        && approved.body_sha256 == format!("{:x}", Sha256::digest(&approved.body))
+        && approved.destination.as_str() == current.destination.as_str()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentFormCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+    form_index: u32,
+    form_ordinal: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentLinkCapture<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildLinkCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    state: String,
+    destination: Option<String>,
+}
+
+fn validate_link_capture(
+    frame: &[u8],
+    request: &ParentLinkCapture<'_>,
+    target: &crate::modules::net::tf_browser_contract::ActionTarget,
+    source_url: &reqwest::Url,
+) -> Result<NativeLinkIntent, &'static str> {
+    if frame.is_empty() || frame.len() > 4096 {
+        return Err("native-link-capture-frame-bounds");
+    }
+    let captured: ChildLinkCapture =
+        serde_json::from_slice(frame).map_err(|_| "native-link-capture-frame-invalid")?;
+    if captured.version != 2
+        || captured.kind != "link-capture"
+        || captured.session != request.session
+        || captured.check_sequence != request.check_sequence
+        || captured.observation_id != request.observation_id
+        || captured.page_generation != request.page_generation
+        || captured.source_id != request.source_id
+        || captured.index != request.index
+        || captured.ordinal != request.ordinal
+        || captured.state != "CAPTURED"
+    {
+        return Err("native-link-capture-original-binding-denied");
+    }
+    let destination = captured.destination.as_deref()
+        .ok_or("native-link-capture-destination-missing")?;
+    let url = reqwest::Url::parse(destination).map_err(|_| "native-link-capture-url-invalid")?;
+    if destination.len() > 2048
+        || url.as_str() != destination
+        || url.scheme() != "https"
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.origin() != source_url.origin()
+        || url == *source_url
+    {
+        return Err("native-link-capture-destination-denied");
+    }
+    Ok(NativeLinkIntent {
+        target: target.clone(),
+        observation_id: request.observation_id,
+        original_link_index: request.index,
+        destination_sha256: format!("{:x}", Sha256::digest(destination.as_bytes())),
+        destination: url,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildFormCapture {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    form_index: u32,
+    form_ordinal: u32,
+    state: String,
+    method: Option<String>,
+    encoding: Option<String>,
+    destination: Option<String>,
+    body: Option<String>,
+}
+
+fn validate_form_capture(
+    frame: &[u8],
+    request: &ParentFormCapture<'_>,
+    target: &crate::modules::net::tf_browser_contract::ActionTarget,
+    original_origin: &reqwest::Url,
+) -> Result<NativeFormIntent, &'static str> {
+    if frame.is_empty() || frame.len() > 8192 {
+        return Err("native-form-capture-frame-bounds");
+    }
+    let captured: ChildFormCapture =
+        serde_json::from_slice(frame).map_err(|_| "native-form-capture-frame-invalid")?;
+    if captured.version != 2
+        || captured.kind != "form-capture"
+        || captured.session != request.session
+        || captured.check_sequence != request.check_sequence
+        || captured.observation_id != request.observation_id
+        || captured.page_generation != request.page_generation
+        || captured.source_id != request.source_id
+        || captured.index != request.index
+        || captured.ordinal != request.ordinal
+        || captured.form_index != request.form_index
+        || captured.form_ordinal != request.form_ordinal
+        || captured.state != "CAPTURED"
+        || captured.method.as_deref() != Some("POST")
+        || captured.encoding.as_deref() != Some("application/x-www-form-urlencoded")
+    {
+        return Err("native-form-capture-original-binding-denied");
+    }
+    let destination = captured
+        .destination
+        .as_deref()
+        .ok_or("native-form-capture-destination-missing")?;
+    let body = captured
+        .body
+        .as_deref()
+        .ok_or("native-form-capture-body-missing")?;
+    let url = reqwest::Url::parse(destination).map_err(|_| "native-form-capture-url-invalid")?;
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.origin() != original_origin.origin()
+        || url.as_str() != destination
+        || url == *original_origin
+        || body.is_empty()
+        || body.len() > 2048
+        || !body.is_ascii()
+        || body.bytes().any(|v| v.is_ascii_control())
+        || !body.bytes().all(|v| {
+            v.is_ascii_alphanumeric()
+                || matches!(v, b'%' | b'+' | b'&' | b'=' | b'-' | b'.' | b'_' | b'*')
+        })
+    {
+        return Err("native-form-capture-url-or-bytes-denied");
+    }
+    Ok(NativeFormIntent {
+        target: target.clone(),
+        observation_id: request.observation_id,
+        original_form_index: request.form_index,
+        original_submitter_index: request.index,
+        destination: url,
+        body_sha256: format!("{:x}", Sha256::digest(body.as_bytes())),
+        body: body.as_bytes().to_vec(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildElementAction {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    action: String,
+    approval_id: String,
+    state: String,
+    #[serde(default)]
+    stale_reason: Option<String>,
+    #[serde(default)]
+    target_url_sha256: Option<String>,
+    #[serde(default)]
+    payload_sha256: Option<String>,
+}
+
+#[cfg(test)]
+fn validate_element_action_reply(
+    frame: &[u8],
+    request: &ParentElementAction<'_>,
+) -> Result<crate::modules::net::tf_browser_contract::NativeEffectTerminal, &'static str> {
+    validate_element_action_reply_with_target(frame, request).map(|(terminal, _)| terminal)
+}
+
+#[cfg(test)]
+fn validate_element_action_reply_with_target(
+    frame: &[u8],
+    request: &ParentElementAction<'_>,
+) -> Result<
+    (
+        crate::modules::net::tf_browser_contract::NativeEffectTerminal,
+        Option<String>,
+    ),
+    &'static str,
+> {
+    validate_element_action_reply_diagnostic(frame, request)
+        .map(|(terminal, digest, _reason)| (terminal, digest))
+}
+
+// Only a closed constant can reach the native effect ledger. A page-provided
+// string, URL, selector, DOM text, private object ID, or unknown code is never
+// accepted as a diagnostic or a security decision.
+fn closed_stale_reason(raw: &str) -> Option<&'static str> {
+    match raw {
+        "binding-missing" => Some("binding-missing"),
+        "page-changed" => Some("page-changed"),
+        "snapshot-changed" => Some("snapshot-changed"),
+        "node-detached" => Some("node-detached"),
+        "node-changed" => Some("node-changed"),
+        "destination-changed" => Some("destination-changed"),
+        "mutation-observed" => Some("mutation-observed"),
+        "recheck-rejected" => Some("recheck-rejected"),
+        _ => None,
+    }
+}
+
+fn native_stale_reason_receipt_code(reason: &'static str) -> &'static str {
+    match reason {
+        "binding-missing" => "native-exact-stale-binding-missing",
+        "page-changed" => "native-exact-stale-page-changed",
+        "snapshot-changed" => "native-exact-stale-snapshot-changed",
+        "node-detached" => "native-exact-stale-node-detached",
+        "node-changed" => "native-exact-stale-node-changed",
+        "destination-changed" => "native-exact-stale-destination-changed",
+        "mutation-observed" => "native-exact-stale-mutation-observed",
+        _ => "native-exact-stale-recheck-rejected",
+    }
+}
+
+fn validate_element_action_reply_diagnostic(
+    frame: &[u8],
+    request: &ParentElementAction<'_>,
+) -> Result<
+    (
+        crate::modules::net::tf_browser_contract::NativeEffectTerminal,
+        Option<String>,
+        Option<&'static str>,
+    ),
+    &'static str,
+> {
+    use crate::modules::net::tf_browser_contract::NativeEffectTerminal as T;
+    if frame.is_empty() || frame.len() > 1024 {
+        return Err("browser-action-reply-bounds");
+    }
+    let reply: ChildElementAction =
+        serde_json::from_slice(frame).map_err(|_| "browser-action-reply-schema-denied")?;
+    if reply.version != 2
+        || reply.kind != "element-action"
+        || reply.session != request.session
+        || reply.check_sequence != request.check_sequence
+        || reply.observation_id != request.observation_id
+        || reply.page_generation != request.page_generation
+        || reply.source_id != request.source_id
+        || reply.index != request.index
+        || reply.ordinal != request.ordinal
+        || reply.action != request.action
+        || reply.approval_id != request.approval_id
+        || reply.payload_sha256.as_deref() != request.payload_sha256
+    {
+        return Err("browser-action-reply-identity-denied");
+    }
+    let terminal = match reply.state.as_str() {
+        "DISPATCHED" => T::Dispatched,
+        "STALE" => T::Stale,
+        "DENIED_TARGET" => T::Denied,
+        "UNKNOWN" => T::Unknown,
+        _ => return Err("browser-action-reply-state-denied"),
+    };
+    let stale_key_present = serde_json::from_slice::<serde_json::Value>(frame)
+        .ok()
+        .and_then(|value| value.as_object().map(|object| object.contains_key("staleReason")))
+        .unwrap_or(false);
+    let stale_reason = match (terminal, stale_key_present, reply.stale_reason.as_deref()) {
+        (T::Stale, true, Some(raw)) => Some(
+            closed_stale_reason(raw).ok_or("browser-action-reply-stale-reason-denied")?
+        ),
+        (T::Stale, _, _) => return Err("browser-action-reply-stale-reason-required"),
+        (_, false, None) => None,
+        _ => return Err("browser-action-reply-stale-reason-unexpected"),
+    };
+    if reply.target_url_sha256.as_ref().is_some_and(|digest| {
+        digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) || (terminal != T::Dispatched && reply.target_url_sha256.is_some())
+        || (!matches!(request.action, "click" | "popup-click")
+            && reply.target_url_sha256.is_some())
+        || (request.action == "popup-click"
+            && terminal == T::Dispatched && reply.target_url_sha256.is_none())
+    {
+        return Err("browser-action-reply-target-denied");
+    }
+    // The host's dispatch acknowledgement is NOT successor-document effect
+    // proof. Nevertheless, retaining the new one-use successor TF3 permit
+    // requires proof the fixed original-node COM script revalidated and
+    // activated exactly the href consented to, not an arbitrary 64-hex value.
+    if request.action == "click" && terminal == T::Dispatched {
+        let exact_destination = request.approved_destination
+            .ok_or("browser-action-reply-original-link-approval-missing")?;
+        let expected_digest = format!("{:x}", Sha256::digest(exact_destination.as_bytes()));
+        if reply.target_url_sha256.as_deref() != Some(expected_digest.as_str()) {
+            return Err("browser-action-reply-original-link-digest-mismatch");
+        }
+    }
+    Ok((terminal, reply.target_url_sha256, stale_reason))
+}
+
+/// A test-only, sealed read-only identity recheck. The ordinal and index are
+/// derived from the authenticated previous DOM snapshot and PreparedAction,
+/// never taken from a caller/model selector or supplied ordinal.
+#[cfg(test)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentElementRecheck<'a> {
+    version: u8,
+    kind: &'static str,
+    session: &'a str,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: &'a str,
+    index: u32,
+    ordinal: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_replace_heading: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_mutation_kind: Option<&'a str>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildElementRecheck {
+    version: u8,
+    kind: String,
+    session: String,
+    check_sequence: u64,
+    observation_id: u64,
+    page_generation: u64,
+    source_id: String,
+    index: u32,
+    ordinal: u32,
+    state: String,
+}
+
+#[cfg(test)]
+fn validate_element_recheck_reply(
+    frame: &[u8],
+    request: &ParentElementRecheck<'_>,
+) -> Result<bool, &'static str> {
+    if frame.is_empty() || frame.len() > 1024 {
+        return Err("browser-recheck-frame-bounds");
+    }
+    let reply: ChildElementRecheck =
+        serde_json::from_slice(frame).map_err(|_| "browser-recheck-schema-denied")?;
+    if reply.version != 2
+        || reply.kind != "element-recheck"
+        || reply.session != request.session
+        || reply.check_sequence != request.check_sequence
+        || reply.observation_id != request.observation_id
+        || reply.page_generation != request.page_generation
+        || reply.source_id != request.source_id
+        || reply.index != request.index
+        || reply.ordinal != request.ordinal
+    {
+        return Err("browser-recheck-native-identity-denied");
+    }
+    match reply.state.as_str() {
+        "ACCEPTED" if request.debug_replace_heading.is_none() => Ok(true),
+        "MUTATED" if request.debug_replace_heading == Some(true)
+            || request.debug_mutation_kind.is_some() => Ok(true),
+        "STALE" => Ok(false),
+        _ => Err("browser-recheck-state-denied"),
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParentReply<'a> {
+    version: u8,
+    session: &'a str,
+    request_id: u64,
+    status: u16,
+    content_type: &'a str,
+    body_base64: String,
+    error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    control_turns: Option<bool>,
+}
+
+fn random_nonce() -> Result<String, String> {
+    let mut bytes = [0u8; SESSION_NONCE_BYTES];
+    getrandom::fill(&mut bytes).map_err(|_| "browser-random-unavailable")?;
+    Ok(bytes.iter().map(|v| format!("{v:02x}")).collect())
+}
+
+fn validate_get(frame: &ChildGet, nonce: &str, last_id: u64) -> Result<(), &'static str> {
+    if frame.version != 1
+        || frame.session != nonce
+        || frame.request_id == 0
+        || Some(frame.request_id) != last_id.checked_add(1)
+        || frame.method != "GET"
+        || !matches!(frame.resource_class.as_str(), "document" | "stylesheet" | "image" | "font")
+        || frame.url.len() > 2048
+        || frame.page_generation == 0
+    {
+        return Err("browser-broker-request-invalid");
+    }
+    let url = reqwest::Url::parse(&frame.url).map_err(|_| "browser-url-invalid")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some_and(|p| p != 443)
+    {
+        return Err("browser-broker-https-only");
+    }
+    Ok(())
+}
+
+/// A successful pipe write or WebView2 SetResponse is *not* a completed
+/// browser response. This independently validates the UI-apartment native
+/// deferral completion attestation, before an effect is recorded terminal.
+fn validate_com_ack(
+    frame: &ChildComAck,
+    nonce: &str,
+    id: u64,
+    generation: u64,
+    status: u16,
+) -> Result<(), &'static str> {
+    if frame.version != 1
+        || frame.session != nonce
+        || frame.kind != "com-completed"
+        || frame.request_id != id
+        || frame.page_generation != generation
+        || frame.status != status
+    {
+        return Err("browser-com-deferral-completion-unverified");
+    }
+    Ok(())
+}
+
+fn validate_dom_structure(
+    value: &NativeDomStructure,
+    nonce: &str,
+    id: u64,
+    generation: u64,
+    expected_source: &str,
+) -> Result<(), &'static str> {
+    if value.version != 2
+        || value.kind != "dom-snapshot"
+        || value.session != nonce
+        || value.observation_id != id
+        || value.page_generation != generation
+        || value.source_id != expected_source
+        || !matches!(value.terminal.as_str(), "completed" | "denied")
+        || !matches!(
+            value.reason.as_str(),
+            "ok" | "source-mismatch"
+                | "page-stale"
+                | "bounds-exceeded"
+                | "observation-failed"
+                | "dom-unavailable"
+                | "version-denied"
+                | "unknown"
+        )
+        || value.visited > 512
+        || value.omitted_fields > value.visited
+        || (value.omitted_fields > 0 && !value.truncated)
+        || value.elements.len() > 64
+        || (value.terminal == "denied" && !value.elements.is_empty())
+        || (value.terminal == "denied" && value.reason == "ok")
+        || (value.terminal == "completed" && value.reason != "ok")
+    {
+        return Err("browser-structure-identity-or-bounds-invalid");
+    }
+    let mut previous = 0;
+    for item in &value.elements {
+        if item.index <= previous
+            || item.index > value.visited
+            || item.depth > 32
+            || item
+                .heading_level
+                .is_some_and(|level| !(1..=6).contains(&level))
+            || !matches!(
+                item.role.as_str(),
+                "main"
+                    | "navigation"
+                    | "article"
+                    | "heading"
+                    | "link"
+                    | "button"
+                    | "img"
+                    | "image"
+                    | "paragraph"
+                    | "listitem"
+                    | "label"
+                    | "input"
+                    | "select"
+                    | "textbox"
+                    | "checkbox"
+                    | "radio"
+                    | "option"
+                    | "form"
+            )
+        {
+            return Err("browser-structure-element-invalid");
+        }
+        if item.checked.is_some() && !matches!(item.role.as_str(), "checkbox" | "radio")
+            || item.selected.is_some() && item.role != "option"
+            || item.required.is_some()
+                && !matches!(
+                    item.role.as_str(),
+                    "input" | "checkbox" | "radio" | "select" | "textbox"
+                )
+            || item.control_type.as_deref().is_some_and(|control| {
+                !matches!(
+                    control,
+                    "text"
+                        | "email"
+                        | "tel"
+                        | "search"
+                        | "number"
+                        | "checkbox"
+                        | "radio"
+                        | "button"
+                        | "submit"
+                        | "reset"
+                        | "date"
+                        | "time"
+                        | "month"
+                        | "week"
+                        | "color"
+                        | "range"
+                        | "select"
+                        | "textarea"
+                )
+            })
+        {
+            return Err("browser-structure-control-state-invalid");
+        }
+        if let Some(control) = item.control_type.as_deref() {
+            let role_ok = match control {
+                "checkbox" => item.role == "checkbox",
+                "radio" => item.role == "radio",
+                "select" => item.role == "select",
+                "textarea" => item.role == "textbox",
+                "button" | "submit" | "reset" => {
+                    matches!(item.role.as_str(), "button" | "input")
+                }
+                _ => item.role == "input",
+            };
+            if !role_ok {
+                return Err("browser-structure-control-role-mismatch");
+            }
+        }
+        previous = item.index;
+    }
+    Ok(())
+}
+
+fn checked_mime(value: Option<&str>) -> Option<&'static str> {
+    match value?
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "text/html" => Some("text/html"),
+        "text/plain" => Some("text/plain"),
+        "text/css" => Some("text/css"),
+        "application/javascript" => Some("application/javascript"),
+        "application/x-javascript" => Some("application/x-javascript"),
+        "text/javascript" => Some("text/javascript"),
+        "application/json" => Some("application/json"),
+        "image/png" => Some("image/png"),
+        "image/jpeg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        "image/avif" => Some("image/avif"),
+        "image/svg+xml" => Some("image/svg+xml"),
+        "font/woff" => Some("font/woff"),
+        "font/woff2" => Some("font/woff2"),
+        "application/font-woff" => Some("application/font-woff"),
+        "application/font-woff2" => Some("application/font-woff2"),
+        "application/vnd.ms-fontobject" => Some("application/vnd.ms-fontobject"),
+        "font/ttf" => Some("font/ttf"),
+        "font/otf" => Some("font/otf"),
+        "application/octet-stream" => Some("application/octet-stream"),
+        _ => None,
+    }
+}
+
+/// A WebView2 intercepted GET is for its ORIGINAL URI, not the final URL
+/// reached by TF3 after following a redirect. A same-origin redirect may
+/// itself call an effectful API endpoint. Never replace the original URI's
+/// response with bytes fetched from a second URI, even when TF3 reports a
+/// successful final 2xx status, approved MIME and bounded bytes.
+///
+/// This additional native broker gate does not modify TF3 Public redirects,
+/// DNS/IP/SSRF checks, or the one-use TF3 token and receipt authority.
+fn original_uri_response_mime(receipt: &TfWebReceipt, original: &str, bytes_len: usize) -> Option<&'static str> {
+    (receipt.redirect_chain.is_empty()
+        && receipt.requested_url.as_deref() == Some(original)
+        && receipt.final_url.as_deref() == Some(original)
+        && receipt.terminal == "completed"
+        && receipt.reason_code == "ok"
+        && receipt.status_code.is_some_and(|s| (200..300).contains(&s))
+        && !receipt.truncated
+        && bytes_len <= RESOURCE_MAX)
+        .then(|| checked_mime(receipt.content_type.as_deref()))
+        .flatten()
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for triple in bytes.chunks(3) {
+        let a = triple[0];
+        let b = triple.get(1).copied().unwrap_or(0);
+        let c = triple.get(2).copied().unwrap_or(0);
+        result.push(ALPHABET[(a >> 2) as usize] as char);
+        result.push(ALPHABET[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+        result.push(if triple.len() > 1 {
+            ALPHABET[(((b & 15) << 2) | (c >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        result.push(if triple.len() > 2 {
+            ALPHABET[(c & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    result
+}
+
+/// A reusable, non-networking frame reader used by the Windows pipe transport.
+#[cfg(test)]
+fn read_frame_from<R: std::io::Read>(reader: &mut R) -> Result<Vec<u8>, String> {
+    let mut header = [0; 4];
+    reader
+        .read_exact(&mut header)
+        .map_err(|_| "browser-pipe-header-closed")?;
+    let len = u32::from_le_bytes(header) as usize;
+    if len == 0 || len > FRAME_MAX {
+        return Err("browser-frame-bounds-denied".into());
+    }
+    let mut bytes = vec![0; len];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|_| "browser-pipe-frame-closed")?;
+    Ok(bytes)
+}
+
+fn validate_host_binary(path: &Path, expected: &str) -> Result<PathBuf, String> {
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("browser-host-digest-required".into());
+    }
+    let path = std::fs::canonicalize(path).map_err(|_| "browser-host-not-installed")?;
+    if !path.is_file()
+        || path.file_name().and_then(|s| s.to_str()) != Some("clack-browser-host.exe")
+    {
+        return Err("browser-host-name-denied".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|_| "browser-host-unreadable")?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err("browser-host-digest-mismatch".into());
+    }
+    Ok(path)
+}
+
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+mod windows_owner {
+    use super::*;
+    use std::ffi::{c_void, OsStr};
+    use std::fs::{self, File};
+    use std::io::{Read, Write};
+    use std::mem::{size_of, size_of_val, zeroed};
+    use std::os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, FromRawHandle},
+    };
+    use std::ptr::{null, null_mut};
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::{
+        Foundation::*,
+        Security::{Authorization::*, Isolation::*, *},
+        Storage::FileSystem::{
+            GetFileAttributesW, FILE_ATTRIBUTE_REPARSE_POINT, INVALID_FILE_ATTRIBUTES,
+        },
+        System::{JobObjects::*, Pipes::*, Threading::*},
+    };
+
+    const PIPE_TIMEOUT: Duration = Duration::from_secs(5);
+    const JOB_STOP_TIMEOUT_MS: u32 = 3000;
+    const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
+
+    // The future that owns this fence may be dropped on native caller
+    // cancellation. A still-running pipe reader, network fetch or writer can
+    // then never deliver a stale successful reply to the old browser session.
+    struct FlightFence {
+        job: usize,
+        committed: bool,
+    }
+    impl FlightFence {
+        fn new(job: HANDLE) -> Self {
+            Self {
+                job: job as usize,
+                committed: false,
+            }
+        }
+    }
+    impl Drop for FlightFence {
+        fn drop(&mut self) {
+            if !self.committed {
+                unsafe {
+                    TerminateJobObject(self.job as HANDLE, 1);
+                }
+            }
+        }
+    }
+
+    fn win_err(step: &'static str) -> String {
+        format!("{step}: Win32 {}", unsafe { GetLastError() })
+    }
+    fn wide(v: impl AsRef<OsStr>) -> Vec<u16> {
+        v.as_ref().encode_wide().chain([0]).collect()
+    }
+    fn quote(input: &str) -> String {
+        let mut result = String::from("\"");
+        let mut slashes = 0;
+        for ch in input.chars() {
+            if ch == '\\' {
+                slashes += 1;
+                continue;
+            }
+            result.extend(std::iter::repeat_n(
+                '\\',
+                slashes * if ch == '"' { 2 } else { 1 },
+            ));
+            if ch == '"' {
+                result.push('\\');
+            }
+            result.push(ch);
+            slashes = 0;
+        }
+        result.extend(std::iter::repeat_n('\\', slashes * 2));
+        result.push('"');
+        result
+    }
+    struct OwnedHandle(HANDLE);
+    impl OwnedHandle {
+        fn checked(raw: HANDLE, step: &'static str) -> Result<Self, String> {
+            if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+                Err(win_err(step))
+            } else {
+                Ok(Self(raw))
+            }
+        }
+    }
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    struct OwnedSid(PSID);
+    impl Drop for OwnedSid {
+        fn drop(&mut self) {
+            unsafe {
+                FreeSid(self.0);
+            }
+        }
+    }
+    struct LocalMemory(*mut c_void);
+    impl Drop for LocalMemory {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    LocalFree(self.0);
+                }
+            }
+        }
+    }
+    struct Attributes {
+        words: Vec<usize>,
+        initialized: bool,
+    }
+    impl Attributes {
+        fn new() -> Result<Self, String> {
+            let mut bytes = 0;
+            unsafe {
+                InitializeProcThreadAttributeList(null_mut(), 3, 0, &mut bytes);
+            }
+            if bytes == 0 {
+                return Err(win_err("browser-attributes-size"));
+            }
+            let mut result = Self {
+                words: vec![0; bytes.div_ceil(size_of::<usize>())],
+                initialized: false,
+            };
+            if unsafe { InitializeProcThreadAttributeList(result.ptr(), 3, 0, &mut bytes) } == 0 {
+                return Err(win_err("browser-attributes-init"));
+            }
+            result.initialized = true;
+            Ok(result)
+        }
+        fn ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+            self.words.as_mut_ptr().cast()
+        }
+        fn add<T>(&mut self, key: u32, value: &T) -> Result<(), String> {
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    self.ptr(),
+                    0,
+                    key as usize,
+                    (value as *const T).cast(),
+                    size_of::<T>(),
+                    null_mut(),
+                    null(),
+                )
+            } == 0
+            {
+                Err(win_err("browser-attributes-assign"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl Drop for Attributes {
+        fn drop(&mut self) {
+            if self.initialized {
+                unsafe {
+                    DeleteProcThreadAttributeList(self.ptr());
+                }
+            }
+        }
+    }
+    struct AppProfile {
+        name: Vec<u16>,
+        sid: OwnedSid,
+        deleted: bool,
+    }
+    impl AppProfile {
+        fn create(name: &str) -> Result<Self, String> {
+            let wide_name = wide(name);
+            let mut sid = null_mut();
+            let hr = unsafe {
+                CreateAppContainerProfile(
+                    wide_name.as_ptr(),
+                    wide_name.as_ptr(),
+                    wide_name.as_ptr(),
+                    null(),
+                    0,
+                    &mut sid,
+                )
+            };
+            if hr < 0 || sid.is_null() {
+                return Err("browser-appcontainer-profile-denied".into());
+            }
+            Ok(Self {
+                name: wide_name,
+                sid: OwnedSid(sid),
+                deleted: false,
+            })
+        }
+        fn sid_text(&self) -> Result<String, String> {
+            let mut raw = null_mut();
+            if unsafe { ConvertSidToStringSidW(self.sid.0, &mut raw) } == 0 {
+                return Err(win_err("browser-sid-string"));
+            }
+            let owned = LocalMemory(raw.cast());
+            let mut end = 0;
+            unsafe {
+                while *raw.add(end) != 0 {
+                    end += 1;
+                }
+            }
+            let text = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(raw, end) });
+            drop(owned);
+            Ok(text)
+        }
+        fn delete(&mut self) -> Result<(), String> {
+            if self.deleted {
+                return Ok(());
+            }
+            let hr = unsafe { DeleteAppContainerProfile(self.name.as_ptr()) };
+            if hr < 0 {
+                return Err("browser-appcontainer-cleanup-failed".into());
+            }
+            self.deleted = true;
+            Ok(())
+        }
+    }
+
+    // Failure at any launch phase must not strand a live browser or erase a
+    // profile still in use. A failed proof leaves resources in place for
+    // diagnosis rather than guessing that a PID has exited.
+    struct LaunchRollback {
+        root: PathBuf,
+        profile: Option<AppProfile>,
+        job: Option<OwnedHandle>,
+        host: Option<OwnedHandle>,
+        disarmed: bool,
+    }
+    impl LaunchRollback {
+        fn new(root: PathBuf) -> Self {
+            Self {
+                root,
+                profile: None,
+                job: None,
+                host: None,
+                disarmed: false,
+            }
+        }
+    }
+    impl Drop for LaunchRollback {
+        fn drop(&mut self) {
+            if self.disarmed {
+                return;
+            }
+            if let Some(job) = &self.job {
+                if unsafe { TerminateJobObject(job.0, 1) } == 0 {
+                    return;
+                }
+                if let Some(host) = &self.host {
+                    if unsafe { WaitForSingleObject(host.0, JOB_STOP_TIMEOUT_MS) } != WAIT_OBJECT_0
+                    {
+                        return;
+                    }
+                }
+                let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+                if unsafe {
+                    QueryInformationJobObject(
+                        job.0,
+                        JobObjectBasicAccountingInformation,
+                        (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                        size_of_val(&accounting) as u32,
+                        null_mut(),
+                    )
+                } == 0
+                    || accounting.ActiveProcesses != 0
+                {
+                    return;
+                }
+            }
+            if ensure_plain_dir(&self.root).is_err() {
+                return;
+            }
+            if self.root.join("udf").exists() && ensure_plain_dir(&self.root.join("udf")).is_err() {
+                return;
+            }
+            if fs::remove_dir_all(&self.root).is_ok() {
+                if let Some(profile) = &mut self.profile {
+                    let _ = profile.delete();
+                }
+            }
+        }
+    }
+    fn grant_udf(path: &Path, sid: &str) -> Result<(), String> {
+        // Private owner + SYSTEM and only the session's AppContainer SID.
+        let descriptor = wide(format!(
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;OW)(A;OICI;GRGWGXSD;;;{sid})S:(ML;OICI;NW;;;LW)"
+        ));
+        let mut raw = null_mut();
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                descriptor.as_ptr(),
+                1,
+                &mut raw,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(win_err("browser-udf-descriptor"));
+        }
+        let owned = LocalMemory(raw);
+        if unsafe {
+            SetFileSecurityW(
+                wide(path).as_ptr(),
+                DACL_SECURITY_INFORMATION
+                    | PROTECTED_DACL_SECURITY_INFORMATION
+                    | LABEL_SECURITY_INFORMATION,
+                owned.0,
+            )
+        } == 0
+        {
+            return Err(win_err("browser-udf-acl"));
+        }
+        Ok(())
+    }
+    fn ensure_plain_dir(path: &Path) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(path).map_err(|_| "browser-udf-directory-missing")?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("browser-udf-path-unsafe".into());
+        }
+        let attrs = unsafe { GetFileAttributesW(wide(path).as_ptr()) };
+        if attrs == INVALID_FILE_ATTRIBUTES || attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("browser-udf-reparse-path-denied".into());
+        }
+        Ok(())
+    }
+    fn new_pipe(child_reads: bool) -> Result<(OwnedHandle, OwnedHandle), String> {
+        let mut read = null_mut();
+        let mut write = null_mut();
+        let attr = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: null_mut(),
+            bInheritHandle: 1,
+        };
+        if unsafe { CreatePipe(&mut read, &mut write, &attr, 4096) } == 0 {
+            return Err(win_err("browser-pipe-create"));
+        }
+        let read = OwnedHandle::checked(read, "browser-pipe-read")?;
+        let write = OwnedHandle::checked(write, "browser-pipe-write")?;
+        // Parent-end must never be inherited into child/Chromium descendants.
+        let parent = if child_reads { write.0 } else { read.0 };
+        if unsafe { SetHandleInformation(parent, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(win_err("browser-pipe-inheritance"));
+        }
+        Ok((read, write))
+    }
+    fn read_pipe_bounded(pipe: &mut File) -> Result<Vec<u8>, String> {
+        let deadline = Instant::now() + PIPE_TIMEOUT;
+        let mut header = [0u8; 4];
+        read_exact_deadline(pipe, &mut header, deadline)?;
+        let len = u32::from_le_bytes(header) as usize;
+        if len == 0 || len > FRAME_MAX {
+            return Err("browser-pipe-frame-bounds".into());
+        }
+        let mut body = vec![0; len];
+        read_exact_deadline(pipe, &mut body, deadline)?;
+        Ok(body)
+    }
+
+    // No clone/read worker and no FlightFence exists during an *empty* idle
+    // wait. The caller arms the fence BEFORE consuming the first byte of a
+    // begun frame. Cancellation of an idle wait is therefore harmless; a
+    // cancelled partial frame or pending TF3 transaction still kills the Job.
+    async fn wait_for_pipe_frame_start(pipe: &File, deadline: Instant) -> Result<bool, String> {
+        loop {
+            let mut available = 0u32;
+            if unsafe {
+                PeekNamedPipe(
+                    pipe.as_raw_handle().cast(),
+                    null_mut(),
+                    0,
+                    null_mut(),
+                    &mut available,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err("browser-broker-idle-pipe-broken".into());
+            }
+            if available != 0 {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    fn read_exact_deadline(
+        pipe: &mut File,
+        output: &mut [u8],
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut cursor = 0;
+        while cursor < output.len() {
+            if Instant::now() >= deadline {
+                return Err("browser-broker-reply-timeout".into());
+            }
+            let mut available = 0;
+            if unsafe {
+                PeekNamedPipe(
+                    pipe.as_raw_handle().cast(),
+                    null_mut(),
+                    0,
+                    null_mut(),
+                    &mut available,
+                    null_mut(),
+                )
+            } == 0
+            {
+                return Err("browser-broker-pipe-closed".into());
+            }
+            if available == 0 {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            let count = (available as usize).min(output.len() - cursor).min(4096);
+            let read = pipe
+                .read(&mut output[cursor..cursor + count])
+                .map_err(|_| "browser-broker-pipe-read-failed")?;
+            if read == 0 {
+                return Err("browser-broker-pipe-eof".into());
+            }
+            cursor += read;
+        }
+        Ok(())
+    }
+    fn token_attest(process: HANDLE, expected_sid: PSID, job: HANDLE) -> Result<(), String> {
+        let mut member = 0;
+        if unsafe { IsProcessInJob(process, job, &mut member) } == 0 || member == 0 {
+            return Err("browser-owned-job-mismatch".into());
+        }
+        if unsafe { WaitForSingleObject(process, 0) } != WAIT_TIMEOUT {
+            return Err("browser-process-not-live".into());
+        }
+        let mut raw = null_mut();
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) } == 0 {
+            return Err(win_err("browser-process-token"));
+        }
+        let token = OwnedHandle::checked(raw, "browser-token-handle")?;
+        let mut flag = 0u32;
+        let mut returned = 0;
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenIsAppContainer,
+                (&mut flag as *mut u32).cast(),
+                size_of::<u32>() as u32,
+                &mut returned,
+            )
+        } == 0
+            || flag != 1
+        {
+            return Err("browser-token-not-appcontainer".into());
+        }
+        let mut len = 0u32;
+        unsafe {
+            GetTokenInformation(token.0, TokenAppContainerSid, null_mut(), 0, &mut len);
+        }
+        if len < size_of::<TOKEN_APPCONTAINER_INFORMATION>() as u32 {
+            return Err("browser-appcontainer-sid-absent".into());
+        }
+        let mut buffer = vec![0u64; (len as usize).div_ceil(8)];
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenAppContainerSid,
+                buffer.as_mut_ptr().cast(),
+                len,
+                &mut len,
+            )
+        } == 0
+        {
+            return Err("browser-appcontainer-sid-unavailable".into());
+        }
+        let sid = unsafe {
+            (*(buffer.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>())).TokenAppContainer
+        };
+        if sid.is_null() || unsafe { EqualSid(sid, expected_sid) } == 0 {
+            return Err("browser-appcontainer-sid-mismatch".into());
+        }
+        let mut caps_len = 0;
+        unsafe {
+            GetTokenInformation(token.0, TokenCapabilities, null_mut(), 0, &mut caps_len);
+        }
+        if caps_len != 0 {
+            let mut caps = vec![0u64; (caps_len as usize).div_ceil(8)];
+            if unsafe {
+                GetTokenInformation(
+                    token.0,
+                    TokenCapabilities,
+                    caps.as_mut_ptr().cast(),
+                    caps_len,
+                    &mut caps_len,
+                )
+            } == 0
+                || unsafe { (*caps.as_ptr().cast::<TOKEN_GROUPS>()).GroupCount } != 0
+            {
+                return Err("browser-token-capability-denied".into());
+            }
+        }
+        Ok(())
+    }
+    fn verify_child(pid: u32, profile: &AppProfile, job: HANDLE) -> Result<OwnedHandle, String> {
+        if pid == 0 {
+            return Err("browser-child-pid-invalid".into());
+        }
+        let raw = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        let process = OwnedHandle::checked(raw, "browser-child-handle")?;
+        token_attest(process.0, profile.sid.0, job)?;
+        let mut image = vec![0u16; 32768];
+        let mut len = image.len() as u32;
+        if unsafe { QueryFullProcessImageNameW(process.0, 0, image.as_mut_ptr(), &mut len) } == 0 {
+            return Err("browser-child-image-unavailable".into());
+        }
+        let path = String::from_utf16_lossy(&image[..len as usize]);
+        if !Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("msedgewebview2.exe"))
+        {
+            return Err("browser-child-image-unexpected".into());
+        }
+        Ok(process)
+    }
+
+    pub(crate) struct BrowserRuntimeSession {
+        pub nonce: String,
+        pub workspace_root: PathBuf,
+        pub actor: String,
+        pub session_id: String,
+        pub initial_url: String,
+        /// Only exact TF4-owned, per-start manifest entries; untrusted page
+        /// content cannot increase this set during a session.
+        resource_manifest: Vec<BrowserResourceCapability>,
+        resource_manifest_consumed: std::collections::HashSet<usize>,
+        successor_scope: Option<NativeSuccessorScope>,
+        successor_scope_ever_armed: bool,
+        original_document_delivered: bool,
+        resource_window_started: Instant,
+        pub private_root: PathBuf,
+        pub effective_udf: PathBuf,
+        pub host_pid: u32,
+        host: OwnedHandle,
+        job: OwnedHandle,
+        profile: AppProfile,
+        browser: Option<OwnedHandle>,
+        renderer: Option<OwnedHandle>,
+        requests: File,
+        responses: File,
+        last_request_id: u64,
+        last_page_generation: u64,
+        last_observation_id: u64,
+        /// Monotonic authenticated native control sequence shared by future
+        /// production actions and test-only exact-node rechecks.
+        last_recheck_sequence: u64,
+        /// Native index order captured from the very same successful COM
+        /// structure observation that generated the held opaque handles.
+        /// Bookkeeping is production-owned; it does NOT confer approval.
+        last_recheck_observation: Option<(u64, u64, Vec<u32>)>,
+        // Negotiated in the *attested* readiness ACK, never from a model,
+        // mutable environment variable, or a later unauthenticated frame.
+        control_turns_enabled: bool,
+        last_control_turn_id: u64,
+        pending_control_turn: Option<u64>,
+        control_turn_claimed: bool,
+        control_turn_requested: Arc<AtomicBool>,
+        page_contract: BrowserPageContract,
+        ready: bool,
+        // Futures may be cancelled while a blocking pipe reader is still
+        // executing. An interrupted readiness/request can never be retried on
+        // this session: its frame and external-effect state is uncertain.
+        poisoned: bool,
+        job_drained: bool,
+        stopped: bool,
+    }
+
+    // OS process/job/pipe handles and the owned AppContainer SID are valid
+    // across Windows threads. Every operation needs &mut self; no WebView2
+    // COM interface or UI-apartment object is stored in this owner.
+    // A production registry may therefore hold it behind a native Mutex.
+    unsafe impl Send for BrowserRuntimeSession {}
+
+    impl BrowserRuntimeSession {
+        pub(crate) fn launch(
+            start: BrowserRuntimeStart,
+            registry: &WorkspaceRegistry,
+        ) -> Result<Self, String> {
+            if !start.workspace_root.is_dir() || !start.private_parent.is_dir() {
+                return Err("browser-owner-root-unavailable".into());
+            }
+            let workspace = fs::canonicalize(&start.workspace_root)
+                .map_err(|_| "browser-owner-workspace-unavailable")?;
+            if !registry.is_authorized(&workspace) {
+                return Err("browser-owner-workspace-denied".into());
+            }
+            if start.actor.is_empty()
+                || start.session_id.is_empty()
+                || start.actor.len() > 128
+                || start.session_id.len() > 128
+                || !start
+                    .actor
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c))
+                || !start
+                    .session_id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c))
+            {
+                return Err("browser-owner-actor-session-invalid".into());
+            }
+            let initial = reqwest::Url::parse(&start.initial_url)
+                .map_err(|_| "browser-initial-url-invalid")?;
+            if initial.scheme() != "https" || initial.host_str().is_none()
+                || !initial.username().is_empty() || initial.password().is_some()
+                || initial.port().is_some_and(|p| p != 443)
+                // A command-line URL is visible to local process inspection.
+                // Sensitive query strings must never reach the host argv.
+                || initial.query().is_some() || initial.fragment().is_some()
+            {
+                return Err("browser-initial-url-https-required".into());
+            }
+            validate_resource_manifest(initial.as_str(), &start.resource_manifest)
+                .map_err(str::to_owned)?;
+            // No environment-supplied WebView2 UDF, executable or browser args.
+            for override_name in [
+                "WEBVIEW2_USER_DATA_FOLDER",
+                "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE",
+            ] {
+                if std::env::var_os(override_name).is_some() {
+                    return Err("browser-webview2-environment-override-denied".into());
+                }
+            }
+            let host_exe = validate_host_binary(&start.host_executable, &start.host_sha256)?;
+            let nonce = random_nonce()?;
+            let private_parent = fs::canonicalize(&start.private_parent)
+                .map_err(|_| "browser-owner-private-parent-unavailable")?;
+            ensure_plain_dir(&private_parent)?;
+            let private_root = private_parent.join(format!("tf4-{nonce}"));
+            fs::create_dir(&private_root)
+                .map_err(|_| "browser-owner-private-session-create-denied")?;
+            ensure_plain_dir(&private_root)?;
+            let mut rollback = LaunchRollback::new(private_root.clone());
+            let udf = private_root.join("udf");
+            let profile_name = format!("ClackTf4{nonce}");
+            rollback.profile = Some(AppProfile::create(&profile_name)?);
+            let profile = rollback.profile.as_ref().expect("created profile");
+            let sid = profile.sid_text()?;
+            grant_udf(&private_root, &sid)?;
+            fs::create_dir(&udf).map_err(|_| "browser-udf-create-denied")?;
+            ensure_plain_dir(&udf)?;
+            grant_udf(&udf, &sid)?;
+
+            let (child_response_read, parent_response_write) = new_pipe(true)?;
+            let (parent_request_read, child_request_write) = new_pipe(false)?;
+            // Explicit inherited stdio points to the same sealed child channels.
+            rollback.job = Some(OwnedHandle::checked(
+                unsafe { CreateJobObjectW(null(), null()) },
+                "browser-job-create",
+            )?);
+            let job = rollback.job.as_ref().expect("created job");
+            let mut limit: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+            limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&limit as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of_val(&limit) as u32,
+                )
+            } == 0
+            {
+                return Err(win_err("browser-job-kill-on-close"));
+            }
+
+            let mut attrs = Attributes::new()?;
+            let jobs = [job.0];
+            attrs.add(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
+            let inherited = [child_response_read.0, child_request_write.0];
+            attrs.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
+            let security = SECURITY_CAPABILITIES {
+                AppContainerSid: profile.sid.0,
+                Capabilities: null_mut(),
+                CapabilityCount: 0,
+                Reserved: 0,
+            };
+            attrs.add(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security)?;
+            let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
+            startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+            startup.lpAttributeList = attrs.ptr();
+            let env_root =
+                std::env::var("SystemRoot").map_err(|_| "browser-system-root-missing")?;
+            let folder = private_root.to_string_lossy();
+            let env_block = wide(format!(
+                "CLACK_TF_BROWSER_BROKER_READ_HANDLE={}\0CLACK_TF_BROWSER_BROKER_WRITE_HANDLE={}\0LOCALAPPDATA={folder}\0SystemRoot={env_root}\0TEMP={folder}\0TMP={folder}\0",
+                child_response_read.0 as usize, child_request_write.0 as usize
+            ));
+            let exe_path = host_exe.to_string_lossy();
+            let mut argv = wide(format!(
+                "{} --production-broker {} --broker-session {nonce} --initial-url {}",
+                quote(&exe_path),
+                quote(&folder),
+                quote(&start.initial_url)
+            ));
+            let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                CreateProcessW(
+                    wide(&host_exe).as_ptr(),
+                    argv.as_mut_ptr(),
+                    null(),
+                    null(),
+                    1,
+                    EXTENDED_STARTUPINFO_PRESENT
+                        | CREATE_UNICODE_ENVIRONMENT
+                        | CREATE_SUSPENDED
+                        | CREATE_NO_WINDOW,
+                    env_block.as_ptr().cast(),
+                    wide(&private_root).as_ptr(),
+                    &startup.StartupInfo,
+                    &mut info,
+                )
+            } == 0
+            {
+                return Err(win_err("browser-restricted-host-spawn"));
+            }
+            rollback.host = Some(OwnedHandle::checked(info.hProcess, "browser-host-handle")?);
+            let host = rollback.host.as_ref().expect("created host");
+            let thread = OwnedHandle::checked(info.hThread, "browser-host-thread")?;
+            // Before first instruction, verify the original retained process
+            // object, the exact owned job and the zero-capability container.
+            if let Err(reason) = token_attest(host.0, profile.sid.0, job.0) {
+                unsafe {
+                    TerminateProcess(host.0, 1);
+                }
+                return Err(reason);
+            }
+            if unsafe { ResumeThread(thread.0) } == u32::MAX {
+                unsafe {
+                    TerminateProcess(host.0, 1);
+                }
+                return Err(win_err("browser-host-resume"));
+            }
+            drop(thread);
+            drop(child_response_read);
+            drop(child_request_write);
+            let requests = unsafe { File::from_raw_handle(parent_request_read.0.cast()) };
+            let responses = unsafe { File::from_raw_handle(parent_response_write.0.cast()) };
+            std::mem::forget(parent_request_read);
+            std::mem::forget(parent_response_write);
+            let host = rollback.host.take().expect("retained host");
+            let job = rollback.job.take().expect("retained job");
+            let profile = rollback.profile.take().expect("retained profile");
+            let page_contract = BrowserPageContract::new(nonce.clone(), initial.as_str())
+                .map_err(|_| "browser-initial-page-contract-invalid")?;
+            rollback.disarmed = true;
+            Ok(Self {
+                nonce,
+                workspace_root: workspace,
+                actor: start.actor,
+                session_id: start.session_id,
+                initial_url: initial.to_string(),
+                resource_manifest: start.resource_manifest,
+                resource_manifest_consumed: std::collections::HashSet::new(),
+                successor_scope: None,
+                successor_scope_ever_armed: false,
+                original_document_delivered: false,
+                resource_window_started: Instant::now(),
+                private_root,
+                effective_udf: udf,
+                host_pid: info.dwProcessId,
+                host,
+                job,
+                profile,
+                browser: None,
+                renderer: None,
+                requests,
+                responses,
+                last_request_id: 0,
+                last_page_generation: 0,
+                last_observation_id: 0,
+                last_recheck_sequence: 0,
+                last_recheck_observation: None,
+                control_turns_enabled: false,
+                last_control_turn_id: 0,
+                pending_control_turn: None,
+                control_turn_claimed: false,
+                control_turn_requested: Arc::new(AtomicBool::new(false)),
+                page_contract,
+                ready: false,
+                poisoned: false,
+                job_drained: false,
+                stopped: false,
+            })
+        }
+
+        #[cfg(test)]
+        pub(crate) async fn verify_ready(&mut self) -> Result<(), String> {
+            self.verify_ready_inner(false).await
+        }
+
+        /// Explicit trusted-owner opt-in for *serialized transport only*.
+        /// The ordinary production caller and existing physical fixtures use
+        /// `verify_ready()` and retain their current direct v2 behavior.
+        /// This neither authorizes an action nor enables model capabilities.
+        #[allow(dead_code)] // parked until the existing native owner opts in
+        pub(crate) async fn verify_ready_for_control_turns(&mut self) -> Result<(), String> {
+            self.verify_ready_inner(true).await
+        }
+
+        async fn verify_ready_inner(&mut self, control_turns: bool) -> Result<(), String> {
+            if self.ready || self.stopped || self.poisoned {
+                return Err("browser-readiness-replayed".into());
+            }
+            self.poisoned = true;
+            self.control_turns_enabled = control_turns;
+            let mut flight = FlightFence::new(self.job.0);
+            // Keep potentially stalled anonymous pipe reads off the Tauri
+            // runtime thread; timeout remains bounded even for a dead host.
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "browser-pipe-clone-denied")?;
+            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "browser-pipe-worker-failed")??;
+            let ready: ChildReady =
+                serde_json::from_slice(&bytes).map_err(|_| "browser-readiness-invalid-frame")?;
+            if ready.version != 1
+                || ready.kind != "ready"
+                || ready.session != self.nonce
+                || self.nonce.len() != SESSION_NONCE_BYTES * 2
+                || ready.request_id != 0
+                || ready.host_pid != self.host_pid
+                || ready.browser_pid == ready.renderer_pid
+                || ready.browser_pid == self.host_pid
+                || ready.renderer_pid == self.host_pid
+            {
+                return Err("browser-readiness-identity-mismatch".into());
+            }
+            let effective = fs::canonicalize(&ready.effective_udf)
+                .map_err(|_| "browser-effective-udf-unavailable")?;
+            let owned = fs::canonicalize(&self.effective_udf)
+                .map_err(|_| "browser-owned-udf-unavailable")?;
+            if effective != owned {
+                return Err("browser-effective-udf-mismatch".into());
+            }
+            ensure_plain_dir(&self.private_root)?;
+            ensure_plain_dir(&self.effective_udf)?;
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            let browser = verify_child(ready.browser_pid, &self.profile, self.job.0)?;
+            let renderer = verify_child(ready.renderer_pid, &self.profile, self.job.0)?;
+            self.browser = Some(browser);
+            self.renderer = Some(renderer);
+            self.send_reply(0, 204, "text/plain", &[], None).await?;
+            self.ready = true;
+            self.poisoned = false;
+            flight.committed = true;
+            Ok(())
+        }
+
+        async fn send_reply(
+            &mut self,
+            id: u64,
+            status: u16,
+            mime: &str,
+            data: &[u8],
+            error: Option<&str>,
+        ) -> Result<(), String> {
+            if data.len() > RESOURCE_MAX {
+                return Err("browser-reply-size-denied".into());
+            }
+            let response = ParentReply {
+                version: 1,
+                session: &self.nonce,
+                request_id: id,
+                status,
+                content_type: mime,
+                body_base64: encode_base64(data),
+                error,
+                control_turns: (id == 0 && self.control_turns_enabled).then_some(true),
+            };
+            let frame = serde_json::to_vec(&response).map_err(|_| "browser-reply-serialization")?;
+            self.write_parent_frame(frame).await
+        }
+
+        async fn write_parent_frame(&mut self, frame: Vec<u8>) -> Result<(), String> {
+            if frame.is_empty() || frame.len() > FRAME_MAX {
+                return Err("browser-reply-frame-bounds".into());
+            }
+            let mut writer = self
+                .responses
+                .try_clone()
+                .map_err(|_| "browser-reply-pipe-clone")?;
+            let sent = tokio::task::spawn_blocking(move || {
+                writer
+                    .write_all(&(frame.len() as u32).to_le_bytes())
+                    .and_then(|_| writer.write_all(&frame))
+                    .and_then(|_| writer.flush())
+                    .map_err(|_| "browser-reply-pipe-broken".to_owned())
+            });
+            match tokio::time::timeout(PIPE_TIMEOUT, sent).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err("browser-reply-writer-failed".into()),
+                Err(_) => Err("browser-reply-write-timeout".into()),
+            }
+        }
+
+        async fn verify_com_completion(
+            &mut self,
+            request_id: u64,
+            page_generation: u64,
+            installed_status: u16,
+        ) -> Result<(), String> {
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "browser-com-ack-pipe-clone-denied")?;
+            let frame = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "browser-com-ack-worker-failed")??;
+            let ack: ChildComAck =
+                serde_json::from_slice(&frame).map_err(|_| "browser-com-ack-invalid-frame")?;
+            validate_com_ack(
+                &ack,
+                &self.nonce,
+                request_id,
+                page_generation,
+                installed_status,
+            )?;
+            Ok(())
+        }
+
+        async fn send_and_verify(
+            &mut self,
+            request_id: u64,
+            page_generation: u64,
+            status: u16,
+            mime: &str,
+            data: &[u8],
+            error: Option<&str>,
+        ) -> Result<(), String> {
+            self.send_reply(request_id, status, mime, data, error)
+                .await?;
+            // No success receipt until the child completes exactly this native
+            // COM deferral; missing, stale, duplicate or unexpected ACK poisons
+            // the session and its Job is terminated by the flight fence.
+            self.verify_com_completion(request_id, page_generation, status)
+                .await
+        }
+
+        /// Security-limited, *internal only* native structural observation.
+        /// This cannot issue an action or produce a model-facing semantic
+        /// snapshot. All page-derived names, text, destinations and values are
+        /// intentionally absent until adequate production secret protection
+        /// and exact live DOM element binding can be demonstrated.
+        pub(crate) async fn observe_structure(&mut self) -> Result<NativeDomStructure, String> {
+            if self.control_turns_enabled && !self.control_turn_claimed {
+                return Err("browser-control-turn-required".into());
+            }
+            // A new native observation attempt invalidates every previous
+            // snapshot even if COM fails, renderer crashes, or the page
+            // changes midway through the request.
+            self.page_contract.revoke_snapshot();
+            self.last_recheck_observation = None;
+            if !self.ready
+                || self.stopped
+                || self.poisoned
+                || self.last_request_id == 0
+                || self.last_page_generation == 0
+            {
+                return Err("browser-structure-session-not-ready".into());
+            }
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let observation_id = self
+                .last_observation_id
+                .checked_add(1)
+                .ok_or("browser-structure-observation-exhausted")?;
+            self.last_observation_id = observation_id;
+            let generation = self.last_page_generation;
+            let source = format!("{:x}", Sha256::digest(self.initial_url.as_bytes()));
+            let observed = self
+                .observe_structure_inner(observation_id, generation, &source)
+                .await;
+            if observed.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            observed
+        }
+
+        /// Closed test-only observation identity/authority readback.
+        #[cfg(test)]
+        pub(crate) fn baseline_probe_scope_for_test(&self) -> (u64, bool) {
+            (self.last_observation_id, self.last_recheck_observation.is_some())
+        }
+
+        /// First production snapshot backed by real COM observation and the
+        /// existing random opaque element-reference state machine. It carries
+        /// only closed roles/control-state booleans, with empty names/text and
+        /// no selector or href authority. Deliberately internal: live actions
+        /// are NOT enabled until the separate effect/approval path is proven.
+        pub(crate) async fn observe_closed_snapshot(&mut self) -> Result<PageSnapshot, String> {
+            let native = self.observe_structure().await?;
+            if native.terminal != "completed" || native.page_generation != self.last_page_generation
+            {
+                return Err("STALE".into());
+            }
+            // Source and page identity were already checked by the authenticated
+            // native owner. New page generations must be invalidated by a
+            // trusted navigation contract before any further refs are granted.
+            if self.page_contract.identity().page_generation != native.page_generation {
+                return Err("STALE".into());
+            }
+            let elements = structural_observed_elements(&native).map_err(str::to_owned)?;
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "browser-native-clock-unavailable")?
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            self.page_contract
+                .observe(
+                    native.page_generation,
+                    &self.initial_url,
+                    "",
+                    "",
+                    elements,
+                    timestamp,
+                )
+                .map_err(str::to_owned)?;
+            // The omitted-field/truncation state is held authoritatively by
+            // the same page contract as its opaque reference mapping.
+            let snapshot = self
+                .page_contract
+                .mark_snapshot_truncated(native.truncated)
+                .map_err(str::to_owned)?
+                .clone();
+            self.last_recheck_observation = Some((
+                native.observation_id,
+                native.page_generation,
+                native
+                    .elements
+                    .iter()
+                    .map(|element| element.index)
+                    .collect(),
+            ));
+            Ok(snapshot)
+        }
+
+        /// Transport-only, owner-callable native snapshot. The caller must
+        /// own `&mut BrowserRuntimeSession` and a host-issued control turn;
+        /// one claimed turn carries exactly one v2 DOM frame. No second pipe
+        /// reader, alternate permission path or model tool is introduced.
+        #[allow(dead_code)] // parked; existing production/fixture callers unchanged
+        pub(crate) async fn observe_closed_snapshot_in_control_turn(
+            &mut self,
+        ) -> Result<PageSnapshot, String> {
+            if !self.has_control_turn() || !self.ready || self.poisoned || self.stopped {
+                return Err("browser-exclusive-control-turn-required".into());
+            }
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            self.answer_control_turn("control-turn-claim").await?;
+            self.poisoned = false;
+            self.control_turn_claimed = true;
+            let result = self.observe_closed_snapshot().await;
+            self.control_turn_claimed = false;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            } else {
+                self.poisoned = true;
+            }
+            result
+        }
+
+        /// Read-only pre-consumption scope for the existing central native
+        /// approval owner. It performs the same live opaque-node eligibility
+        /// and native source/index/ordinal checks as dispatch, without using
+        /// a control turn or creating consent. The caller must then atomically
+        /// consume its separately approved once token, construct a witness,
+        /// and hand the witness back to dispatch, which rechecks everything.
+        /// No command, model capability or network effect is exposed here.
+        #[allow(dead_code)] // native approval owner integration is separate
+        pub(crate) fn exact_click_scope_for_central<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            self.exact_retained_scope_for_central(target, super::NativeRetainedAction::Click)
+        }
+
+        /// The same retained BrowserPageContract identity as click,
+        /// with per-kind role/field-type gates and a second retained option
+        /// witness for SELECT. This does not send a frame or confer approval.
+        pub(crate) fn exact_retained_scope_for_central<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            self.exact_retained_scope_inner(target, action, None)
+        }
+
+        /// Only an owner-issued reservation for the SAME central token may
+        /// cross the ordinary 30s snapshot-age cutoff. Every other retained
+        /// identity, option/form and process attestation check is identical.
+        pub(crate) fn exact_retained_scope_with_reservation<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: &super::NativeActionReservation,
+            token: &str,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            if !reservation.matches(token, target, &action) {
+                return Err("native-action-reservation-expired-or-changed".into());
+            }
+            self.exact_retained_scope_inner(target, action, Some((reservation, token)))
+        }
+
+        pub(crate) fn reserve_action_for_consent(
+            &self,
+            token: &str,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            central_deadline: Instant,
+        ) -> Result<super::NativeActionReservation, String> {
+            // This initial ordinary check MUST happen before consent and
+            // while the 30s original snapshot has not expired.
+            self.exact_retained_scope_for_central(target, action.clone())?;
+            let expires_at = super::native_action_approval_deadline(
+                central_deadline,
+                self.resource_window_started,
+            );
+            let text = match &action {
+                super::NativeRetainedAction::Type(value) => Some(value.as_str()),
+                _ => None,
+            };
+            let related = match &action {
+                super::NativeRetainedAction::Select(reference)
+                | super::NativeRetainedAction::Submit(reference) => Some(reference.as_str()),
+                _ => None,
+            };
+            let page = self
+                .page_contract
+                .reserve_preconsent_action(
+                    token,
+                    action.kind(),
+                    target.clone(),
+                    text,
+                    related,
+                    expires_at,
+                )
+                .map_err(str::to_owned)?;
+            Ok(super::NativeActionReservation {
+                token: token.to_owned(),
+                target: target.clone(),
+                action,
+                page,
+                expires_at,
+            })
+        }
+
+        fn exact_retained_scope_inner<'a>(
+            &'a self,
+            target: &'a crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: Option<(&super::NativeActionReservation, &str)>,
+        ) -> Result<super::NativeExactClickApprovalScope<'a>, String> {
+            use crate::modules::net::tf_browser_contract::BrowserActionKind;
+            if !self.has_control_turn()
+                || !self.ready
+                || self.poisoned
+                || self.stopped
+                || self.last_request_id == 0
+            {
+                return Err("native-click-exclusive-control-turn-required".into());
+            }
+            let text = match &action {
+                super::NativeRetainedAction::Type(text) => Some(text.as_str()),
+                _ => None,
+            };
+            let prepared = match reservation {
+                Some((reserved, token)) => self.page_contract.prepare_reserved_action(
+                    &reserved.page,
+                    token,
+                    action.kind(),
+                    (*target).clone(),
+                    text,
+                ),
+                None => self
+                    .page_contract
+                    .prepare_action(action.kind(), (*target).clone(), text),
+            }
+            .map_err(str::to_owned)?;
+            // Do not let a changed payload or a malformed alternate option
+            // identity be traded for a previously approved action.
+            match &action {
+                super::NativeRetainedAction::Type(text) if !super::valid_native_type_text(text) => {
+                    return Err("native-type-unsafe-utf8-or-bidi".into());
+                }
+                super::NativeRetainedAction::Scroll(delta) if !matches!(*delta, -120 | 120) => {
+                    return Err("native-scroll-delta-denied".into());
+                }
+                _ => {}
+            }
+            if !prepared.requires_approval {
+                return Err("native-click-central-approval-required".into());
+            }
+            let (observation_id, generation, indices) = self
+                .last_recheck_observation
+                .as_ref()
+                .ok_or("native-click-observation-missing")?;
+            if *observation_id != self.last_observation_id
+                || *generation != self.last_page_generation
+            {
+                return Err("native-click-observation-stale".into());
+            }
+            let index = u32::try_from(prepared.observed_serial)
+                .map_err(|_| "native-click-index-overflow")?;
+            let ordinal = indices
+                .iter()
+                .position(|observed| *observed == index)
+                .ok_or("native-click-element-not-found")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-click-index-bounds".into());
+            }
+            let selected_native_option =
+                if let super::NativeRetainedAction::Select(option_ref) = &action {
+                    if option_ref == &target.element_ref {
+                        return Err("native-select-option-must-be-distinct".into());
+                    }
+                    let option_target = crate::modules::net::tf_browser_contract::ActionTarget {
+                        element_ref: option_ref.clone(),
+                        ..(*target).clone()
+                    };
+                    // Same snapshot, session, page and original retained element
+                    // handle. Host independently proves OPTION role and
+                    // immediate membership in the exact retained SELECT.
+                    let option = match reservation {
+                        Some((reserved, token)) => self.page_contract.prepare_reserved_related(
+                            &reserved.page,
+                            token,
+                            option_target,
+                        ),
+                        None => self.page_contract.prepare_action(
+                            BrowserActionKind::Inspect,
+                            option_target,
+                            None,
+                        ),
+                    }
+                    .map_err(str::to_owned)?;
+                    let option_index = u32::try_from(option.observed_serial)
+                        .map_err(|_| "native-select-original-option-index-bounds")?;
+                    let option_ordinal = indices
+                        .iter()
+                        .position(|observed| *observed == option_index)
+                        .ok_or("native-select-original-option-not-retained")?;
+                    if option_index == 0 || option_index > 256 || option_ordinal >= 48 {
+                        return Err("native-select-original-option-bounds".into());
+                    }
+                    Some((option_index, option_ordinal as u32))
+                } else {
+                    None
+                };
+            let selected_native_form =
+                if let super::NativeRetainedAction::Submit(form_ref) = &action {
+                    if form_ref == &target.element_ref {
+                        return Err("native-submit-form-must-be-distinct".into());
+                    }
+                    let form_target = crate::modules::net::tf_browser_contract::ActionTarget {
+                        element_ref: form_ref.clone(),
+                        ..(*target).clone()
+                    };
+                    let form_serial = match reservation {
+                        Some((reserved, token)) => self
+                            .page_contract
+                            .prepare_reserved_related(&reserved.page, token, form_target)
+                            .map(|prepared| prepared.observed_serial),
+                        None => self.page_contract.require_retained_form(form_target),
+                    }
+                    .map_err(str::to_owned)?;
+                    let form_index = u32::try_from(form_serial)
+                        .map_err(|_| "native-submit-original-form-index-bounds")?;
+                    let form_ordinal = indices
+                        .iter()
+                        .position(|observed| *observed == form_index)
+                        .ok_or("native-submit-original-form-not-retained")?;
+                    if form_index == 0 || form_index > 256 || form_ordinal >= 48 {
+                        return Err("native-submit-original-form-bounds".into());
+                    }
+                    Some((form_index, form_ordinal as u32))
+                } else {
+                    None
+                };
+            super::native_action_payload_bytes(
+                &action,
+                selected_native_option,
+                selected_native_form,
+            )
+            .map_err(str::to_owned)?;
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|value| *value <= 256)
+                .ok_or("native-click-sequence-exhausted")?;
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("native-click-process-unattested".into());
+            }
+            Ok(super::NativeExactClickApprovalScope {
+                actor: &self.actor,
+                session_id: &self.session_id,
+                workspace_root: &self.workspace_root,
+                target,
+                effect: prepared.effect,
+                source_id: format!("{:x}", Sha256::digest(self.initial_url.as_bytes())),
+                observation_id: *observation_id,
+                index,
+                ordinal: ordinal as u32,
+                check_sequence: sequence,
+                action,
+                selected_native_option,
+                selected_native_form,
+            })
+        }
+
+        /// ONE actual WebView2 exact-node click using the already-existing
+        /// host COM path. A consumed central consent witness MUST have been
+        /// issued by the existing native authority after rechecking actor/chat,
+        /// canonical workspace, effect, page/source/snapshot/opaque node and
+        /// expiry. The witness cannot be constructed through this public API;
+        /// there is no issuer here or production caller yet. This function
+        /// NEVER mints an ID, asks for consent, or exposes an IPC/model tool.
+        /// The child-issued control turn is scheduling only, not approval.
+        /// On any ambiguous post-approval transport/COM outcome return UNKNOWN
+        /// with NEVER_REPLAY and terminate the owned Job via FlightFence.
+        #[allow(dead_code)] // no central witness issuer is connected yet
+        pub(crate) async fn dispatch_exact_click_in_control_turn(
+            &mut self,
+            approval: super::NativeConsumedExactClickApproval,
+            link: &NativeLinkIntent,
+            reservation: &super::NativeActionReservation,
+        ) -> Result<
+            (
+                crate::modules::net::tf_browser_contract::NativeEffectReceipt,
+                Option<String>,
+            ),
+            String,
+        > {
+            if approval.action != super::NativeRetainedAction::Click {
+                return Err("native-click-approved-operation-mismatch".into());
+            }
+            self.dispatch_retained_action_with_link_in_control_turn(
+                approval,
+                Some(link),
+                reservation,
+            )
+            .await
+        }
+
+        /// One centrally consumed and exact-snapshot-scoped native retained
+        /// action, serialized on the existing exclusive host control turn.
+        /// Missing/ambiguous host acknowledgement is UNKNOWN and kills the
+        /// native Job; never resume or replay an unverified mutation.
+        pub(crate) async fn dispatch_retained_action_in_control_turn(
+            &mut self,
+            approval: super::NativeConsumedExactClickApproval,
+            reservation: &super::NativeActionReservation,
+        ) -> Result<
+            (
+                crate::modules::net::tf_browser_contract::NativeEffectReceipt,
+                Option<String>,
+            ),
+            String,
+        > {
+            self.dispatch_retained_action_with_link_in_control_turn(approval, None, reservation)
+                .await
+        }
+
+        async fn dispatch_retained_action_with_link_in_control_turn(
+            &mut self,
+            approval: super::NativeConsumedExactClickApproval,
+            link: Option<&NativeLinkIntent>,
+            reservation: &super::NativeActionReservation,
+        ) -> Result<
+            (
+                crate::modules::net::tf_browser_contract::NativeEffectReceipt,
+                Option<String>,
+            ),
+            String,
+        > {
+            use crate::modules::net::tf_browser_contract::{
+                NativeEffectReceipt, NativeEffectTerminal,
+            };
+            let target = approval.target.clone();
+            let action = approval.action.clone();
+            let scope = self.exact_retained_scope_with_reservation(
+                &target,
+                action.clone(),
+                reservation,
+                &approval.approval_id,
+            )?;
+            if action == super::NativeRetainedAction::Click {
+                let link = link.ok_or("native-click-original-link-intent-required")?;
+                if link.target != target
+                    || link.observation_id != scope.observation_id
+                    || link.original_link_index != scope.index
+                    || !original_link_intent_unchanged(link, link)
+                    || link.destination.origin()
+                        != reqwest::Url::parse(&self.initial_url)
+                            .map_err(|_| "native-click-source-url-invalid")?.origin()
+                {
+                    return Err("native-click-original-link-intent-stale".into());
+                }
+            } else if link.is_some() {
+                return Err("native-link-intent-reused-for-nonlink-action".into());
+            }
+            // No arbitrary 48-hex string, boolean, or model argument can
+            // substitute for the consumed exact central approval witness.
+            if !approval.matches_exact(&scope) {
+                return Err("native-click-central-approval-scope-stale".into());
+            }
+            let observation_id = scope.observation_id;
+            let generation = scope.target.page_generation;
+            let index = scope.index;
+            let ordinal = scope.ordinal;
+            let sequence = scope.check_sequence;
+            let source = scope.source_id.clone();
+            let selected_option = scope.selected_native_option;
+            let selected_form = scope.selected_native_form;
+            let payload =
+                super::native_action_payload_bytes(&action, selected_option, selected_form)
+                    .map_err(str::to_owned)?;
+            let payload_sha256 = payload
+                .as_ref()
+                .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+            let consumed_action_id = approval.action_id().to_owned();
+            let approval_id = approval.approval_id;
+            if approval_id.len() != 48
+                || !approval_id
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err("native-click-central-approval-id-invalid".into());
+            }
+            let nonce = self.nonce.clone();
+            let request = ParentElementAction {
+                version: 2,
+                kind: "act-element",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal,
+                action: action.wire_action(),
+                approval_id: &approval_id,
+                approved_destination: link.map(|link| link.destination.as_str()),
+                text: match &action {
+                    super::NativeRetainedAction::Type(value) => Some(value.as_str()),
+                    _ => None,
+                },
+                option_index: selected_option.map(|(index, _)| index),
+                option_ordinal: selected_option.map(|(_, ordinal)| ordinal),
+                form_index: selected_form.map(|(index, _)| index),
+                form_ordinal: selected_form.map(|(_, ordinal)| ordinal),
+                delta_y: match &action {
+                    super::NativeRetainedAction::Scroll(amount) => Some(*amount),
+                    _ => None,
+                },
+                payload_sha256: payload_sha256.as_deref(),
+            };
+            let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-click-request-bounds".into());
+            }
+            if let Some(link) = link {
+                if self.successor_scope_ever_armed
+                    || self.last_page_generation != link.target.page_generation
+                    || !self.original_document_delivered
+                    || self.last_request_id == 0
+                {
+                    return Err("native-successor-original-document-or-one-use-denied".into());
+                }
+                // This exact URL has already survived the same original
+                // retained-node identity, pre-consent capture and central
+                // token consumption. It must independently survive the host
+                // fixed-JS href recheck and the TF3 request-time policy.
+                self.successor_scope_ever_armed = true;
+                self.successor_scope = Some(NativeSuccessorScope {
+                    destination: link.destination.as_str().to_owned(),
+                    source_generation: link.target.page_generation,
+                    consumed_action_id,
+                    request_floor: self.last_request_id,
+                    deadline: Instant::now() + std::time::Duration::from_secs(18),
+                    claimed: false,
+                });
+            }
+            // Burn the native sequence AND every page reference before any
+            // pipe/COM I/O. Post-dispatch errors are UNKNOWN, never replayed.
+            self.last_recheck_sequence = sequence;
+            self.page_contract.revoke_snapshot();
+            self.last_recheck_observation = None;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                // A queued control-turn ACK is not a gesture. If the ORIGINAL
+                // pre-consent budget expired while that ACK was delivered,
+                // never send act-element to the host. The already-burned
+                // snapshot and FlightFence still prevent any replay.
+                if !reservation.matches(&approval_id, &target, &action) {
+                    return Err("native-action-reservation-expired-before-gesture".into());
+                }
+                self.write_parent_frame(frame).await?;
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "native-click-pipe-clone-failed")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-click-read-worker-failed")??;
+                validate_element_action_reply_diagnostic(&bytes, &request).map_err(str::to_owned)
+            }
+            .await;
+            match result {
+                Err(reason) if reason == "native-action-reservation-expired-before-gesture" => {
+                    // No act-element frame was submitted. The control turn
+                    // itself is non-effectful; FlightFence kills the now
+                    // poisoned owner rather than restoring its references.
+                    self.successor_scope = None;
+                    Ok((
+                        NativeEffectReceipt::classify(NativeEffectTerminal::Stale),
+                        None,
+                    ))
+                }
+                Ok((terminal, target_digest, stale_reason))
+                    if terminal != NativeEffectTerminal::Unknown =>
+                {
+                    if terminal != NativeEffectTerminal::Dispatched {
+                        self.successor_scope = None;
+                    }
+                    self.poisoned = false;
+                    flight.committed = true;
+                    let mut receipt = NativeEffectReceipt::classify(terminal);
+                    if let (NativeEffectTerminal::Stale, Some(reason)) = (terminal, stale_reason) {
+                        receipt.reason_code = native_stale_reason_receipt_code(reason);
+                    }
+                    Ok((receipt, target_digest))
+                }
+                _ => Ok((
+                    NativeEffectReceipt::classify(NativeEffectTerminal::Unknown),
+                    None,
+                )),
+            }
+        }
+
+        /// Original retained LINK destination capture on the same sealed
+        /// exclusive control turn as the form preview. It neither activates
+        /// the link nor authorizes a successor. Its exact URL remains private
+        /// to the human-consent owner, not the model or page snapshot.
+        pub(crate) async fn capture_link_in_control_turn(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<NativeLinkIntent, String> {
+            let scope = self.exact_retained_scope_for_central(
+                target,
+                super::NativeRetainedAction::Click,
+            )?;
+            let sequence = scope.check_sequence;
+            let observation = scope.observation_id;
+            let generation = scope.target.page_generation;
+            let index = scope.index;
+            let ordinal = scope.ordinal;
+            let source = scope.source_id.clone();
+            let source_url = reqwest::Url::parse(&self.initial_url)
+                .map_err(|_| "native-link-capture-source-invalid")?;
+            let nonce = self.nonce.clone();
+            let request = ParentLinkCapture {
+                version: 2,
+                kind: "capture-link",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id: observation,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal,
+            };
+            let frame = serde_json::to_vec(&request)
+                .map_err(|_| "native-link-capture-serialization")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-link-capture-request-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self.requests.try_clone()
+                    .map_err(|_| "native-link-capture-reader-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-link-capture-worker-failed")??;
+                validate_link_capture(&bytes, &request, target, &source_url)
+                    .map_err(str::to_owned)
+            }.await;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            result
+        }
+
+        /// Read-only original-node form capture on the existing exclusive
+        /// sealed control turn. Called before the human consent dialog and
+        /// again immediately before the single TF3 dispatch. It does not
+        /// create a grant, submit the page form, or make an HTTP request.
+        pub(crate) async fn capture_form_in_control_turn(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+        ) -> Result<NativeFormIntent, String> {
+            self.capture_form_inner(target, action, None).await
+        }
+
+        pub(crate) async fn capture_form_with_reservation_in_control_turn(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: &super::NativeActionReservation,
+            token: &str,
+        ) -> Result<NativeFormIntent, String> {
+            self.capture_form_inner(target, action, Some((reservation, token)))
+                .await
+        }
+
+        async fn capture_form_inner(
+            &mut self,
+            target: &crate::modules::net::tf_browser_contract::ActionTarget,
+            action: super::NativeRetainedAction,
+            reservation: Option<(&super::NativeActionReservation, &str)>,
+        ) -> Result<NativeFormIntent, String> {
+            if !matches!(action, super::NativeRetainedAction::Submit(_)) {
+                return Err("native-form-capture-submit-only".into());
+            }
+            let scope = match reservation {
+                Some((reserved, token)) => {
+                    self.exact_retained_scope_with_reservation(target, action, reserved, token)?
+                }
+                None => self.exact_retained_scope_for_central(target, action)?,
+            };
+            let (form_index, form_ordinal) = scope
+                .selected_native_form
+                .ok_or("native-form-original-form-missing")?;
+            let sequence = scope.check_sequence;
+            let observation = scope.observation_id;
+            let generation = scope.target.page_generation;
+            let index = scope.index;
+            let ordinal = scope.ordinal;
+            let source = scope.source_id.clone();
+            let original_origin = reqwest::Url::parse(&self.initial_url)
+                .map_err(|_| "native-form-capture-source-invalid")?;
+            let nonce = self.nonce.clone();
+            let request = ParentFormCapture {
+                version: 2,
+                kind: "capture-form",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id: observation,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal,
+                form_index,
+                form_ordinal,
+            };
+            let frame =
+                serde_json::to_vec(&request).map_err(|_| "native-form-capture-serialization")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-form-capture-request-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "native-form-capture-reader-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-form-capture-worker-failed")??;
+                validate_form_capture(&bytes, &request, target, &original_origin)
+                    .map_err(str::to_owned)
+            }
+            .await;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            result
+        }
+
+        /// Inspect and BURN an actual WebView2 NewWindowRequested that the
+        /// original host already vetoed. Never launches a window, authorizes
+        /// network, exposes a generic selector, or makes popup intent a user
+        /// approval. The one-use record is sealed in this original Job/pipe.
+        pub(crate) async fn capture_popup_in_control_turn(
+            &mut self,
+            expected_url: &str,
+        ) -> Result<Option<NativePopupIntent>, String> {
+            if !self.has_control_turn() || !self.ready || self.stopped || self.poisoned
+                || self.last_request_id == 0 || self.last_page_generation != 1
+            {
+                return Err("popup-original-confined-owner-turn-required".into());
+            }
+            let destination = reqwest::Url::parse(expected_url)
+                .map_err(|_| "popup-expected-destination-invalid")?;
+            if destination.as_str() != expected_url || destination.scheme() != "https"
+                || destination.host_str().is_none()
+                || !destination.username().is_empty() || destination.password().is_some()
+                || destination.port_or_known_default() != Some(443)
+                || destination.path() != "/" || destination.query().is_some()
+                || destination.fragment().is_some()
+            {
+                return Err("popup-expected-destination-unsupported".into());
+            }
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self.browser.as_ref().is_none_or(|p| {
+                token_attest(p.0, self.profile.sid.0, self.job.0).is_err()
+            }) || self.renderer.as_ref().is_none_or(|p| {
+                token_attest(p.0, self.profile.sid.0, self.job.0).is_err()
+            }) {
+                return Err("popup-original-browser-renderer-unattested".into());
+            }
+            let sequence = self.last_recheck_sequence.checked_add(1)
+                .filter(|v| *v <= 256)
+                .ok_or("popup-capture-native-turn-budget-exhausted")?;
+            let session = self.nonce.clone();
+            let request = ParentPopupCapture {
+                version: 2, kind: "capture-popup", session: &session,
+                check_sequence: sequence,
+                page_generation: self.last_page_generation,
+                expected_url,
+            };
+            let frame = serde_json::to_vec(&request)
+                .map_err(|_| "popup-capture-frame-serialization")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("popup-capture-frame-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let capture_started = Instant::now();
+            let result = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self.requests.try_clone()
+                    .map_err(|_| "popup-capture-reader-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await.map_err(|_| "popup-capture-read-worker-failed")??;
+                popup_capture_result(&bytes, &request, &self.initial_url, capture_started, Instant::now()).map_err(str::to_owned)
+            }.await;
+            if result.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            result
+        }
+
+        /// Native WebView2 viewport screenshot over the ORIGINAL authenticated
+        /// host control pipe. Only the parent receives bounded PNG bytes.
+        /// Consent and TF2 evidence persistence are the TF4/TF2 central owners'
+        /// responsibility; no standalone screenshot IPC/model operation exists.
+        #[cfg(feature = "tf-browser-native-runtime")]
+        pub(crate) async fn capture_screenshot_in_control_turn(
+            &mut self,
+        ) -> Result<NativeScreenshotCapture, String> {
+            if !self.has_control_turn()
+                || !self.ready
+                || self.stopped
+                || self.poisoned
+                || self.last_request_id == 0
+            {
+                return Err("native-screenshot-exclusive-turn-required".into());
+            }
+            let page = self
+                .page_contract
+                .current_snapshot_for_evidence()
+                .ok_or("native-screenshot-original-page-not-observed")?
+                .clone();
+            let (observation_id, generation, _) = self
+                .last_recheck_observation
+                .as_ref()
+                .ok_or("native-screenshot-original-observation-missing")?;
+            if *observation_id == 0
+                || *generation != page.page_generation
+                || self.last_page_generation != page.page_generation
+                || self.initial_url != page.url
+            {
+                return Err("native-screenshot-page-generation-or-origin-stale".into());
+            }
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("native-screenshot-original-renderer-unattested".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|v| *v <= 256)
+                .ok_or("native-screenshot-control-budget-exhausted")?;
+            let nonce = self.nonce.clone();
+            let source = format!("{:x}", Sha256::digest(page.url.as_bytes()));
+            let request = ParentScreenshotCapture {
+                version: 2,
+                kind: "capture-screenshot",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id: *observation_id,
+                page_generation: page.page_generation,
+                source_id: &source,
+            };
+            let frame = serde_json::to_vec(&request)
+                .map_err(|_| "native-screenshot-request-serialization")?;
+            if frame.len() > 1024 {
+                return Err("native-screenshot-request-bounds".into());
+            }
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            let captured = async {
+                self.answer_control_turn("control-turn-claim").await?;
+                self.write_parent_frame(frame).await?;
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "native-screenshot-response-pipe-unavailable")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "native-screenshot-reader-failed")??;
+                validate_native_screenshot_capture(&bytes, &request, &page).map_err(str::to_owned)
+            }
+            .await;
+            if captured.is_ok() {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            captured
+        }
+
+        #[cfg(test)]
+        pub(crate) fn verify_closed_reference_without_execution_for_test(
+            &self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<(), String> {
+            if self.stopped || self.poisoned || !self.ready {
+                return Err("STALE".into());
+            }
+            self.page_contract
+                .prepare_action(
+                    crate::modules::net::tf_browser_contract::BrowserActionKind::Inspect,
+                    target,
+                    None,
+                )
+                .map(|_| ())
+                .map_err(str::to_owned)
+        }
+
+        /// Explicit test-only *read-only* native exact-element identity check.
+        /// This does not click, focus, type, execute arbitrary script, provide
+        /// action approval, or enable an IPC. The only ordinal sent to the
+        /// child comes from the order of our authenticated COM observation;
+        /// the index is the contract's held PreparedAction.observed_serial.
+        #[cfg(test)]
+        pub(crate) async fn recheck_closed_reference_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<bool, String> {
+            self.recheck_closed_reference_mode_for_test(target, false, None)
+                .await
+        }
+
+        /// Strict debug-host, owned 127.0.0.1 fixture only. Physically mutates
+        /// one retained H1 using a fixed host-authored COM function, never an
+        /// arbitrary script or model action. The NEXT ordinary exact recheck
+        /// must independently report STALE for the detached original node.
+        #[cfg(all(test, debug_assertions))]
+        pub(crate) async fn replace_owned_heading_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<(), String> {
+            if self.initial_url != "https://127.0.0.1/" {
+                return Err("debug-dom-replacement-owned-origin-required".into());
+            }
+            if self
+                .recheck_closed_reference_mode_for_test(target, true, None)
+                .await?
+            {
+                Ok(())
+            } else {
+                Err("debug-dom-replacement-not-observed".into())
+            }
+        }
+
+        /// Fixed debug-only real WebView2 DOM mutation in the already-owned
+        /// scratch-loopback document. It does NOT enable page scripts, offer
+        /// arbitrary JavaScript or rebind the original observed link.
+        #[cfg(all(test, debug_assertions))]
+        pub(crate) async fn mutate_owned_link_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+            kind: &str,
+        ) -> Result<(), String> {
+            if self.initial_url != "https://127.0.0.1/"
+                || !matches!(kind, "unrelated" | "replace-link" | "href-change"
+                    | "head-change" | "head-attr-value" | "hide-ancestor"
+                    | "form-mutation" | "form-attr-value" | "link-text")
+            {
+                return Err("debug-link-mutation-owned-kind-required".into());
+            }
+            if self.recheck_closed_reference_mode_for_test(target, false, Some(kind)).await? {
+                Ok(())
+            } else {
+                Err("debug-link-mutation-was-not-confirmed".into())
+            }
+        }
+
+        #[cfg(test)]
+        async fn recheck_closed_reference_mode_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+            debug_replace_heading: bool,
+            debug_mutation_kind: Option<&str>,
+        ) -> Result<bool, String> {
+            use crate::modules::net::tf_browser_contract::BrowserActionKind;
+            if !self.ready || self.stopped || self.poisoned || self.last_request_id == 0 {
+                return Err("browser-recheck-session-unavailable".into());
+            }
+            let prepared = self
+                .page_contract
+                .prepare_action(BrowserActionKind::Inspect, target, None)
+                .map_err(str::to_owned)?;
+            let (observation_id, generation, indexes) = self
+                .last_recheck_observation
+                .clone()
+                .ok_or("browser-recheck-native-observation-missing")?;
+            if observation_id != self.last_observation_id
+                || generation != self.last_page_generation
+                || indexes.is_empty()
+                || indexes.len() > 48
+            {
+                return Err("browser-recheck-native-observation-stale".into());
+            }
+            let index = u32::try_from(prepared.observed_serial)
+                .map_err(|_| "browser-recheck-native-index-bounds")?;
+            let ordinal = indexes
+                .iter()
+                .position(|observed| *observed == index)
+                .ok_or("browser-recheck-native-element-not-found")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("browser-recheck-native-index-bounds".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|value| *value <= 256)
+                .ok_or("browser-recheck-budget-exhausted")?;
+            // Consume sequence before dispatch. If the pipe/COM operation
+            // fails, the session is poisoned and original Job terminated.
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("browser-recheck-process-unattested".into());
+            }
+            let source = format!("{:x}", Sha256::digest(self.initial_url.as_bytes()));
+            let session = self.nonce.clone();
+            let request = ParentElementRecheck {
+                version: 2,
+                kind: "recheck-element",
+                session: &session,
+                check_sequence: sequence,
+                observation_id,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal: ordinal as u32,
+                debug_replace_heading: debug_replace_heading.then_some(true),
+                debug_mutation_kind,
+            };
+            let frame =
+                serde_json::to_vec(&request).map_err(|_| "browser-recheck-serialization-failed")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("browser-recheck-frame-bounds".into());
+            }
+            self.write_parent_frame(frame).await?;
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "browser-recheck-pipe-clone-failed")?;
+            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "browser-recheck-read-worker-failed")??;
+            let accepted =
+                validate_element_recheck_reply(&bytes, &request).map_err(str::to_owned)?;
+            self.page_contract
+                .verify_completion(&prepared)
+                .map_err(str::to_owned)?;
+            if !accepted {
+                // Native element changed: revoke the stale snapshot/handles
+                // even though the same document generation might be live.
+                self.page_contract.revoke_snapshot();
+                self.last_recheck_observation = None;
+            }
+            self.poisoned = false;
+            flight.committed = true;
+            Ok(accepted)
+        }
+
+        /// Deliberate owned-fixture-only physical action probe. The host
+        /// implementation is compiled into release, but this parent sender
+        /// is NOT a production authorization path, command or model tool.
+        /// Central UI approval integration must replace this test-only grant.
+        #[cfg(test)]
+        pub(crate) async fn exact_click_owned_fixture_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectReceipt, String> {
+            self.exact_click_fixture_inner(target, false).await
+        }
+
+        #[cfg(test)]
+        pub(crate) async fn exact_popup_click_owned_fixture_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+        ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectReceipt, String> {
+            self.exact_click_fixture_inner(target, true).await
+        }
+
+        #[cfg(test)]
+        async fn exact_click_fixture_inner(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+            popup: bool,
+        ) -> Result<crate::modules::net::tf_browser_contract::NativeEffectReceipt, String> {
+            use crate::modules::net::tf_browser_contract::{
+                BrowserActionKind, NativeEffectReceipt, NativeEffectTerminal,
+            };
+            if std::env::var(if popup { "CLACK_TF4_OWNED_NATIVE_POPUP" } else { "CLACK_TF4_OWNED_NATIVE_CLICK" }).as_deref() != Ok("1")
+                || self.initial_url != "https://127.0.0.1/"
+            {
+                return Err("native-click-not-an-owned-physical-test".into());
+            }
+            if !self.ready || self.stopped || self.poisoned || self.last_request_id == 0 {
+                return Err("native-click-session-not-ready".into());
+            }
+            let prepared = self
+                .page_contract
+                .prepare_action(BrowserActionKind::Click, target, None)
+                .map_err(str::to_owned)?;
+            if !prepared.requires_approval {
+                return Err("native-click-effect-must-require-approval".into());
+            }
+            let (observation_id, generation, indices) = self
+                .last_recheck_observation
+                .clone()
+                .ok_or("native-click-observation-missing")?;
+            if observation_id != self.last_observation_id || generation != self.last_page_generation
+            {
+                return Err("native-click-observation-stale".into());
+            }
+            let index = u32::try_from(prepared.observed_serial)
+                .map_err(|_| "native-click-index-overflow")?;
+            let ordinal = indices
+                .iter()
+                .position(|observed| *observed == index)
+                .ok_or("native-click-element-not-found")?;
+            if index == 0 || index > 256 || ordinal >= 48 {
+                return Err("native-click-index-bounds".into());
+            }
+            let sequence = self
+                .last_recheck_sequence
+                .checked_add(1)
+                .filter(|value| *value <= 256)
+                .ok_or("native-click-sequence-exhausted")?;
+            // Burn authority BEFORE touching COM. No retry of an unknown
+            // action even if its reply is lost while navigating.
+            self.last_recheck_sequence = sequence;
+            self.poisoned = true;
+            let mut flight = FlightFence::new(self.job.0);
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("native-click-process-unattested".into());
+            }
+            let source = format!("{:x}", Sha256::digest(self.initial_url.as_bytes()));
+            let nonce = self.nonce.clone();
+            let approval_id = random_nonce()?;
+            // Unlike the legacy click fixture, the popup gesture uses the
+            // production v2 fixed-action payload digest. The native host
+            // rejects missing/mismatched hashes before touching WebView2.
+            let popup_payload_sha256 = popup.then(|| format!("{:x}", Sha256::digest(b"popup-click")));
+            // The historical owned-HTTPS test fixture has exactly one
+            // original <a href="/clicked">. This is a TEST-ONLY transport
+            // probe; it does not create a central human successor approval.
+            let fixture_link_destination = (!popup).then(|| {
+                reqwest::Url::parse(&self.initial_url)
+                    .expect("test-owned source URL")
+                    .join("/clicked")
+                    .expect("test-owned exact link")
+                    .to_string()
+            });
+            let request = ParentElementAction {
+                version: 2,
+                kind: "act-element",
+                session: &nonce,
+                check_sequence: sequence,
+                observation_id,
+                page_generation: generation,
+                source_id: &source,
+                index,
+                ordinal: ordinal as u32,
+                action: if popup { "popup-click" } else { "click" },
+                approval_id: &approval_id,
+                approved_destination: fixture_link_destination.as_deref(),
+                text: None,
+                option_index: None,
+                option_ordinal: None,
+                form_index: None,
+                form_ordinal: None,
+                delta_y: None,
+                payload_sha256: popup_payload_sha256.as_deref(),
+            };
+            let frame = serde_json::to_vec(&request).map_err(|_| "native-click-request-invalid")?;
+            if frame.is_empty() || frame.len() > 1024 {
+                return Err("native-click-request-bounds".into());
+            }
+            if let Some(destination) = fixture_link_destination.as_ref().filter(|_| {
+                std::env::var("CLACK_TF4_OWNED_NATIVE_DENY_SUCCESSOR").as_deref() != Ok("1")
+            }) {
+                // Explicitly opt-in TEST-ONLY surrogate grant for one owned
+                // localhost HTTPS fixture, never a shipped permission path.
+                // It exercises the same parent successor scope as production
+                // but cannot claim genuine human approval or installed E2E.
+                if self.successor_scope_ever_armed
+                    || self.last_page_generation != 1
+                    || !self.original_document_delivered
+                    || self.last_request_id != 1
+                {
+                    return Err("test-click-successor-scope-not-original-one-use".into());
+                }
+                self.successor_scope_ever_armed = true;
+                self.successor_scope = Some(NativeSuccessorScope {
+                    destination: destination.to_owned(),
+                    source_generation: 1,
+                    consumed_action_id: approval_id.clone(),
+                    request_floor: self.last_request_id,
+                    deadline: Instant::now() + Duration::from_secs(18),
+                    claimed: false,
+                });
+            }
+            if popup {
+                // Production action commands execute only after the native
+                // sole owner accepts a newly offered exclusive idle turn.
+                // Mirror that exact handoff rather than mixing an unsolicited
+                // control-offer frame with the action response in this probe.
+                if !self.has_control_turn() {
+                    return Err("popup-native-action-exclusive-turn-required".into());
+                }
+                self.answer_control_turn("control-turn-claim").await?;
+            }
+            self.write_parent_frame(frame).await?;
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "native-click-pipe-clone-failed")?;
+            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "native-click-read-worker-failed")??;
+            if popup {
+                let keys = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+                    .and_then(|value| value.as_object().map(|obj| obj.keys().cloned().collect::<Vec<_>>()));
+                eprintln!("POPUP_PHYSICAL_ACTION_FRAME bytes={} envelope_keys={keys:?}", bytes.len());
+            }
+            let (terminal, _digest, stale_reason) =
+                validate_element_action_reply_diagnostic(&bytes, &request).map_err(str::to_owned)?;
+            self.page_contract.revoke_snapshot();
+            self.last_recheck_observation = None;
+            if terminal != NativeEffectTerminal::Unknown {
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            let mut effect = NativeEffectReceipt::classify(terminal);
+            if let (NativeEffectTerminal::Stale, Some(reason)) = (terminal, stale_reason) {
+                effect.reason_code = native_stale_reason_receipt_code(reason);
+            }
+            Ok(effect)
+        }
+
+        async fn observe_structure_inner(
+            &mut self,
+            observation_id: u64,
+            generation: u64,
+            source: &str,
+        ) -> Result<NativeDomStructure, String> {
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("browser-structure-child-unattested".into());
+            }
+            let frame = serde_json::to_vec(&ParentObserve {
+                version: 2,
+                kind: "observe-dom",
+                session: &self.nonce,
+                observation_id,
+                page_generation: generation,
+                source_id: source,
+                #[cfg(debug_assertions)]
+                debug_baseline_probe: if self.initial_url == "https://127.0.0.1/"
+                    && observation_id == 1
+                    && std::env::var("CLACK_TF4_OWNED_BASELINE_CAPTURE_RACE").as_deref() == Ok("1")
+                {
+                    Some(true)
+                } else {
+                    None
+                },
+            })
+            .map_err(|_| "browser-structure-control-serialization")?;
+            self.write_parent_frame(frame).await?;
+            let mut reader = self
+                .requests
+                .try_clone()
+                .map_err(|_| "browser-structure-result-pipe-clone-denied")?;
+            let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                .await
+                .map_err(|_| "browser-structure-result-worker-failed")??;
+            let result: NativeDomStructure =
+                serde_json::from_slice(&bytes).map_err(|_| "browser-structure-invalid-result")?;
+            validate_dom_structure(&result, &self.nonce, observation_id, generation, source)?;
+            Ok(result)
+        }
+
+        /// One frame is one new, native TF3 policy decision; no retries,
+        /// alternate HTTP stack, proxy fallback or implicit credentials.
+        pub(crate) async fn serve_one(
+            &mut self,
+            registry: &WorkspaceRegistry,
+            web_state: &TfWebState,
+        ) -> Result<BrokerResourceReceipt, String> {
+            self.serve_one_scoped(registry, web_state, None).await
+        }
+
+        /// True only after a strictly sequential host-issued, authenticated
+        /// idle offer. A future native owner may choose an approved control
+        /// before calling serve_one again; the ordinary broker loop simply
+        /// resumes it. An offer is NOT an action/approval capability.
+        pub(crate) fn has_control_turn(&self) -> bool {
+            self.control_turns_enabled && self.pending_control_turn.is_some()
+        }
+
+        /// The sealed host's last authenticated resource sequence, sampled
+        /// only by the sole owner immediately after an approved gesture. A
+        /// later navigation cannot confirm that gesture by recycling an old
+        /// completed resource receipt with the right URL and page generation.
+        pub(crate) fn last_resource_request_id(&self) -> u64 {
+            self.last_request_id
+        }
+
+        /// Obtain a queue-safe *scheduling* request handle after the attested
+        /// host enabled exclusive turns. Calling `request()` does not confer
+        /// consent; it only asks the sole pipe owner to retain its NEXT host
+        /// idle offer for the approved command rather than auto-declining it.
+        #[allow(dead_code)] // consumed by future tf_browser.rs mailbox owner
+        pub(crate) fn control_turn_requester(&self) -> Option<super::NativeControlTurnRequester> {
+            self.control_turns_enabled
+                .then(|| super::NativeControlTurnRequester(self.control_turn_requested.clone()))
+        }
+
+        async fn answer_control_turn(&mut self, kind: &'static str) -> Result<(), String> {
+            if !self.control_turns_enabled
+                || !matches!(kind, "control-turn-claim" | "control-turn-continue")
+            {
+                return Err("browser-control-turn-answer-denied".into());
+            }
+            // Burn the lease before the write. Any interruption kills the Job
+            // via the caller's FlightFence; the old turn is NEVER reusable.
+            let id = self
+                .pending_control_turn
+                .take()
+                .ok_or("browser-control-turn-not-held")?;
+            let frame = serde_json::to_vec(&ParentControlTurnChoice {
+                version: 2,
+                kind,
+                session: &self.nonce,
+                turn_id: id,
+            })
+            .map_err(|_| "browser-control-turn-choice-serialization")?;
+            self.write_parent_frame(frame).await
+        }
+
+        fn idle_broker_receipt(&self, reason: &'static str) -> BrokerResourceReceipt {
+            BrokerResourceReceipt {
+                request_id: self.last_request_id,
+                page_generation: self.last_page_generation,
+                native_com_completed: false,
+                terminal: "idle",
+                reason: reason.into(),
+                bytes: 0,
+                tf3: None,
+                causal_native_action_id: None,
+            }
+        }
+
+        /// In-process physical acceptance only: the real production host,
+        /// original AppContainer and COM pipe remain unchanged. The parent
+        /// uses a *test-only* exact loopback HTTPS TF3 policy with ephemeral
+        /// certificate trust. No production binary or IPC can invoke this.
+        #[cfg(test)]
+        pub(crate) async fn serve_one_owned_https_for_test(
+            &mut self,
+            registry: &WorkspaceRegistry,
+            web_state: &TfWebState,
+            public_cert: &reqwest::Certificate,
+        ) -> Result<BrokerResourceReceipt, String> {
+            self.serve_one_scoped(registry, web_state, Some(public_cert))
+                .await
+        }
+
+        async fn serve_one_scoped(
+            &mut self,
+            registry: &WorkspaceRegistry,
+            web_state: &TfWebState,
+            test_public_cert: Option<&reqwest::Certificate>,
+        ) -> Result<BrokerResourceReceipt, String> {
+            if !self.ready
+                || self.stopped
+                || self.poisoned
+                || self.last_request_id as usize >= REQUEST_MAX
+            {
+                return Err("browser-broker-not-ready-or-budget-exhausted".into());
+            }
+            if self.pending_control_turn.is_some() {
+                self.poisoned = true;
+                let mut flight = FlightFence::new(self.job.0);
+                self.answer_control_turn("control-turn-continue").await?;
+                self.poisoned = false;
+                flight.committed = true;
+            }
+            // Unlike the former unconditional 5s read+fence, an empty idle
+            // session has NO blocking read task to outlive cancellation and
+            // NO FlightFence to kill the Job. A begun frame still gets an
+            // immediate fence before any of its bytes are consumed.
+            // Keep ONE idle budget while declining unsolicited offers; they
+            // must not generate bogus TF3 receipts every 250ms or prevent the
+            // outer 15s broker owner from observing an empty idle terminal.
+            let idle_deadline = Instant::now() + Duration::from_secs(12);
+            loop {
+                match wait_for_pipe_frame_start(&self.requests, idle_deadline).await {
+                    Ok(false) => return Ok(self.idle_broker_receipt("no-child-frame-yet")),
+                    Ok(true) => {}
+                    Err(reason) => {
+                        self.poisoned = true;
+                        return Err(reason);
+                    }
+                }
+                self.poisoned = true;
+                let mut flight = FlightFence::new(self.job.0);
+                let mut reader = self
+                    .requests
+                    .try_clone()
+                    .map_err(|_| "browser-pipe-clone-denied")?;
+                let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
+                    .await
+                    .map_err(|_| "browser-pipe-worker-failed")??;
+                let is_offer = self.control_turns_enabled
+                    && serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("kind")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some("control-turn-offer");
+                if is_offer {
+                    let id =
+                        validate_control_turn_offer(&bytes, &self.nonce, self.last_control_turn_id)
+                            .map_err(str::to_owned)?;
+                    self.last_control_turn_id = id;
+                    self.pending_control_turn = Some(id);
+                    if self.control_turn_requested.swap(false, Ordering::AcqRel) {
+                        self.poisoned = false;
+                        flight.committed = true;
+                        return Ok(self.idle_broker_receipt("host-exclusive-control-turn-offered"));
+                    }
+                    // No native command is waiting; decline while the SAME
+                    // owner holds the exact host lease. A fresh GET is never
+                    // forwarded by the child until this write completes.
+                    self.answer_control_turn("control-turn-continue").await?;
+                    self.poisoned = false;
+                    flight.committed = true;
+                    continue;
+                }
+                let outcome = self
+                    .serve_one_inner(registry, web_state, test_public_cert, &bytes)
+                    .await;
+                if outcome.is_ok() {
+                    self.poisoned = false;
+                    flight.committed = true;
+                }
+                return outcome;
+            }
+        }
+
+        async fn serve_one_inner(
+            &mut self,
+            registry: &WorkspaceRegistry,
+            web_state: &TfWebState,
+            test_public_cert: Option<&reqwest::Certificate>,
+            bytes: &[u8],
+        ) -> Result<BrokerResourceReceipt, String> {
+            token_attest(self.host.0, self.profile.sid.0, self.job.0)?;
+            if self
+                .browser
+                .as_ref()
+                .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+                || self
+                    .renderer
+                    .as_ref()
+                    .is_none_or(|p| token_attest(p.0, self.profile.sid.0, self.job.0).is_err())
+            {
+                return Err("browser-child-process-unattested".into());
+            }
+            let req: ChildGet =
+                serde_json::from_slice(bytes).map_err(|_| "browser-broker-request-malformed")?;
+            validate_get(&req, &self.nonce, self.last_request_id)?;
+            // Scope check happens BEFORE a TF3 token, DNS lookup or socket.
+            // Authenticated COM class alone never expands the manifest; each
+            // exact resource grant is single-use, expires with the page and
+            // is burned even when the later network effect is uncertain.
+            let successor_eligible = self.successor_scope.as_ref().is_some_and(|scope| {
+                successor_scope_matches(
+                    scope, &req, self.original_document_delivered,
+                    self.resource_window_started.elapsed(),
+                )
+            });
+            let successor_deadline = successor_eligible.then(||
+                self.successor_scope.as_ref().expect("eligible scope").deadline);
+            let absolute_deadline = resource_absolute_deadline(
+                self.resource_window_started,
+                successor_deadline,
+            );
+            if successor_eligible {
+                // Burn BEFORE TF3 preflight, DNS, socket, delivery or any
+                // fallible state transition. A failed network response can
+                // never replay this successor document grant.
+                self.successor_scope.as_mut().expect("eligible scope").claimed = true;
+            }
+            let resource_claim = if successor_eligible {
+                Ok(None)
+            } else {
+                resource_scope_index(
+                    &req,
+                    &self.initial_url,
+                    &self.resource_manifest,
+                    &self.resource_manifest_consumed,
+                    self.last_request_id,
+                    self.original_document_delivered,
+                    self.resource_window_started.elapsed(),
+                )
+            };
+            if req.page_generation < self.last_page_generation {
+                return Err("browser-broker-stale-page-generation".into());
+            }
+            if req.page_generation != self.last_page_generation {
+                self.page_contract.revoke_snapshot();
+                self.original_document_delivered = false;
+            }
+            self.last_request_id = req.request_id;
+            self.last_page_generation = req.page_generation;
+            if !registry.is_authorized(&self.workspace_root) {
+                return Err("browser-broker-workspace-revoked".into());
+            }
+            let claimed_resource = match resource_claim {
+                Ok(index) => index,
+                Err(reason) => {
+                    self.send_and_verify(
+                        req.request_id, req.page_generation, 403,
+                        "text/plain", &[], Some(reason),
+                    ).await?;
+                    return Ok(BrokerResourceReceipt {
+                        request_id: req.request_id, page_generation: req.page_generation,
+                        native_com_completed: true, terminal: "denied",
+                        reason: reason.into(), bytes: 0, tf3: None,
+                        causal_native_action_id: None,
+                    });
+                }
+            };
+            let resource_budget = claimed_resource.map_or(RESOURCE_MAX, |index| {
+                self.resource_manifest[index].max_bytes
+            });
+            if let Some(index) = claimed_resource {
+                self.resource_manifest_consumed.insert(index);
+            }
+            // The session's approved origin is the only remote HTTPS origin
+            // accessible to this child. Cross-origin URLs and redirects are
+            // rejected before a new DNS resolution or network connection.
+            let requested =
+                reqwest::Url::parse(&req.url).map_err(|_| "browser-request-url-invalid")?;
+            let approved = reqwest::Url::parse(&self.initial_url)
+                .map_err(|_| "browser-approved-origin-invalid")?;
+            if requested.origin() != approved.origin() {
+                self.send_and_verify(
+                    req.request_id,
+                    req.page_generation,
+                    403,
+                    "text/plain",
+                    &[],
+                    Some("origin-denied"),
+                )
+                .await?;
+                return Ok(BrokerResourceReceipt {
+                    request_id: req.request_id,
+                    page_generation: req.page_generation,
+                    native_com_completed: true,
+                    terminal: "denied",
+                    reason: "browser-origin-denied".into(),
+                    bytes: 0,
+                    tf3: None,
+                    causal_native_action_id: None,
+                });
+            }
+            let remaining = resource_timeout_ms(self.resource_window_started.elapsed())
+                .and_then(|budget| {
+                    let millis = absolute_deadline
+                        .saturating_duration_since(Instant::now()).as_millis() as u64;
+                    (millis > 0).then_some(budget.min(millis))
+                });
+            let Some(timeout_ms) = remaining else {
+                self.send_and_verify(req.request_id, req.page_generation, 403, "text/plain", &[], Some("browser-resource-lifetime-expired")).await?;
+                return Ok(BrokerResourceReceipt {
+                    request_id: req.request_id, page_generation: req.page_generation,
+                    native_com_completed: true, terminal: "denied",
+                    reason: "browser-resource-lifetime-expired".into(), bytes: 0, tf3: None,
+                    causal_native_action_id: None,
+                });
+            };
+            let native = TfWebRequest {
+                operation: TfWebOperation::HttpGet,
+                actor: self.actor.clone(),
+                session_id: self.session_id.clone(),
+                workspace_root: self.workspace_root.to_string_lossy().into_owned(),
+                url: Some(req.url.clone()),
+                query: None,
+                search_result_id: None,
+                timeout_ms: Some(timeout_ms),
+                max_bytes: Some(resource_budget),
+                // The browser intercepted the ORIGINAL URI. Following any
+                // 3xx, including a same-origin Location, could issue a
+                // distinct unapproved GET to an effectful API endpoint and
+                // misattribute its response to the original WebView2 URI.
+                // Public TF3 retains its existing redirect behavior.
+                max_redirects: Some(0),
+            };
+            let prepared_result = {
+                #[cfg(test)]
+                {
+                    if test_public_cert.is_some() {
+                        tf_web::prepare_owned_https_for_test(native, registry, web_state)
+                    } else {
+                        tf_web::prepare(native, registry, web_state)
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = test_public_cert;
+                    tf_web::prepare(native, registry, web_state)
+                }
+            };
+            let prepared = match prepared_result {
+                Ok(prepared) => prepared,
+                Err(_) => {
+                    self.send_and_verify(
+                        req.request_id,
+                        req.page_generation,
+                        403,
+                        "text/plain",
+                        &[],
+                        Some("tf3-preflight-denied"),
+                    )
+                    .await?;
+                    return Ok(BrokerResourceReceipt {
+                        request_id: req.request_id,
+                        page_generation: req.page_generation,
+                        native_com_completed: true,
+                        terminal: "denied",
+                        reason: "tf3-preflight-denied".into(),
+                        bytes: 0,
+                        tf3: None,
+                        causal_native_action_id: None,
+                    });
+                }
+            };
+            // Preparation must not renew the absolute resource window. Burn
+            // an unused TF3 token if the original scope has already expired.
+            if resource_timeout_ms(self.resource_window_started.elapsed()).is_none()
+                || Instant::now() >= absolute_deadline
+            {
+                let _ = tf_web::cancel(&prepared.token, web_state);
+                self.send_and_verify(req.request_id, req.page_generation, 403, "text/plain", &[], Some("browser-resource-lifetime-expired")).await?;
+                return Ok(BrokerResourceReceipt {
+                    request_id: req.request_id, page_generation: req.page_generation,
+                    native_com_completed: true, terminal: "denied",
+                    reason: "browser-resource-lifetime-expired".into(), bytes: 0, tf3: None,
+                    causal_native_action_id: None,
+                });
+            }
+            let result = {
+                #[cfg(test)]
+                {
+                    if let Some(cert) = test_public_cert {
+                        tf_web::execute_owned_https_for_test(
+                            &prepared.token,
+                            registry,
+                            web_state,
+                            &approved,
+                            cert,
+                            Some(tokio::time::Instant::from_std(absolute_deadline)),
+                        )
+                        .await
+                    } else {
+                        tf_web::execute_browser_resource_same_origin_before(
+                            &prepared.token, registry, web_state, &approved,
+                            tokio::time::Instant::from_std(absolute_deadline),
+                        ).await
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    tf_web::execute_browser_resource_same_origin_before(
+                        &prepared.token, registry, web_state, &approved,
+                        tokio::time::Instant::from_std(absolute_deadline),
+                    ).await
+                }
+            };
+            match result {
+                Ok(result) => {
+                    let receipt = result.receipt;
+                    // Independent COM response acceptance: even if TF3 ever
+                    // returns completed final 2xx despite a redirect, NEVER
+                    // synthesize 200 or install those bytes for this original
+                    // WebView2 URI. Deny with an empty body and retain the
+                    // actual TF3 receipt as evidence of what was attempted.
+                    let mime = original_uri_response_mime(&receipt, &req.url, result.bytes.len());
+                    let delivered = Instant::now() < absolute_deadline
+                        && mime.is_some() && size_allowed_for_class(
+                        req.resource_class.as_str(), mime, result.bytes.len(),
+                        resource_budget,
+                    );
+                    let size = if delivered { result.bytes.len() } else { 0 };
+                    self.send_and_verify(
+                        req.request_id,
+                        req.page_generation,
+                        if delivered { 200 } else { 403 },
+                        mime.unwrap_or("text/plain"),
+                        if delivered { &result.bytes } else { &[] },
+                        (!delivered).then_some("tf3-resource-denied"),
+                    )
+                    .await?;
+                    if delivered && req.resource_class == "document" && req.request_id == 1 {
+                        // Only the exact original 200 and its authenticated COM
+                        // completion unlock the already-approved passive scope.
+                        self.original_document_delivered = true;
+                    }
+                    Ok(BrokerResourceReceipt {
+                        request_id: req.request_id,
+                        page_generation: req.page_generation,
+                        native_com_completed: true,
+                        terminal: if delivered { "completed" } else { "denied" },
+                        reason: receipt.reason_code.into(),
+                        bytes: size,
+                        tf3: Some(receipt),
+                        causal_native_action_id: None,
+                    })
+                }
+                Err(_) => {
+                    self.send_and_verify(
+                        req.request_id,
+                        req.page_generation,
+                        502,
+                        "text/plain",
+                        &[],
+                        Some("tf3-execution-failed"),
+                    )
+                    .await?;
+                    Ok(BrokerResourceReceipt {
+                        request_id: req.request_id,
+                        page_generation: req.page_generation,
+                        native_com_completed: true,
+                        terminal: "failed",
+                        reason: "tf3-execution-failed".into(),
+                        bytes: 0,
+                        tf3: None,
+                        causal_native_action_id: None,
+                    })
+                }
+            }
+        }
+
+        pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+            if self.stopped {
+                return Ok(());
+            }
+            // Revoke every snapshot/element capability before terminating the
+            // owned browser processes; late callbacks cannot resurrect them.
+            self.page_contract.close();
+            if !self.job_drained {
+                if unsafe { TerminateJobObject(self.job.0, 1) } == 0 {
+                    return Err(win_err("browser-terminate-job"));
+                }
+                if unsafe { WaitForSingleObject(self.host.0, JOB_STOP_TIMEOUT_MS) } != WAIT_OBJECT_0
+                {
+                    return Err("browser-host-job-not-drained".into());
+                }
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
+                        unsafe { zeroed() };
+                    if unsafe {
+                        QueryInformationJobObject(
+                            self.job.0,
+                            JobObjectBasicAccountingInformation,
+                            (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                            size_of_val(&accounting) as u32,
+                            null_mut(),
+                        )
+                    } == 0
+                    {
+                        return Err(win_err("browser-job-accounting"));
+                    }
+                    if accounting.ActiveProcesses == 0 {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("browser-job-processes-still-live".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                self.job_drained = true;
+            }
+            // Only explicitly created per-session UDF and directory are
+            // eligible; avoid following symlinks/reparse points during cleanup.
+            ensure_plain_dir(&self.private_root)?;
+            ensure_plain_dir(&self.effective_udf)?;
+            // WebView2's owned Job has zero active processes, but Windows may
+            // temporarily retain UDF filesystem handles after process exit.
+            // Retry deletion of ONLY this attested session root for a bounded
+            // window, rechecking ordinary directory identity each time.
+            // Never call a retained UDF "clean" without removing it.
+            let delete_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if !self.private_root.exists() {
+                    break;
+                }
+                ensure_plain_dir(&self.private_root)?;
+                if self.effective_udf.exists() {
+                    ensure_plain_dir(&self.effective_udf)?;
+                }
+                match fs::remove_dir_all(&self.private_root) {
+                    Ok(()) => break,
+                    Err(_) if Instant::now() < delete_deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => return Err("browser-session-udf-cleanup-failed".into()),
+                }
+            }
+            self.profile.delete()?;
+            self.stopped = true;
+            Ok(())
+        }
+
+        /// Physical-test-only independent readback of the *same* owned
+        /// production Job, AppContainer profile and UDF after cancellation.
+        /// Do not infer zero residue merely from a successful shutdown call.
+        #[cfg(test)]
+        pub(crate) fn verify_cancelled_document_shutdown_for_test(
+            &self,
+            original_get_id: u64,
+        ) -> Result<(), String> {
+            if !self.ready
+                || !self.stopped
+                || !self.poisoned
+                || !self.job_drained
+                || !self.profile.deleted
+                || self.last_request_id != original_get_id
+                || self.last_page_generation == 0
+            {
+                return Err("pending-document-shutdown-state-not-attested".into());
+            }
+            if unsafe { WaitForSingleObject(self.host.0, 0) } != WAIT_OBJECT_0 {
+                return Err("pending-document-host-still-live".into());
+            }
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    self.job.0,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of_val(&accounting) as u32,
+                    null_mut(),
+                )
+            } == 0
+                || accounting.ActiveProcesses != 0
+            {
+                return Err("pending-document-job-active-process-residue".into());
+            }
+            for path in [&self.private_root, &self.effective_udf] {
+                match fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err("pending-document-udf-or-private-root-residue".into()),
+                }
+            }
+            Ok(())
+        }
+
+        /// The same independent kernel/profile/UDF readback for an orderly
+        /// read-only test session closed *after* native COM observations.
+        #[cfg(test)]
+        pub(crate) fn verify_clean_readonly_close_for_test(
+            &self,
+            expected_get_count: u64,
+        ) -> Result<(), String> {
+            if !self.ready
+                || !self.stopped
+                || self.poisoned
+                || !self.job_drained
+                || !self.profile.deleted
+                || self.last_request_id != expected_get_count
+                || self.last_page_generation == 0
+            {
+                return Err("read-only-recheck-closed-state-not-attested".into());
+            }
+            if unsafe { WaitForSingleObject(self.host.0, 0) } != WAIT_OBJECT_0 {
+                return Err("read-only-recheck-host-not-terminated".into());
+            }
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            if unsafe {
+                QueryInformationJobObject(
+                    self.job.0,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of_val(&accounting) as u32,
+                    null_mut(),
+                )
+            } == 0
+                || accounting.ActiveProcesses != 0
+            {
+                return Err("read-only-recheck-job-process-residue".into());
+            }
+            for path in [&self.private_root, &self.effective_udf] {
+                match fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err("read-only-recheck-udf-or-private-root-residue".into()),
+                }
+            }
+            Ok(())
+        }
+    }
+    impl Drop for BrowserRuntimeSession {
+        fn drop(&mut self) {
+            // Closing the Job Object is last-resort kill-on-close. Never
+            // silently erase AppContainer/UDF if orderly cleanup was unproved.
+            if !self.stopped {
+                let _ = self.shutdown();
+            }
+        }
+    }
+}
+
+// Default-feature Windows builds do not expose the native session owner.
+// Opt-in native physical tests still need the original Windows runtime.
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
+pub(crate) use windows_owner::BrowserRuntimeSession;
+
+#[cfg(not(windows))]
+pub(crate) struct BrowserRuntimeSession;
+
+#[cfg(not(windows))]
+impl BrowserRuntimeSession {
+    pub(crate) fn launch(
+        _start: BrowserRuntimeStart,
+        _registry: &crate::modules::workspace::WorkspaceRegistry,
+    ) -> Result<Self, String> {
+        Err("browser-appcontainer-windows-only".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::net::tf_browser_contract::{ActionTarget, BrowserActionKind};
+
+    #[test]
+    fn original_webview2_uri_never_accepts_followed_same_origin_redirect_bytes() {
+        // This receipt is deliberately superficially successful: the parent
+        // must *independently* reject a final 200 reached via a different URI
+        // before installing any WebView2 response for the original URI.
+        let mut receipt = TfWebReceipt {
+            tool_id: "tf.web_operation.v1",
+            request_id: "original-uri".into(),
+            actor: "test-owner".into(),
+            operation: TfWebOperation::HttpGet,
+            actual_method: "GET",
+            terminal: "completed",
+            effect_state: "Observed",
+            requested_url: Some("https://example.org/page.css".into()),
+            final_url: Some("https://example.org/page.css".into()),
+            redirect_chain: Vec::new(),
+            normalized_target: None,
+            status_code: Some(200),
+            content_type: Some("text/css".into()),
+            tls_state: "https_transport_observed",
+            bytes_received: Some(12),
+            bytes_retained: 12,
+            truncated: false,
+            content_sha256: None,
+            body: None,
+            started_at: 0,
+            ended_at: 1,
+            credential_reference: None,
+            credential_used: false,
+            retry: "NEVER_REPLAY",
+            auto_retry: false,
+            policy_decision: "allowed",
+            reason_code: "ok",
+            search_results: None,
+            search_source: None,
+            uncertainty: "http-response-observed-peer-ip-not-attested",
+            isolation: "test",
+            dns_evidence: Vec::new(),
+        };
+        let original = "https://example.org/page.css";
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), Some("text/css"));
+        receipt
+            .redirect_chain
+            .push("https://example.org/page.css".into());
+        receipt.final_url = Some("https://example.org/api/mutate".into());
+        assert_eq!(
+            original_uri_response_mime(&receipt, original, 12),
+            None,
+            "even an apparent 200 and allowed MIME must not substitute a redirected API body"
+        );
+        receipt.final_url = Some("https://example.org/style.css".into());
+        assert_eq!(
+            original_uri_response_mime(&receipt, original, 12),
+            None,
+            "same-origin redirects are not authority to substitute a different URI"
+        );
+        receipt.redirect_chain.clear();
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None,
+            "different final URL without a recorded redirect is still denied");
+        receipt.final_url = Some(original.into());
+        receipt.requested_url = Some("https://example.org/other.css".into());
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None);
+        receipt.requested_url = None;
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None);
+        receipt.requested_url = Some(original.into());
+        receipt.final_url = None;
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None);
+        receipt.final_url = Some(original.into());
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), Some("text/css"));
+        receipt.status_code = Some(302);
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None);
+        receipt.status_code = Some(200);
+        receipt.truncated = true;
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None);
+        receipt.truncated = false;
+        assert_eq!(original_uri_response_mime(&receipt, original, RESOURCE_MAX + 1), None);
+        receipt.content_type = Some("application/x-msdownload".into());
+        assert_eq!(original_uri_response_mime(&receipt, original, 12), None);
+    }
+
+    #[test]
+    fn exclusive_host_control_turns_reject_replay_forgery_and_unknown_fields() {
+        let session = "a".repeat(48);
+        let offer = serde_json::json!({"version":2,"kind":"control-turn-offer",
+            "session":session,"turnId":1});
+        assert_eq!(
+            validate_control_turn_offer(offer.to_string().as_bytes(), &session, 0),
+            Ok(1)
+        );
+        assert!(validate_control_turn_offer(offer.to_string().as_bytes(), &session, 1).is_err());
+        assert!(validate_control_turn_offer(offer.to_string().as_bytes(), "wrong", 0).is_err());
+        let advance = serde_json::json!({"version":2,"kind":"control-turn-offer",
+            "session":session,"turnId":2});
+        assert_eq!(
+            validate_control_turn_offer(advance.to_string().as_bytes(), &session, 1),
+            Ok(2)
+        );
+        for (field, value) in [
+            ("version", serde_json::json!(1)),
+            ("kind", serde_json::json!("com-completed")),
+            ("turnId", serde_json::json!(0)),
+            ("session", serde_json::json!("forged")),
+        ] {
+            let mut corrupt = offer.clone();
+            corrupt[field] = value;
+            assert!(
+                validate_control_turn_offer(corrupt.to_string().as_bytes(), &session, 0).is_err()
+            );
+        }
+        let mut injected = offer;
+        injected["approvalId"] = serde_json::json!("not-a-consent");
+        assert!(validate_control_turn_offer(injected.to_string().as_bytes(), &session, 0).is_err());
+        let decline = serde_json::to_value(ParentControlTurnChoice {
+            version: 2,
+            kind: "control-turn-continue",
+            session: &session,
+            turn_id: 1,
+        })
+        .unwrap();
+        assert_eq!(decline["kind"], "control-turn-continue");
+        assert_eq!(decline["turnId"], 1);
+        assert!(decline.get("approvalId").is_none());
+    }
+
+    #[test]
+    fn native_turn_requester_coalesces_without_creating_any_consent() {
+        let pending = Arc::new(AtomicBool::new(false));
+        let owner_signal = NativeControlTurnRequester(pending.clone());
+        let queued = owner_signal.clone();
+        queued.request();
+        owner_signal.request();
+        assert!(pending.swap(false, Ordering::AcqRel));
+        assert!(!pending.swap(false, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn consumed_central_click_witness_is_exact_scope_and_expires_without_reuse() {
+        use crate::modules::net::tf_browser_contract::BrowserEffect;
+        use std::time::{Duration, Instant};
+        let target = ActionTarget {
+            browser_session_id: "browser-1".into(),
+            page_id: "page-1".into(),
+            page_generation: 2,
+            snapshot_id: "snapshot-1".into(),
+            element_ref: "opaque-node-1".into(),
+        };
+        let workspace = PathBuf::from("C:/authorized-workspace");
+        let source = "a".repeat(64);
+        let proof = NativeConsumedExactClickApproval {
+            approval_id: "b".repeat(48),
+            actor: "human-actor".into(),
+            session_id: "conversation-1".into(),
+            workspace_root: workspace.clone(),
+            target: target.clone(),
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: source.clone(),
+            observation_id: 5,
+            index: 9,
+            ordinal: 3,
+            check_sequence: 7,
+            action: NativeRetainedAction::Click,
+            selected_native_option: None,
+            selected_native_form: None,
+            expires_at: Instant::now() + Duration::from_secs(30),
+        };
+        let scoped = NativeExactClickApprovalScope {
+            actor: "human-actor",
+            session_id: "conversation-1",
+            workspace_root: &workspace,
+            target: &target,
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: source.clone(),
+            observation_id: 5,
+            index: 9,
+            ordinal: 3,
+            check_sequence: 7,
+            action: NativeRetainedAction::Click,
+            selected_native_option: None,
+            selected_native_form: None,
+        };
+        assert!(proof.matches_exact(&scoped));
+        assert!(
+            NativeConsumedExactClickApproval::from_consumed_central_token(
+                "b".repeat(48),
+                &scoped,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .is_ok()
+        );
+        assert!(
+            NativeConsumedExactClickApproval::from_consumed_central_token(
+                "not-an-issued-id".into(),
+                &scoped,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .is_err()
+        );
+        assert!(
+            NativeConsumedExactClickApproval::from_consumed_central_token(
+                "b".repeat(48),
+                &scoped,
+                Instant::now() + Duration::from_secs(61),
+            )
+            .is_err()
+        );
+        assert!(!NativeConsumedExactClickApproval {
+            check_sequence: 8,
+            ..proof
+        }
+        .matches_exact(&scoped));
+        let expired = NativeConsumedExactClickApproval {
+            approval_id: "b".repeat(48),
+            actor: "human-actor".into(),
+            session_id: "conversation-1".into(),
+            workspace_root: workspace.clone(),
+            target: target.clone(),
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: source.clone(),
+            observation_id: 5,
+            index: 9,
+            ordinal: 3,
+            check_sequence: 7,
+            action: NativeRetainedAction::Click,
+            selected_native_option: None,
+            selected_native_form: None,
+            expires_at: Instant::now() - Duration::from_millis(1),
+        };
+        assert!(!expired.matches_exact(&scoped));
+    }
+
+    #[test]
+    fn bound_post_requires_original_consumed_form_submitter_and_generation() {
+        use crate::modules::net::tf_browser_contract::BrowserEffect;
+        use crate::modules::net::tf_web::TfBrowserBoundPost;
+        let workspace = PathBuf::from("C:/owned-scope");
+        let target = ActionTarget {
+            browser_session_id: "browser-1".into(),
+            page_id: "page-1".into(),
+            page_generation: 11,
+            snapshot_id: "snapshot-1".into(),
+            element_ref: "retained-submitter".into(),
+        };
+        // The constructed witness exists only in this source unit test; the
+        // production path is restricted to central-token consumption.
+        let proof = NativeConsumedExactClickApproval {
+            approval_id: "a".repeat(48),
+            actor: "owner".into(),
+            session_id: "session-1".into(),
+            workspace_root: workspace,
+            target,
+            effect: BrowserEffect::PotentialExternalWrite,
+            source_id: "b".repeat(64),
+            observation_id: 4,
+            index: 3,
+            ordinal: 2,
+            check_sequence: 9,
+            action: NativeRetainedAction::Submit("retained-form".into()),
+            selected_native_option: None,
+            selected_native_form: Some((2, 1)),
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(20),
+        };
+        let body = b"nonce=test&commit=once".to_vec();
+        let post = TfBrowserBoundPost {
+            destination: reqwest::Url::parse("https://example.org/form").unwrap(),
+            approved_origin: reqwest::Url::parse("https://example.org/").unwrap(),
+            body_sha256: format!("{:x}", Sha256::digest(&body)),
+            body,
+            content_type: "application/x-www-form-urlencoded",
+            source_page_generation: 11,
+            original_form_index: 2,
+            original_submitter_index: 3,
+            consumed_approval_id: "a".repeat(48),
+        };
+        let scope = "C:/owned-scope";
+        assert!(proof.matches_bound_form_post("owner", "session-1", scope, &post));
+        let mut stale = post.clone();
+        stale.source_page_generation += 1;
+        assert!(!proof.matches_bound_form_post("owner", "session-1", scope, &stale));
+        stale = post.clone();
+        stale.original_form_index = 20;
+        assert!(!proof.matches_bound_form_post("owner", "session-1", scope, &stale));
+        stale = post.clone();
+        stale.consumed_approval_id = "c".repeat(48);
+        assert!(!proof.matches_bound_form_post("owner", "session-1", scope, &stale));
+        assert!(!proof.matches_bound_form_post("owner", "other", scope, &post));
+        assert!(!proof.matches_bound_form_post("owner", "session-1", "C:/other", &post));
+    }
+
+    #[test]
+    fn sealed_original_form_capture_requires_exact_control_bytes_destination_and_native_identity() {
+        let nonce = "a".repeat(48);
+        let source = "b".repeat(64);
+        let target = ActionTarget {
+            browser_session_id: "native-browser-1".into(),
+            page_id: "page-1".into(),
+            page_generation: 7,
+            snapshot_id: "opaque-snapshot".into(),
+            element_ref: "opaque-original-submitter".into(),
+        };
+        let request = ParentFormCapture {
+            version: 2,
+            kind: "capture-form",
+            session: &nonce,
+            check_sequence: 3,
+            observation_id: 5,
+            page_generation: 7,
+            source_id: &source,
+            index: 4,
+            ordinal: 2,
+            form_index: 2,
+            form_ordinal: 1,
+        };
+        let origin = reqwest::Url::parse("https://example.org/").unwrap();
+        let response = serde_json::json!({
+            "version":2,"kind":"form-capture","session":nonce,
+            "checkSequence":3,"observationId":5,"pageGeneration":7,
+            "sourceId":source,"index":4,"ordinal":2,"formIndex":2,
+            "formOrdinal":1,"state":"CAPTURED","method":"POST",
+            "encoding":"application/x-www-form-urlencoded",
+            "destination":"https://example.org/form",
+            "body":"nonce=one&commit=once"
+        });
+        let result =
+            validate_form_capture(response.to_string().as_bytes(), &request, &target, &origin)
+                .unwrap();
+        assert_eq!(result.original_submitter_index, 4);
+        assert_eq!(result.original_form_index, 2);
+        assert_eq!(result.target, target);
+        assert_eq!(
+            result.body_sha256,
+            format!("{:x}", Sha256::digest(&result.body))
+        );
+        for (field, value) in [
+            ("session", serde_json::json!("forged")),
+            ("checkSequence", serde_json::json!(4)),
+            ("observationId", serde_json::json!(4)),
+            ("pageGeneration", serde_json::json!(8)),
+            ("index", serde_json::json!(2)),
+            ("formIndex", serde_json::json!(4)),
+            ("method", serde_json::json!("GET")),
+            ("encoding", serde_json::json!("multipart/form-data")),
+            (
+                "destination",
+                serde_json::json!("https://foreign.example/form"),
+            ),
+            (
+                "destination",
+                serde_json::json!("https://example.org/form?inject=1"),
+            ),
+            ("body", serde_json::json!("x".repeat(2049))),
+            ("state", serde_json::json!("STALE")),
+        ] {
+            let mut forged = response.clone();
+            forged[field] = value;
+            assert!(
+                validate_form_capture(forged.to_string().as_bytes(), &request, &target, &origin)
+                    .is_err(),
+                "forged {field} must not be accepted"
+            );
+        }
+        let mut unexpected = response;
+        unexpected["other"] = serde_json::json!("secret");
+        assert!(validate_form_capture(
+            unexpected.to_string().as_bytes(),
+            &request,
+            &target,
+            &origin
+        )
+        .is_err());
+        assert!(original_form_intent_unchanged(&result, &result));
+        let mut changed = result.clone();
+        changed.body = b"nonce=other&commit=once".to_vec();
+        changed.body_sha256 = format!("{:x}", Sha256::digest(&changed.body));
+        assert!(
+            !original_form_intent_unchanged(&result, &changed),
+            "a self-consistent new digest is NOT what the human approved"
+        );
+        changed = result.clone();
+        changed.destination = reqwest::Url::parse("https://example.org/other").unwrap();
+        assert!(!original_form_intent_unchanged(&result, &changed));
+        changed = result.clone();
+        changed.original_form_index += 1;
+        assert!(!original_form_intent_unchanged(&result, &changed));
+        changed = result.clone();
+        changed.observation_id += 1;
+        assert!(!original_form_intent_unchanged(&result, &changed));
+        changed = result.clone();
+        changed.target.page_generation += 1;
+        assert!(!original_form_intent_unchanged(&result, &changed));
+    }
+
+    #[test]
+    fn retained_action_payloads_are_canonical_bounded_and_not_click_authority() {
+        use NativeRetainedAction as A;
+        let cases = [
+            (A::PopupClick, None, b"popup-click".to_vec()),
+            (A::Type("é".to_owned()), None, b"type\0\xc3\xa9".to_vec()),
+            (A::Clear, None, b"clear".to_vec()),
+            (
+                A::Select("opaque".to_owned()),
+                Some((17, 2)),
+                b"select:17:2".to_vec(),
+            ),
+            (A::Check, None, b"check".to_vec()),
+            (A::Uncheck, None, b"uncheck".to_vec()),
+            (A::Scroll(-120), None, b"scroll:-120".to_vec()),
+            (A::Scroll(120), None, b"scroll:120".to_vec()),
+        ];
+        for (action, selected, expected) in cases {
+            let bytes = native_action_payload_bytes(&action, selected, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bytes, expected);
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            assert_eq!(digest.len(), 64);
+            assert!(digest
+                .bytes()
+                .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)));
+        }
+        assert_eq!(native_action_payload_bytes(&A::Click, None, None), Ok(None));
+        assert_eq!(A::PopupClick.wire_action(), "popup-click");
+        assert_eq!(A::PopupClick.kind(), A::Click.kind());
+        assert!(native_action_payload_bytes(&A::PopupClick, Some((1, 0)), None).is_err());
+        for invalid in [
+            A::Type("".into()),
+            A::Type("x\n".into()),
+            A::Type("\u{202e}evil".into()),
+            A::Type("\u{200b}hidden".into()),
+            A::Type("x".repeat(257)),
+            A::Scroll(0),
+            A::Scroll(240),
+        ] {
+            assert!(native_action_payload_bytes(&invalid, None, None).is_err());
+        }
+        assert!(native_action_payload_bytes(&A::Select("opaque".into()), None, None).is_err());
+        assert!(
+            native_action_payload_bytes(&A::Select("opaque".into()), Some((0, 2)), None).is_err()
+        );
+        assert!(
+            native_action_payload_bytes(&A::Select("opaque".into()), Some((8, 49)), None).is_err()
+        );
+        assert_eq!(
+            native_action_payload_bytes(&A::Submit("form".into()), None, Some((18, 3))),
+            Ok(Some(b"submit:18:3".to_vec()))
+        );
+        assert!(native_action_payload_bytes(&A::Submit("form".into()), None, None).is_err());
+        assert!(
+            native_action_payload_bytes(&A::Submit("form".into()), None, Some((0, 2))).is_err()
+        );
+        assert!(
+            native_action_payload_bytes(&A::Submit("form".into()), None, Some((8, 49))).is_err()
+        );
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_form_and_screenshot_debug_never_expose_original_values_or_image_pixels() {
+        let form_secret = "private-control-token-9f5a-NEVER-LOG";
+        let page_secret = "private-page-path-a312-NEVER-LOG";
+        let pixel_secret = "sensitive-pixel-bytes-c7d2-NEVER-LOG";
+        let form = NativeFormIntent {
+            target: crate::modules::net::tf_browser_contract::ActionTarget {
+                browser_session_id: "s".repeat(48),
+                page_id: "p".repeat(48),
+                page_generation: 1,
+                snapshot_id: "n".repeat(48),
+                element_ref: "e".repeat(48),
+            },
+            observation_id: 1,
+            original_form_index: 2,
+            original_submitter_index: 3,
+            destination: reqwest::Url::parse(&format!("https://example.org/{page_secret}"))
+                .unwrap(),
+            body: form_secret.as_bytes().to_vec(),
+            body_sha256: format!("{:x}", Sha256::digest(form_secret.as_bytes())),
+        };
+        let form_debug = format!("{form:?}");
+        assert!(form_debug.contains("body_byte_count"));
+        for forbidden in [
+            form_secret,
+            page_secret,
+            &form.body_sha256,
+            &form.target.element_ref,
+        ] {
+            assert!(!form_debug.contains(forbidden));
+        }
+        let capture = NativeScreenshotCapture {
+            browser_session_id: "b".repeat(48),
+            page_id: "q".repeat(48),
+            page_generation: 1,
+            snapshot_id: "z".repeat(48),
+            url: format!("https://example.org/{page_secret}"),
+            width: 800,
+            height: 600,
+            captured_at_ms: 1,
+            sha256: "a".repeat(64),
+            png: pixel_secret.as_bytes().to_vec(),
+        };
+        let capture_debug = format!("{capture:?}");
+        assert!(capture_debug.contains("png_byte_count"));
+        for forbidden in [
+            pixel_secret,
+            page_secret,
+            &capture.sha256,
+            &capture.browser_session_id,
+        ] {
+            assert!(!capture_debug.contains(forbidden));
+        }
+        let sealed = ChildScreenshotCapture {
+            version: 2,
+            kind: "screenshot-capture".into(),
+            session: "session-secret-not-for-debug".into(),
+            check_sequence: 1,
+            observation_id: 2,
+            page_generation: 1,
+            source_id: "source-secret-not-for-debug".into(),
+            state: "CAPTURED".into(),
+            format: "png".into(),
+            width: 800,
+            height: 600,
+            captured_at_ms: 1,
+            sha256: Some("digest-secret-not-for-debug".into()),
+            bytes_base64: Some(pixel_secret.into()),
+        };
+        let sealed_debug = format!("{sealed:?}");
+        assert!(sealed_debug.contains("image_payload_present"));
+        for forbidden in [
+            pixel_secret,
+            "session-secret-not-for-debug",
+            "source-secret-not-for-debug",
+            "digest-secret-not-for-debug",
+        ] {
+            assert!(!sealed_debug.contains(forbidden));
+        }
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn native_screenshot_sealed_image_requires_exact_page_snapshot_crc_digest_and_bounds() {
+        const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        let png = BASE64.decode(PNG).unwrap();
+        assert_eq!(independently_verify_native_png(&png), Ok((1, 1)));
+        let digest = format!("{:x}", Sha256::digest(&png));
+        let captured_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let nonce = "a".repeat(48);
+        let source = format!("{:x}", Sha256::digest(b"https://example.org/"));
+        let request = ParentScreenshotCapture {
+            version: 2,
+            kind: "capture-screenshot",
+            session: &nonce,
+            check_sequence: 8,
+            observation_id: 4,
+            page_generation: 2,
+            source_id: &source,
+        };
+        let page = PageSnapshot {
+            browser_session_id: "b".repeat(48),
+            page_id: "c".repeat(48),
+            page_generation: 2,
+            snapshot_id: "d".repeat(48),
+            url: "https://example.org/".into(),
+            origin: "https://example.org".into(),
+            title: "Owned Test".into(),
+            observed_at_ms: 123,
+            visible_text: "redacted".into(),
+            truncated: false,
+            elements: vec![],
+        };
+        let reply = serde_json::json!({
+            "version":2,"kind":"screenshot-capture","session":nonce,
+            "checkSequence":8,"observationId":4,"pageGeneration":2,
+            "sourceId":source,"state":"CAPTURED","format":"png",
+            "width":1,"height":1,"capturedAtMs":captured_now,
+            "sha256":digest,"bytesBase64":PNG,
+        });
+        let capture =
+            validate_native_screenshot_capture(reply.to_string().as_bytes(), &request, &page)
+                .unwrap();
+        assert_eq!(capture.png, png);
+        assert_eq!(capture.sha256, digest);
+        assert_eq!(capture.snapshot_id, page.snapshot_id);
+        assert_eq!(capture.browser_session_id, page.browser_session_id);
+        assert_eq!((capture.width, capture.height), (1, 1));
+        let debug = format!("{capture:?}");
+        assert!(!debug.contains("password"));
+        for (field, value) in [
+            ("session", serde_json::json!("wrong")),
+            ("checkSequence", serde_json::json!(9)),
+            ("observationId", serde_json::json!(5)),
+            ("pageGeneration", serde_json::json!(1)),
+            ("sourceId", serde_json::json!("a".repeat(64))),
+            ("state", serde_json::json!("UNKNOWN")),
+            ("format", serde_json::json!("jpeg")),
+            ("capturedAtMs", serde_json::json!(captured_now - 100_000)),
+            ("width", serde_json::json!(2048)),
+            ("width", serde_json::json!(2)),
+            ("sha256", serde_json::json!("0".repeat(64))),
+            ("bytesBase64", serde_json::json!("not-base64")),
+            ("bytesBase64", serde_json::json!("A".repeat(96 * 1024))),
+        ] {
+            let mut forged = reply.clone();
+            forged[field] = value;
+            assert!(
+                validate_native_screenshot_capture(forged.to_string().as_bytes(), &request, &page)
+                    .is_err(),
+                "forged screenshot {field} should fail"
+            );
+        }
+        let mut tampered = png;
+        tampered[50] ^= 1; // same size, corrupted independent chunk CRC
+        assert!(independently_verify_native_png(&tampered).is_err());
+    }
+
+    #[test]
+    fn retained_action_reply_requires_exact_original_payload_digest() {
+        use crate::modules::net::tf_browser_contract::NativeEffectTerminal as T;
+        let payload =
+            native_action_payload_bytes(&NativeRetainedAction::Type("a".into()), None, None)
+                .unwrap()
+                .unwrap();
+        let sha = format!("{:x}", Sha256::digest(payload));
+        let request = ParentElementAction {
+            version: 2,
+            kind: "act-element",
+            session: "original",
+            check_sequence: 2,
+            observation_id: 1,
+            page_generation: 1,
+            source_id: "source",
+            index: 7,
+            ordinal: 2,
+            action: "type",
+            approval_id: "approved",
+            approved_destination: None,
+            text: Some("a"),
+            option_index: None,
+            option_ordinal: None,
+            form_index: None,
+            form_ordinal: None,
+            delta_y: None,
+            payload_sha256: Some(&sha),
+        };
+        let mut reply = serde_json::json!({
+            "version":2, "kind":"element-action", "session":"original",
+            "checkSequence":2,"observationId":1,"pageGeneration":1,
+            "sourceId":"source","index":7,"ordinal":2,"action":"type",
+            "approvalId":"approved","payloadSha256":sha,"state":"DISPATCHED",
+        });
+        assert_eq!(
+            validate_element_action_reply(reply.to_string().as_bytes(), &request),
+            Ok(T::Dispatched)
+        );
+        for (field, spoof) in [
+            ("action", serde_json::json!("click")),
+            ("payloadSha256", serde_json::json!("0".repeat(64))),
+            ("approvalId", serde_json::json!("replayed")),
+            ("observationId", serde_json::json!(2)),
+        ] {
+            let mut modified = reply.clone();
+            modified[field] = spoof;
+            assert!(
+                validate_element_action_reply(modified.to_string().as_bytes(), &request).is_err()
+            );
+        }
+        reply.as_object_mut().unwrap().remove("payloadSha256");
+        assert!(validate_element_action_reply(reply.to_string().as_bytes(), &request).is_err());
+    }
+    #[test]
+    fn broker_allows_bounded_web_fonts_and_common_script_mime_without_untrusted_headers() {
+        for mime in [
+            "text/javascript; charset=utf-8",
+            "font/woff",
+            "font/woff2",
+            "application/font-woff",
+            "application/font-woff2",
+            "application/vnd.ms-fontobject",
+            "application/x-javascript",
+            "image/webp",
+            "image/avif",
+            "font/ttf",
+            "font/otf",
+        ] {
+            assert!(checked_mime(Some(mime)).is_some(), "{mime}");
+        }
+        for mime in [
+            "text/html\r\nSet-Cookie: x=y",
+            "application/x-sh",
+            "text/xml",
+        ] {
+            assert!(checked_mime(Some(mime)).is_none(), "{mime}");
+        }
+    }
+    #[test]
+    fn rejects_replay_forged_session_and_non_https_before_network() {
+        let nonce = "a".repeat(48);
+        let good = ChildGet {
+            version: 1,
+            session: nonce.clone(),
+            request_id: 1,
+            method: "GET".into(),
+            url: "https://example.org/a".into(),
+            resource_class: "document".into(),
+            page_generation: 1,
+        };
+        assert!(validate_get(&good, &nonce, 0).is_ok());
+        assert!(validate_get(&good, &nonce, 1).is_err());
+        assert!(validate_get(
+            &ChildGet {
+                session: "b".repeat(48),
+                ..good.clone()
+            },
+            &nonce,
+            0
+        )
+        .is_err());
+        assert!(validate_get(
+            &ChildGet {
+                url: "http://127.0.0.1/".into(),
+                ..good.clone()
+            },
+            &nonce,
+            0
+        )
+        .is_err());
+        assert!(validate_get(
+            &ChildGet {
+                method: "POST".into(),
+                ..good.clone()
+            },
+            &nonce,
+            0
+        )
+        .is_err());
+        assert!(validate_get(
+            &ChildGet {
+                resource_class: "fetch".into(),
+                ..good.clone()
+            },
+            &nonce,
+            0
+        )
+        .is_err());
+        assert!(validate_get(
+            &ChildGet {
+                page_generation: 0,
+                ..good
+            },
+            &nonce,
+            0
+        )
+        .is_err());
+    }
+    #[test]
+    fn popup_capture_response_binds_original_owner_turn_epoch_and_one_destination() {
+        let original = "https://example.org/";
+        let session = "n".repeat(48);
+        let expected = ParentPopupCapture {
+            version: 2, kind: "capture-popup", session: &session,
+            check_sequence: 7, page_generation: 1,
+            expected_url: "https://popup.example.org/",
+        };
+        let mut reply = serde_json::json!({
+            "version":2,"kind":"popup-capture","session":session,
+            "checkSequence":7,"pageGeneration":1,"state":"CAPTURED",
+            "intentId":"a".repeat(64),
+            "destination":"https://popup.example.org/",
+            "sourceSha256":format!("{:x}", Sha256::digest(original.as_bytes())),
+            "remainingLifetimeMs":12_000,
+        });
+        let started = Instant::now();
+        let received = started + Duration::from_secs(2);
+        let decode = |value: &serde_json::Value| {
+            popup_capture_result(&serde_json::to_vec(value).unwrap(), &expected, original, started, received)
+        };
+        let encoded = serde_json::to_vec(&reply).unwrap();
+        let accepted = popup_capture_result(&encoded, &expected, original, started, received).unwrap().unwrap();
+        assert_eq!(accepted.id.len(), 64);
+        assert_eq!(accepted.destination, expected.expected_url);
+        assert_eq!(accepted.expires_at, started + Duration::from_secs(12));
+        assert_eq!(accepted.expires_at.duration_since(received), Duration::from_secs(10));
+        for (key, value) in [
+            ("session", serde_json::json!("forged")),
+            ("checkSequence", serde_json::json!(8)),
+            ("pageGeneration", serde_json::json!(2)),
+            ("destination", serde_json::json!("https://other.example.org/")),
+            ("sourceSha256", serde_json::json!("b".repeat(64))),
+            ("intentId", serde_json::json!("not-an-id")),
+            ("remainingLifetimeMs", serde_json::json!(0)),
+            ("remainingLifetimeMs", serde_json::json!(30_001)),
+            ("remainingLifetimeMs", serde_json::json!(-1)),
+            ("remainingLifetimeMs", serde_json::Value::Null),
+            ("remainingLifetimeMs", serde_json::json!(2_000)),
+        ] {
+            let prior = reply[key].clone();
+            reply[key] = value;
+            assert!(decode(&reply).is_err(), "forged {key}");
+            reply[key] = prior;
+        }
+        reply.as_object_mut().unwrap().remove("remainingLifetimeMs");
+        assert!(decode(&reply).is_err(), "capture must supply original remaining lifetime");
+        reply["remainingLifetimeMs"] = serde_json::json!(30_000);
+        assert_eq!(decode(&reply).unwrap().unwrap().expires_at, started + Duration::from_secs(30));
+        reply["remainingLifetimeMs"] = serde_json::json!(1);
+        assert!(popup_capture_result(&serde_json::to_vec(&reply).unwrap(), &expected, original, started, started).is_ok());
+        reply["state"] = serde_json::json!("DENIED");
+        assert!(decode(&reply).is_err());
+        reply["intentId"] = serde_json::Value::Null;
+        reply["destination"] = serde_json::Value::Null;
+        reply["sourceSha256"] = serde_json::Value::Null;
+        assert!(decode(&reply).is_err(), "denied reply cannot supply a lifetime");
+        reply["remainingLifetimeMs"] = serde_json::Value::Null;
+        assert!(decode(&reply).is_err(), "denied reply must omit the lifetime entirely");
+        reply.as_object_mut().unwrap().remove("remainingLifetimeMs");
+        assert_eq!(decode(&reply), Ok(None));
+    }
+
+    #[test]
+    fn resource_manifest_requires_original_navigation_exact_class_one_use_and_budget() {
+        let original = "https://example.org/start";
+        let manifest = vec![
+            BrowserResourceCapability {
+                url: "https://example.org/page.css".into(),
+                class: BrowserPassiveClass::Stylesheet,
+                max_bytes: 1024,
+            },
+            BrowserResourceCapability {
+                url: "https://example.org/pixel.png".into(),
+                class: BrowserPassiveClass::Image,
+                max_bytes: 128,
+            },
+        ];
+        assert_eq!(validate_resource_manifest(original, &manifest), Ok(()));
+        let empty = std::collections::HashSet::new();
+        let mut req = ChildGet {
+            version: 1, session: "a".repeat(48), request_id: 1,
+            method: "GET".into(), url: original.into(),
+            resource_class: "document".into(), page_generation: 1,
+        };
+        assert_eq!(
+            resource_scope_index(&req, original, &manifest, &empty, 0, false, std::time::Duration::ZERO),
+            Ok(None)
+        );
+        req.request_id = 2;
+        assert!(resource_scope_index(
+            &req, original, &manifest, &empty, 1, true, std::time::Duration::ZERO,
+        ).is_err(), "successor document is never an implied GET grant");
+        req.url = "https://example.org/page.css".into();
+        req.resource_class = "stylesheet".into();
+        assert!(resource_scope_index(
+            &req, original, &manifest, &empty, 1, false, std::time::Duration::ZERO,
+        ).is_err(), "a denied or unacknowledged original document cannot unlock passive GETs");
+        assert_eq!(
+            resource_scope_index(&req, original, &manifest, &empty, 1, true, std::time::Duration::ZERO),
+            Ok(Some(0))
+        );
+        let consumed = std::collections::HashSet::from([0usize]);
+        assert!(resource_scope_index(
+            &req, original, &manifest, &consumed, 1, true, std::time::Duration::ZERO,
+        ).is_err(), "one resource capability cannot be replayed");
+        req.resource_class = "image".into();
+        assert!(resource_scope_index(
+            &req, original, &manifest, &empty, 1, true, std::time::Duration::ZERO,
+        ).is_err(), "native context must exactly match approved class");
+        req.resource_class = "stylesheet".into();
+        req.url = "https://example.org/page.css?effect=1".into();
+        assert!(resource_scope_index(
+            &req, original, &manifest, &empty, 1, true, std::time::Duration::ZERO,
+        ).is_err(), "no same-origin query or unrelated API endpoint");
+        req.url = "https://example.org/page.css".into();
+        req.page_generation = 2;
+        assert!(resource_scope_index(
+            &req, original, &manifest, &empty, 1, true, std::time::Duration::ZERO,
+        ).is_err(), "new page epoch requires a new central authority");
+        req.page_generation = 1;
+        assert!(resource_scope_index(
+            &req, original, &manifest, &empty, 1, true,
+            RESOURCE_SCOPE_LIFETIME + std::time::Duration::from_millis(1),
+        ).is_err(), "expired capability cannot dispatch");
+        assert!(validate_resource_manifest(original, &[
+            manifest[0].clone(), manifest[0].clone(),
+        ]).is_err(), "duplicated exact target cannot multiply GET budget");
+        assert!(validate_resource_manifest(original, &[
+            BrowserResourceCapability {
+                url: "https://foreign.example/page.css".into(),
+                ..manifest[0].clone()
+            },
+        ]).is_err(), "cross-origin cannot be manifest-authorized");
+        let prefix = "https://example.org/";
+        let exact = format!("{prefix}{}", "a".repeat(2048 - prefix.len()));
+        let mut entry = BrowserResourceCapability { url: exact, ..manifest[0].clone() };
+        assert!(validate_resource_manifest(original, &[entry.clone()]).is_ok());
+        entry.url.push('a');
+        assert!(validate_resource_manifest(original, &[entry]).is_err());
+        assert_eq!(resource_timeout_ms(std::time::Duration::ZERO), Some(5_000));
+        assert_eq!(resource_timeout_ms(RESOURCE_SCOPE_LIFETIME - std::time::Duration::from_millis(150)), Some(150));
+        assert_eq!(resource_timeout_ms(RESOURCE_SCOPE_LIFETIME - std::time::Duration::from_micros(500)), None);
+        assert_eq!(resource_timeout_ms(RESOURCE_SCOPE_LIFETIME), None);
+        assert_eq!(resource_timeout_ms(RESOURCE_SCOPE_LIFETIME + std::time::Duration::from_secs(1)), None);
+        assert!(!size_allowed_for_class("stylesheet", Some("text/html"), 1, 1024));
+        assert!(!size_allowed_for_class("stylesheet", Some("text/css"), 1025, 1024));
+        assert!(size_allowed_for_class("stylesheet", Some("text/css"), 32, 1024));
+        assert!(!size_allowed_for_class("image", Some("text/css"), 32, 1024));
+        assert!(!size_allowed_for_class("fetch", Some("image/png"), 32, 1024));
+    }
+
+    #[test]
+    fn original_link_preconsent_capture_binds_exact_node_source_and_destination() {
+        use crate::modules::net::tf_browser_contract::ActionTarget;
+        let session = "a".repeat(48);
+        let source_id = "b".repeat(64);
+        let target = ActionTarget {
+            browser_session_id: "browser".into(), page_id: "page".into(),
+            page_generation: 1, snapshot_id: "snapshot".into(),
+            element_ref: "c".repeat(48),
+        };
+        let request = ParentLinkCapture {
+            version: 2, kind: "capture-link", session: &session,
+            check_sequence: 4, observation_id: 3, page_generation: 1,
+            source_id: &source_id, index: 7, ordinal: 2,
+        };
+        let source = reqwest::Url::parse("https://example.test/").unwrap();
+        let mut reply = serde_json::json!({
+            "version":2,"kind":"link-capture","session":session,
+            "checkSequence":4,"observationId":3,"pageGeneration":1,
+            "sourceId":source_id,"index":7,"ordinal":2,"state":"CAPTURED",
+            "destination":"https://example.test/clicked"
+        });
+        let decode = |frame: &serde_json::Value| {
+            validate_link_capture(frame.to_string().as_bytes(), &request, &target, &source)
+        };
+        let captured = decode(&reply).unwrap();
+        assert_eq!(captured.target, target);
+        assert_eq!(captured.original_link_index, 7);
+        assert_eq!(
+            captured.destination.as_str(),
+            "https://example.test/clicked"
+        );
+        assert!(original_link_intent_unchanged(&captured, &captured));
+        // A post-consent DOM href replacement must fail even when a freshly
+        // recomputed digest is internally consistent with the substituted URL.
+        let mut changed_href = captured.clone();
+        changed_href.destination = reqwest::Url::parse("https://example.test/different").unwrap();
+        changed_href.destination_sha256 = format!(
+            "{:x}",
+            Sha256::digest(changed_href.destination.as_str().as_bytes()),
+        );
+        assert!(!original_link_intent_unchanged(&captured, &changed_href));
+        let mut changed_index = captured.clone();
+        changed_index.original_link_index += 1;
+        assert!(!original_link_intent_unchanged(&captured, &changed_index));
+        for (field, forged) in [
+            ("session", serde_json::json!("other")),
+            ("checkSequence", serde_json::json!(5)),
+            ("observationId", serde_json::json!(4)),
+            ("pageGeneration", serde_json::json!(2)),
+            ("sourceId", serde_json::json!("0".repeat(64))),
+            ("ordinal", serde_json::json!(3)),
+            ("index", serde_json::json!(8)),
+            ("state", serde_json::json!("STALE")),
+            ("destination", serde_json::json!("https://other.test/clicked")),
+            ("destination", serde_json::json!("https://example.test/clicked?secret=1")),
+            ("destination", serde_json::json!("http://example.test/clicked")),
+            ("destination", serde_json::json!("https://example.test/")),
+        ] {
+            let old = reply[field].clone();
+            reply[field] = forged;
+            assert!(decode(&reply).is_err(), "forged {field}");
+            reply[field] = old;
+        }
+        let mut injected = reply.clone();
+        injected["selector"] = serde_json::json!("a[href]");
+        assert!(decode(&injected).is_err());
+        let mut tampered = captured.clone();
+        tampered.destination_sha256 = "0".repeat(64);
+        assert!(!original_link_intent_unchanged(&captured, &tampered));
+    }
+
+    #[test]
+    fn separately_consumed_successor_document_requires_exact_one_use_scope() {
+        let scope = NativeSuccessorScope {
+            destination: "https://example.test/clicked".into(),
+            source_generation: 1,
+            consumed_action_id: "a".repeat(48),
+            request_floor: 3,
+            deadline: Instant::now() + Duration::from_secs(18),
+            claimed: false,
+        };
+        let mut req = ChildGet {
+            version:2, session: "s".repeat(48), request_id:4,
+            method:"GET".into(),url:scope.destination.clone(),
+            resource_class:"document".into(),page_generation:2,
+        };
+        assert!(successor_scope_matches(&scope,&req,true,Duration::from_secs(10)));
+        assert!(!successor_scope_matches(&scope,&req,false,Duration::ZERO));
+        assert!(!successor_scope_matches(&scope,&req,true,RESOURCE_SCOPE_LIFETIME));
+        req.request_id=3;
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.request_id=4;
+        req.page_generation=1;
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.page_generation=2;
+        req.resource_class="stylesheet".into();
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.resource_class="document".into();
+        req.url="https://example.test/unapproved".into();
+        assert!(!successor_scope_matches(&scope,&req,true,Duration::ZERO));
+        req.url=scope.destination.clone();
+        let spent = NativeSuccessorScope { claimed: true, ..scope };
+        assert!(!successor_scope_matches(&spent,&req,true,Duration::ZERO));
+        let expired = NativeSuccessorScope {
+            deadline: Instant::now() - Duration::from_secs(1), ..spent
+        };
+        assert!(!successor_scope_matches(&expired,&req,true,Duration::ZERO));
+    }
+
+    #[test]
+    fn successor_network_absolute_deadline_never_renews_original_page_lifetime() {
+        let original_started = Instant::now() - Duration::from_secs(89);
+        let original_expires = original_started + RESOURCE_SCOPE_LIFETIME;
+        let successor_expires = Instant::now() + Duration::from_secs(18);
+        assert_eq!(
+            resource_absolute_deadline(original_started, Some(successor_expires)),
+            original_expires,
+            "an 18-second successor may not outlive its original 90-second page scope",
+        );
+        assert_eq!(resource_absolute_deadline(original_started, None), original_expires);
+        let tighter = Instant::now() + Duration::from_millis(300);
+        assert_eq!(resource_absolute_deadline(original_started, Some(tighter)), tighter);
+        let expired_original = Instant::now() - RESOURCE_SCOPE_LIFETIME - Duration::from_secs(1);
+        assert!(
+            resource_absolute_deadline(expired_original, Some(successor_expires)) < Instant::now(),
+            "an expired source window cannot be resurrected by a fresh successor grant",
+        );
+    }
+    #[test]
+    fn preconsent_approval_deadline_is_intersection_not_renewed_budget() {
+        let now = Instant::now();
+        let central = now + Duration::from_secs(55);
+        let young_original = now - Duration::from_secs(5);
+        assert_eq!(
+            native_action_approval_deadline(central, young_original),
+            central
+        );
+        let aging_original = now - Duration::from_secs(72);
+        assert_eq!(
+            native_action_approval_deadline(central, aging_original),
+            aging_original + RESOURCE_SCOPE_LIFETIME,
+            "human decision may have at most 18s of original resource authority left",
+        );
+        let expired_original = now - Duration::from_secs(91);
+        assert!(native_action_approval_deadline(central, expired_original) < now);
+        let expired_central = now - Duration::from_millis(1);
+        assert_eq!(
+            native_action_approval_deadline(expired_central, young_original),
+            expired_central
+        );
+    }
+    #[test]
+    fn com_ack_requires_exact_native_completion_identity_and_status() {
+        let nonce = "b".repeat(48);
+        let accepted = ChildComAck {
+            version: 1,
+            session: nonce.clone(),
+            request_id: 2,
+            kind: "com-completed".into(),
+            status: 403,
+            page_generation: 5,
+        };
+        assert!(validate_com_ack(&accepted, &nonce, 2, 5, 403).is_ok());
+        assert!(validate_com_ack(&accepted, &nonce, 2, 5, 200).is_err());
+        assert!(validate_com_ack(&accepted, &nonce, 2, 4, 403).is_err());
+        assert!(validate_com_ack(&accepted, &nonce, 1, 5, 403).is_err());
+        let wrong_session = ChildComAck {
+            session: "c".repeat(48),
+            ..accepted
+        };
+        assert!(validate_com_ack(&wrong_session, &nonce, 2, 5, 403).is_err());
+    }
+
+    #[test]
+    fn native_element_recheck_accepts_only_exact_closed_readonly_identity() {
+        let session = "a".repeat(48);
+        let source = "c".repeat(64);
+        let request = ParentElementRecheck {
+            version: 2,
+            kind: "recheck-element",
+            session: &session,
+            check_sequence: 1,
+            observation_id: 2,
+            page_generation: 3,
+            source_id: &source,
+            index: 7,
+            ordinal: 4,
+            debug_replace_heading: None,
+            debug_mutation_kind: None,
+        };
+        let good = serde_json::json!({
+            "version": 2, "kind": "element-recheck",
+            "session": session, "checkSequence": 1,
+            "observationId": 2, "pageGeneration": 3,
+            "sourceId": source, "index": 7, "ordinal": 4,
+            "state": "ACCEPTED",
+        });
+        assert_eq!(
+            validate_element_recheck_reply(&good.to_string().into_bytes(), &request),
+            Ok(true)
+        );
+        let mut altered = good.clone();
+        altered["state"] = serde_json::json!("STALE");
+        assert_eq!(
+            validate_element_recheck_reply(&altered.to_string().into_bytes(), &request),
+            Ok(false),
+            "stale is only a negative observation, never an action grant"
+        );
+        for (field, forged) in [
+            ("checkSequence", serde_json::json!(2)),
+            ("observationId", serde_json::json!(1)),
+            ("pageGeneration", serde_json::json!(4)),
+            ("sourceId", serde_json::json!("d".repeat(64))),
+            ("session", serde_json::json!("b".repeat(48))),
+            ("index", serde_json::json!(8)),
+            ("ordinal", serde_json::json!(3)),
+            ("state", serde_json::json!("CLICKED")),
+            ("kind", serde_json::json!("com-completed")),
+            ("version", serde_json::json!(1)),
+        ] {
+            let mut forged_reply = good.clone();
+            forged_reply[field] = forged;
+            assert!(
+                validate_element_recheck_reply(&forged_reply.to_string().into_bytes(), &request)
+                    .is_err(),
+                "field {field} is a bound native identity, not caller authority"
+            );
+        }
+        let mut leaked = good.clone();
+        leaked["value"] = serde_json::json!("synthetic-hidden-page-secret");
+        assert!(
+            validate_element_recheck_reply(&leaked.to_string().into_bytes(), &request).is_err(),
+            "the sealed native reply cannot contain page text or values"
+        );
+        assert!(
+            validate_element_recheck_reply(&vec![b'a'; 1025], &request).is_err(),
+            "bounded recheck reply"
+        );
+        let debug_request = ParentElementRecheck {
+            debug_replace_heading: Some(true),
+            ..request
+        };
+        let mut mutated = good;
+        mutated["state"] = serde_json::json!("MUTATED");
+        assert_eq!(
+            validate_element_recheck_reply(&mutated.to_string().into_bytes(), &debug_request),
+            Ok(true),
+            "only explicit test-owned replacement may acknowledge MUTATED"
+        );
+        mutated["state"] = serde_json::json!("ACCEPTED");
+        assert!(
+            validate_element_recheck_reply(&mutated.to_string().into_bytes(), &debug_request)
+                .is_err(),
+            "a replacement request cannot be disguised as a read-only recheck"
+        );
+    }
+
+    #[test]
+    fn native_exact_click_reply_never_promotes_dispatch_to_effect_confirmation() {
+        use crate::modules::net::tf_browser_contract::{
+            NativeEffectReceipt, NativeEffectTerminal as T,
+        };
+        let request = ParentElementAction {
+            version: 2,
+            kind: "act-element",
+            session: "a",
+            check_sequence: 3,
+            observation_id: 2,
+            page_generation: 1,
+            source_id: "b",
+            index: 4,
+            ordinal: 2,
+            action: "click",
+            approval_id: "c",
+            approved_destination: Some("https://example.test/clicked"),
+            text: None,
+            option_index: None,
+            option_ordinal: None,
+            form_index: None,
+            form_ordinal: None,
+            delta_y: None,
+            payload_sha256: None,
+        };
+        let raw = serde_json::json!({
+            "version":2, "kind":"element-action", "session":"a",
+            "checkSequence":3,"observationId":2,"pageGeneration":1,
+            "sourceId":"b","index":4,"ordinal":2,"action":"click",
+            "approvalId":"c","state":"DISPATCHED",
+        });
+        assert!(
+            validate_element_action_reply(raw.to_string().as_bytes(), &request).is_err(),
+            "DISPATCHED original click must prove exact approved href digest"
+        );
+        let digest = format!("{:x}", Sha256::digest(b"https://example.test/clicked"));
+        let mut bound = raw.clone();
+        bound["targetUrlSha256"] = serde_json::json!(digest.clone());
+        assert_eq!(
+            validate_element_action_reply_with_target(bound.to_string().as_bytes(), &request),
+            Ok((T::Dispatched, Some(digest.clone())))
+        );
+        for invalid_digest in [
+            String::new(),
+            "a".repeat(64),
+            "A".to_owned(),
+            "A".repeat(64),
+            "z".repeat(64),
+        ] {
+            let mut forged = bound.clone();
+            forged["targetUrlSha256"] = serde_json::json!(invalid_digest);
+            assert!(validate_element_action_reply_with_target(
+                forged.to_string().as_bytes(),
+                &request
+            )
+            .is_err());
+        }
+        let mut missing_digest = bound.clone();
+        missing_digest.as_object_mut().unwrap().remove("targetUrlSha256");
+        assert!(validate_element_action_reply_with_target(
+            missing_digest.to_string().as_bytes(), &request,
+        ).is_err(), "absent native digest cannot leave successor scope armed");
+        let mut forged = bound.clone();
+        forged["state"] = serde_json::json!("STALE");
+        assert!(
+            validate_element_action_reply_with_target(forged.to_string().as_bytes(), &request)
+                .is_err(),
+            "a denied native action cannot carry a destination proof"
+        );
+        let receipt = NativeEffectReceipt::classify(T::Dispatched);
+        assert_eq!(receipt.effect_state, "Unknown");
+        assert_eq!(receipt.retry, "NEVER_REPLAY");
+        for (field, bad) in [
+            ("session", serde_json::json!("d")),
+            ("checkSequence", serde_json::json!(4)),
+            ("observationId", serde_json::json!(3)),
+            ("sourceId", serde_json::json!("d")),
+            ("pageGeneration", serde_json::json!(2)),
+            ("index", serde_json::json!(5)),
+            ("ordinal", serde_json::json!(3)),
+            ("action", serde_json::json!("submit")),
+            ("approvalId", serde_json::json!("d")),
+            ("state", serde_json::json!("CONFIRMED")),
+        ] {
+            let mut forged = raw.clone();
+            forged[field] = bad;
+            assert!(
+                validate_element_action_reply(forged.to_string().as_bytes(), &request).is_err(),
+                "forged {field}"
+            );
+        }
+        let mut injected = raw.clone();
+        injected["body"] = serde_json::json!("leaked-secret");
+        assert!(validate_element_action_reply(injected.to_string().as_bytes(), &request).is_err());
+        for (wire, terminal) in [
+            ("STALE", T::Stale),
+            ("DENIED_TARGET", T::Denied),
+            ("UNKNOWN", T::Unknown),
+        ] {
+            let mut reply = raw.clone();
+            reply["state"] = serde_json::json!(wire);
+            if wire == "STALE" {
+                reply["staleReason"] = serde_json::json!("recheck-rejected");
+            }
+            assert_eq!(
+                validate_element_action_reply(reply.to_string().as_bytes(), &request),
+                Ok(terminal)
+            );
+        }
+        for reason in ["binding-missing", "page-changed", "snapshot-changed",
+            "node-detached", "node-changed", "destination-changed",
+            "mutation-observed", "recheck-rejected"] {
+            let mut stale = raw.clone();
+            stale["state"] = serde_json::json!("STALE");
+            stale["staleReason"] = serde_json::json!(reason);
+            assert_eq!(
+                validate_element_action_reply_diagnostic(stale.to_string().as_bytes(), &request),
+                Ok((T::Stale, None, Some(reason))),
+            );
+            assert!(native_stale_reason_receipt_code(reason).starts_with("native-exact-stale-"));
+        }
+        for injected in [serde_json::json!("../../private"),
+            serde_json::json!("destination=https://secret.example"),
+            serde_json::json!("NODE-INJECTED"), serde_json::json!(null),
+            serde_json::json!(100)] {
+            let mut stale = raw.clone();
+            stale["state"] = serde_json::json!("STALE");
+            stale["staleReason"] = injected;
+            assert!(validate_element_action_reply_diagnostic(stale.to_string().as_bytes(), &request).is_err());
+        }
+        let mut no_reason = raw.clone();
+        no_reason["state"] = serde_json::json!("STALE");
+        assert!(validate_element_action_reply_diagnostic(no_reason.to_string().as_bytes(), &request).is_err());
+        let mut success_with_stale = raw.clone();
+        success_with_stale["state"] = serde_json::json!("DENIED_TARGET");
+        success_with_stale["staleReason"] = serde_json::json!("recheck-rejected");
+        assert!(validate_element_action_reply_diagnostic(success_with_stale.to_string().as_bytes(), &request).is_err());
+    }
+    #[test]
+    fn native_structure_never_accepts_page_derived_text_or_stale_identity() {
+        let session = "d".repeat(48);
+        let source = "e".repeat(64);
+        let raw = serde_json::json!({
+            "version":2, "kind":"dom-snapshot", "session":session,
+            "observationId":4,"pageGeneration":7, "sourceId":source,
+            "terminal":"completed","reason":"ok","truncated":false,
+            "visited":2, "elements":[
+                {"index":1,"role":"heading","depth":1,"headingLevel":2},
+                {"index":2,"role":"link","depth":2,"headingLevel":null}
+            ]
+        });
+        let expected: NativeDomStructure = serde_json::from_value(raw.clone()).unwrap();
+        assert!(validate_dom_structure(&expected, &session, 4, 7, &source).is_ok());
+        assert!(validate_dom_structure(&expected, &session, 3, 7, &source).is_err());
+        assert!(validate_dom_structure(&expected, &session, 4, 8, &source).is_err());
+        assert!(validate_dom_structure(&expected, &session, 4, 7, &"f".repeat(64)).is_err());
+        let mut leaked = raw.clone();
+        leaked["elements"][0]["name"] =
+            serde_json::json!("opaque-secret-without-any-sensitive-keyword");
+        assert!(serde_json::from_value::<NativeDomStructure>(leaked).is_err());
+        let mut leaked = raw.clone();
+        leaked["url"] = serde_json::json!("https://example.org/?x=secret");
+        assert!(serde_json::from_value::<NativeDomStructure>(leaked).is_err());
+        let mut impossible = expected.clone();
+        impossible.elements[1].index = 1;
+        assert!(validate_dom_structure(&impossible, &session, 4, 7, &source).is_err());
+        impossible.elements[1].index = 2;
+        impossible.elements[1].role = "unsafe-untrusted-role".into();
+        assert!(validate_dom_structure(&impossible, &session, 4, 7, &source).is_err());
+    }
+    #[test]
+    fn native_control_states_are_closed_non_secret_and_never_an_action_grant() {
+        let session = "a".repeat(48);
+        let source = "b".repeat(64);
+        let raw = serde_json::json!({
+            "version":2,"kind":"dom-snapshot","session":session,
+            "observationId":5,"pageGeneration":3,"sourceId":source,
+            "terminal":"completed","reason":"ok","truncated":false,
+            "visited":3,"elements":[
+                {"index":1,"role":"form","depth":0,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":null,"selected":null,
+                 "expanded":null,"controlType":null},
+                {"index":2,"role":"checkbox","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":false,"selected":null,
+                 "expanded":null,"controlType":"checkbox","required":true},
+                {"index":3,"role":"select","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":false,"checked":null,"selected":null,
+                 "expanded":null,"controlType":"select"}
+            ]
+        });
+        let parsed: NativeDomStructure = serde_json::from_value(raw.clone()).unwrap();
+        assert!(validate_dom_structure(&parsed, &session, 5, 3, &source).is_ok());
+        assert_eq!(
+            structural_observed_elements(&parsed).unwrap()[1].required,
+            Some(true)
+        );
+        let mut invalid = parsed.clone();
+        invalid.elements[0].required = Some(true);
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        invalid.elements[0].required = None;
+        invalid.elements[1].control_type = Some("password".into());
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        invalid.elements[1].control_type = Some("checkbox".into());
+        invalid.elements[1].role = "input".into();
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        invalid.elements[1].role = "checkbox".into();
+        invalid.elements[2].checked = Some(true);
+        assert!(validate_dom_structure(&invalid, &session, 5, 3, &source).is_err());
+        for key in [
+            "name",
+            "visibleText",
+            "value",
+            "href",
+            "secret",
+            "ariaLabel",
+        ] {
+            let mut leaked = raw.clone();
+            leaked["elements"][1][key] = serde_json::json!("unrecognized-opaque-secret");
+            assert!(
+                serde_json::from_value::<NativeDomStructure>(leaked).is_err(),
+                "{key} should not be representable in the production wire"
+            );
+        }
+    }
+    #[test]
+    fn native_closed_controls_map_into_existing_random_stale_bound_page_contract() {
+        let nonce = "c".repeat(48);
+        let dom: NativeDomStructure = serde_json::from_value(serde_json::json!({
+            "version":2,"kind":"dom-snapshot","session":nonce,
+            "observationId":1,"pageGeneration":1,"sourceId":"d".repeat(64),
+            "terminal":"completed","reason":"ok","truncated":true,
+            "visited":5,"omittedFields":2,
+            "elements":[
+                {"index":1,"role":"input","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":null,"selected":null,
+                 "expanded":null,"controlType":"text"},
+                {"index":3,"role":"checkbox","depth":1,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":true,"selected":null,
+                 "expanded":null,"controlType":"checkbox"},
+                {"index":5,"role":"option","depth":2,"headingLevel":null,
+                 "visible":true,"enabled":true,"checked":null,"selected":true,
+                 "expanded":null,"controlType":null}
+            ]
+        }))
+        .unwrap();
+        assert!(validate_dom_structure(&dom, &nonce, 1, 1, &"d".repeat(64)).is_ok());
+        let elements = structural_observed_elements(&dom).unwrap();
+        assert_eq!(elements.len(), 3);
+        assert_eq!(elements[0].role, SemanticRole::Textbox);
+        assert_eq!(elements[0].field_type.as_deref(), Some("text"));
+        assert_eq!(elements[1].role, SemanticRole::Checkbox);
+        assert_eq!(elements[1].state.checked, Some(true));
+        assert_eq!(elements[2].role, SemanticRole::Option);
+        assert_eq!(elements[2].state.selected, Some(true));
+        assert!(elements.iter().all(|e| e.accessible_name.is_empty()
+            && e.href.is_none()
+            && e.form_target.is_none()
+            && e.has_script_handler));
+        let mut page = BrowserPageContract::new(nonce.clone(), "https://example.org/").unwrap();
+        page.observe(1, "https://example.org/", "", "", elements, 1)
+            .unwrap();
+        let first = page.mark_snapshot_truncated(dom.truncated).unwrap().clone();
+        assert!(first.truncated);
+        assert_eq!(first.elements.len(), 3);
+        assert!(first.elements.iter().all(|e| e.element_ref.len() == 48));
+        let target = ActionTarget {
+            browser_session_id: first.browser_session_id.clone(),
+            page_id: first.page_id.clone(),
+            page_generation: first.page_generation,
+            snapshot_id: first.snapshot_id.clone(),
+            element_ref: first.elements[0].element_ref.clone(),
+        };
+        page.observe(1, "https://example.org/", "", "", vec![], 2)
+            .unwrap();
+        assert_eq!(
+            page.prepare_action(BrowserActionKind::Type, target, Some("x"))
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+    }
+    #[test]
+    fn bounded_frames_reject_zero_oversize_and_incomplete_input() {
+        use std::io::Cursor;
+        assert!(read_frame_from(&mut Cursor::new(0u32.to_le_bytes())).is_err());
+        assert!(read_frame_from(&mut Cursor::new(((FRAME_MAX + 1) as u32).to_le_bytes())).is_err());
+        assert!(read_frame_from(&mut Cursor::new(
+            [4u32.to_le_bytes().as_slice(), b"no"].concat()
+        ))
+        .is_err());
+        assert_eq!(
+            read_frame_from(&mut Cursor::new(
+                [2u32.to_le_bytes().as_slice(), b"ok"].concat()
+            ))
+            .unwrap(),
+            b"ok"
+        );
+    }
+
+    /// This is an explicitly invoked physical Windows probe of the real
+    /// production launcher and child COM readiness channel. The reserved
+    /// loopback URL is never broker-served, and the caller shuts down directly
+    /// after attesting the actual renderer/browser and COM effective UDF. It
+    /// cannot be mistaken for the full HTTPS or interactive native E2E gate.
+    /// No default cargo test launches a browser or touches a real website.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit Windows original-HANDLE AppContainer/COM pre-navigation probe only"]
+    async fn physical_production_child_readiness_no_network_fixture() {
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("a specifically built native production host executable is required");
+        let expected = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact built host for digest"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("manifest under project root");
+        let private = manifest
+            .join("target")
+            .join("tf4-production-readiness-acceptance");
+        std::fs::create_dir_all(&private).expect("create dedicated owned physical test root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact /clack workspace for test");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-probe".into(),
+                session_id: "tf4-physical-probe-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: private,
+                host_executable: host,
+                host_sha256: expected,
+            },
+            &registry,
+        )
+        .expect(
+            "actual AppContainer child launched under original Job with 0 network capabilities",
+        );
+        let ready = browser.verify_ready().await;
+        let closed = browser.shutdown();
+        assert!(
+            closed.is_ok(),
+            "original owned Job and UDF cleanup: {closed:?}"
+        );
+        assert!(
+            ready.is_ok(),
+            "actual native WebView2 COM readiness and process proof: {ready:?}"
+        );
+    }
+
+    /// Real concurrent original-JOB/AppContainer WebView2 session ownership.
+    /// Each session gets its own fresh OS profile and UDF; closing one cannot
+    /// terminate the other's authentic COM deferral or leave either UDF behind.
+    /// No external fixture is needed: TF3 must deny the reserved loopback URL.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit two concurrent original production AppContainer/WebView2 sessions, independent close and UDF isolation"]
+    async fn physical_production_two_sessions_close_independently_without_profile_leak() {
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact source-matched native host required");
+        let expected = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read pinned host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("manifest under workspace");
+        let private = tempfile::Builder::new()
+            .prefix("tf4-two-live-sessions-")
+            .tempdir_in(manifest.join("target"))
+            .expect("owned temporary test parent");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize test workspace");
+        let start = |actor: &str, session_id: &str| BrowserRuntimeStart {
+            actor: actor.into(),
+            session_id: session_id.into(),
+            workspace_root: workspace.to_path_buf(),
+            initial_url: "https://127.0.0.1/".into(),
+            resource_manifest: Vec::new(),
+            private_parent: private.path().to_path_buf(),
+            host_executable: host.clone(),
+            host_sha256: expected.clone(),
+        };
+        let mut first = BrowserRuntimeSession::launch(
+            start("tf4-physical-isolation-a", "session-a"),
+            &registry,
+        )
+        .expect("first independently confined native session");
+        let mut second = BrowserRuntimeSession::launch(
+            start("tf4-physical-isolation-b", "session-b"),
+            &registry,
+        )
+        .expect("second independently confined native session");
+        let first_ready =
+            tokio::time::timeout(std::time::Duration::from_secs(15), first.verify_ready())
+                .await
+                .expect("first independent native readiness deadline");
+        let second_ready =
+            tokio::time::timeout(std::time::Duration::from_secs(15), second.verify_ready())
+                .await
+                .expect("second independent native readiness deadline");
+        assert!(
+            first_ready.is_ok(),
+            "first real COM readiness: {first_ready:?}"
+        );
+        assert!(
+            second_ready.is_ok(),
+            "second real COM readiness: {second_ready:?}"
+        );
+        let profiles: Vec<_> = private
+            .path()
+            .read_dir()
+            .expect("read two actual native UDF roots")
+            .map(|entry| entry.expect("owned root").path())
+            .collect();
+        assert_eq!(profiles.len(), 2, "two fresh, distinct native UDF roots");
+        assert!(profiles.iter().all(|root| root.join("udf").is_dir()));
+
+        first
+            .shutdown()
+            .expect("first original Job and profile cleanup");
+        let remaining: Vec<_> = private
+            .path()
+            .read_dir()
+            .expect("inspect post-first-close UDF")
+            .map(|entry| entry.expect("remaining owned root").path())
+            .collect();
+        assert_eq!(remaining.len(), 1, "first close cannot retain its UDF");
+        assert!(remaining[0].join("udf").is_dir());
+
+        let second_resource = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            second.serve_one(&registry, &TfWebState::default()),
+        )
+        .await
+        .expect("second COM resource deferral still available after first close");
+        let second_closed = second.shutdown();
+        assert!(
+            second_closed.is_ok(),
+            "second original Job/UDF cleanup: {second_closed:?}"
+        );
+        let receipt = second_resource.expect("second session still owns native COM");
+        assert_eq!(receipt.request_id, 1);
+        assert!(receipt.native_com_completed);
+        assert_eq!(receipt.terminal, "denied", "TF3 must deny private target");
+        assert_eq!(receipt.bytes, 0);
+        assert!(private.path().read_dir().unwrap().next().is_none());
+        eprintln!("PRODUCTION_TWO_SESSION_ISOLATION=PASS separate_udfs=2 first_close=clean second_com=denied second_close=clean");
+    }
+
+    /// Explicitly opted-in production-mode HTTPS interception negative. The
+    /// private loopback destination must be rejected by TF3 Public policy,
+    /// and the parent must not count success until the child reports native
+    /// COM deferral completion. No uncontrolled destination is contacted.
+    /// This is not remote HTTPS success, public egress certification or E2E.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit real Windows production TF3 private-target denial and COM terminal probe"]
+    async fn physical_production_browser_https_private_denial_com_terminal() {
+        // Only an owned loopback target is inspected. If port 443 is already
+        // occupied, preserve the COM/TF3 denial result but explicitly report
+        // native listener isolation UNAVAILABLE rather than inventing PASS.
+        let owned_tcp = std::net::TcpListener::bind("127.0.0.1:443").ok();
+        if let Some(listener) = owned_tcp.as_ref() {
+            let positive = std::net::TcpStream::connect("127.0.0.1:443")
+                .expect("ordinary parent positive control must reach owned TCP listener");
+            let (accepted, _peer) = listener
+                .accept()
+                .expect("ordinary parent TCP positive control must be observed");
+            drop(accepted);
+            drop(positive);
+            listener
+                .set_nonblocking(true)
+                .expect("bounded owned listener polling");
+        } else {
+            eprintln!("PRODUCTION_DIRECT_TCPV4_ISOLATION=UNAVAILABLE owned 127.0.0.1:443 busy");
+        }
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("explicitly built trusted host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact test host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("approved project root");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-private-denial-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("dedicated owned case root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-denial".into(),
+                session_id: "tf4-physical-denial-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("confined production host launch");
+        let result = async {
+            browser.verify_ready().await?;
+            let bounded = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "production-private-denial-com-timeout".to_owned())??;
+            Ok::<_, String>(bounded)
+        }
+        .await;
+        let closed = browser.shutdown();
+        assert!(closed.is_ok(), "job/UDF/profile cleanup: {closed:?}");
+        let receipt = result.expect("actual WebView2 native resource must reach TF3");
+        assert_eq!(receipt.request_id, 1);
+        assert!(receipt.page_generation > 0);
+        assert!(
+            receipt.native_com_completed,
+            "COM terminal must be attested"
+        );
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.bytes, 0);
+        assert!(receipt
+            .tf3
+            .as_ref()
+            .is_none_or(|r| r.terminal != "completed"));
+        if let Some(listener) = owned_tcp {
+            let result = listener.accept();
+            assert!(
+                matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+                "unauthorized renderer TCP connected to owned localhost:443: {result:?}"
+            );
+            eprintln!("PRODUCTION_DIRECT_TCPV4_ISOLATION=PASS owned positive=1 restricted=0");
+        }
+    }
+
+    /// Dedicated, explicit real WebView2 sealed-pipe observation control
+    /// probe. A private HTTPS document is denied by TF3, so the result may
+    /// legitimately be a DOM-unavailable denial; even then the native child
+    /// must return the correctly scoped, secret-free v2 terminal. This does
+    /// NOT satisfy a real accessible-name/element semantic E2E acceptance.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit production WebView2 structural observation protocol probe"]
+    async fn physical_production_dom_structure_control_after_tf3_denial() {
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("explicit native production host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("approved root");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-structure-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("dedicated owned case root");
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).expect("authorize workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-structure".into(),
+                session_id: "tf4-physical-structure-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/structure".into(),
+                resource_manifest: Vec::new(),
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("launch exact owned zero-cap host");
+        let observed = async {
+            browser.verify_ready().await?;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "production-structure-resource-deadline".to_owned())??;
+            if result.terminal != "denied" || !result.native_com_completed {
+                return Err("production-structure-resource-not-closed".into());
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_structure(),
+            )
+            .await
+            .map_err(|_| "production-structure-observation-deadline".to_owned())?
+        }
+        .await;
+        let closed = browser.shutdown();
+        assert!(
+            closed.is_ok(),
+            "owned process/profile/UDF cleanup: {closed:?}"
+        );
+        let value = observed.expect("native source/epoch-bound bounded DOM control must reply");
+        assert_eq!(value.observation_id, 1);
+        assert!(matches!(value.terminal.as_str(), "completed" | "denied"));
+        assert!(value.visited <= 256);
+        assert!(value.elements.len() <= 48);
+        let serialized = serde_json::to_string(&value).unwrap();
+        for forbidden in [
+            "title",
+            "href",
+            "password",
+            "accessibleName",
+            "rawHtml",
+            "fieldValue",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "forbidden model-facing DOM value/attribute field reached parent: {forbidden}"
+            );
+        }
+        eprintln!(
+            "PRODUCTION_DOM_CONTROL={} visited={} elements={}",
+            value.terminal,
+            value.visited,
+            value.elements.len()
+        );
+    }
+
+    /// Separate real production browser negative against an owned local
+    /// RFC1918 interface address, never an arbitrary LAN target. The test
+    /// requires the operator to select an address physically assigned to
+    /// this machine. The listener's successful bind AND positive connection
+    /// establish ownership before the confined child is ever launched.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit owned-interface RFC1918 TCPv4 production direct-network negative"]
+    async fn physical_production_owned_rfc1918_denial_no_tcp_fallback() {
+        let ip: std::net::Ipv4Addr = std::env::var("CLACK_TF4_OWNED_RFC1918_ADDRESS")
+            .expect("UNAVAILABLE: select an address assigned to this Windows machine")
+            .parse()
+            .expect("explicit owned test address must be IPv4");
+        let octets = ip.octets();
+        assert!(
+            octets[0] == 10
+                || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 168),
+            "explicit test address must be RFC1918, never an arbitrary public/LAN target"
+        );
+        let listener = std::net::TcpListener::bind((ip, 443))
+            .expect("UNAVAILABLE: cannot bind port 443 on the exact owned local interface");
+        let positive = std::net::TcpStream::connect((ip, 443))
+            .expect("owned parent positive control must reach exact listener");
+        let (accepted, _peer) = listener.accept().expect("owned positive control observed");
+        drop(accepted);
+        drop(positive);
+        listener
+            .set_nonblocking(true)
+            .expect("bounded owned listener read");
+
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("explicit exact native host build required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("exact built host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("approved root");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-owned-rfc1918-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("scoped evidence root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-owned-rfc1918".into(),
+                session_id: "tf4-physical-owned-rfc1918-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: format!("https://{ip}/"),
+                resource_manifest: Vec::new(),
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("owned zero-network-capability production host launch");
+        let outcome = async {
+            browser.verify_ready().await?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "production-owned-rfc1918-com-timeout".to_owned())?
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original owned Job/UDF/profile cleanup: {cleanup:?}"
+        );
+        let receipt = outcome.expect("TF3 must deny actual native HTTPS request");
+        assert_eq!(receipt.terminal, "denied");
+        assert!(receipt.native_com_completed);
+        assert!(receipt.page_generation > 0);
+        assert_eq!(receipt.bytes, 0);
+        assert!(receipt
+            .tf3
+            .as_ref()
+            .is_none_or(|r| r.terminal != "completed"));
+        let unauthorized = listener.accept();
+        assert!(
+            matches!(&unauthorized, Err(err) if err.kind() == std::io::ErrorKind::WouldBlock),
+            "restricted browser reached independently owned RFC1918 TCP listener: {unauthorized:?}"
+        );
+        eprintln!("PRODUCTION_OWNED_RFC1918_TCPV4_DENIAL=PASS ordinary_positive=1 restricted=0");
+    }
+
+    /// Independent production IPv6 loopback egress negative. No public or
+    /// third-party IPv6 address is contacted: the listener is owned by this
+    /// test, and a successful ordinary parent TCP connect is the positive
+    /// control. TF3 must reject the restricted WebView2 HTTPS request before
+    /// any direct IPv6 socket reaches the listener, then the native COM
+    /// denial terminal and owned Job/profile cleanup must be observed.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit real production AppContainer/WebView2 owned IPv6 loopback isolation negative"]
+    async fn physical_production_owned_ipv6_loopback_denial_no_tcp_fallback() {
+        use std::net::Ipv6Addr;
+        let listener = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 443))
+            .expect("UNAVAILABLE: owned IPv6 ::1 port 443 bind failed");
+        let positive = std::net::TcpStream::connect((Ipv6Addr::LOCALHOST, 443))
+            .expect("owned ordinary parent IPv6 positive control must connect");
+        let (accepted, _) = listener
+            .accept()
+            .expect("owned IPv6 positive control observed");
+        drop(accepted);
+        drop(positive);
+        listener
+            .set_nonblocking(true)
+            .expect("bounded IPv6 owned accept");
+
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact feature-enabled production host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.parent().expect("project workspace");
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-production-owned-ipv6-")
+            .tempdir_in(manifest.join("target"))
+            .expect("unique owned IPv6 test root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-owned-ipv6".into(),
+                session_id: "tf4-physical-ipv6-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://[::1]/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("owned zero-network-capability production AppContainer launched");
+        let outcome = async {
+            browser.verify_ready().await?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "production-owned-ipv6-com-timeout".to_owned())?
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original owned Job/UDF/profile cleanup: {cleanup:?}"
+        );
+        let receipt = outcome.expect("TF3 must deny actual WebView2 IPv6 HTTPS request");
+        assert_eq!(receipt.request_id, 1);
+        assert!(receipt.page_generation > 0);
+        assert!(
+            receipt.native_com_completed,
+            "native COM deferral must terminate"
+        );
+        assert_eq!(receipt.terminal, "denied");
+        assert_eq!(receipt.bytes, 0);
+        assert!(receipt
+            .tf3
+            .as_ref()
+            .is_none_or(|r| r.terminal != "completed"));
+        let unauthorized = listener.accept();
+        assert!(
+            matches!(&unauthorized, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "restricted renderer reached owned IPv6 listener: {unauthorized:?}"
+        );
+        assert!(parent
+            .path()
+            .read_dir()
+            .expect("inspect owned root")
+            .next()
+            .is_none());
+        eprintln!("PRODUCTION_OWNED_IPV6_LOOPBACK_DENIAL=PASS ordinary_positive=1 restricted=0 native_com=true owned_job_udf_clean=true");
+    }
+
+    /// Explicit positive public-HTTPS qualification of the *production* owner,
+    /// not the fixture network policy. Uses only IANA documentation domains,
+    /// no credentials, no form writes and no alternate HTTP client. A TF3
+    /// denial/network failure is a real failure, not a fixture-equivalent PASS.
+    /// The active AppContainer has zero generic network capabilities and the
+    /// first WebView2 document must finish its actual COM deferral before any
+    /// DOM result can be accepted. This alone is not the full interactive E2E.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in physical production positive public HTTPS/COM/document DOM probe"]
+    async fn physical_production_allowed_https_document_and_dom() {
+        let target = std::env::var("CLACK_TF4_POSITIVE_HTTPS_URL")
+            .expect("explicit HTTPS documentation target opt-in required");
+        assert!(
+            matches!(
+                target.as_str(),
+                "https://example.com/" | "https://example.org/"
+            ),
+            "only static IANA documentation origins may be contacted by this physical probe"
+        );
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact production host executable required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest
+            .parent()
+            .expect("workspace parent of native manifest");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-positive-https-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("dedicated positive test private parent");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize exact workspace");
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-positive".into(),
+                session_id: "tf4-physical-positive-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: target.clone(),
+                resource_manifest: Vec::new(),
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("physical production AppContainer launch");
+        let outcome = async {
+            browser.verify_ready().await?;
+            let resource = tokio::time::timeout(
+                std::time::Duration::from_secs(17),
+                browser.serve_one(&registry, &TfWebState::default()),
+            )
+            .await
+            .map_err(|_| "positive-https-com-deadline".to_owned())??;
+            eprintln!(
+                "PRODUCTION_POSITIVE_HTTPS_RESOURCE terminal={} reason={} bytes={} native_com={} tf3_terminal={} tf3_reason={} tls={} dns_hops={}",
+                resource.terminal,
+                resource.reason,
+                resource.bytes,
+                resource.native_com_completed,
+                resource.tf3.as_ref().map_or("none", |r| r.terminal),
+                resource.tf3.as_ref().map_or("none", |r| r.reason_code),
+                resource.tf3.as_ref().map_or("none", |r| r.tls_state),
+                resource.tf3.as_ref().map_or(0, |r| r.dns_evidence.len()),
+            );
+            if resource.terminal != "completed"
+                || !resource.native_com_completed
+                || resource.bytes == 0
+                || resource.tf3.as_ref().is_none_or(|r| {
+                    r.terminal != "completed"
+                        || r.reason_code != "ok"
+                        || r.tls_state != "https_transport_observed"
+                        || r.content_type.as_deref().is_none_or(|mime| {
+                            !mime.starts_with("text/html")
+                        })
+                        || r.dns_evidence.is_empty()
+                        || r.dns_evidence.iter().any(|d| d.classification != "all-allowed")
+                })
+            {
+                return Err("positive-production-tf3-https-document-not-completed".into());
+            }
+            let dom = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_structure(),
+            )
+            .await
+            .map_err(|_| "positive-https-structural-observation-deadline".to_owned())??;
+            eprintln!(
+                "PRODUCTION_POSITIVE_HTTPS_DOM terminal={} reason={} visited={} elements={} generation={}",
+                dom.terminal,
+                dom.reason,
+                dom.visited,
+                dom.elements.len(),
+                dom.page_generation
+            );
+            if dom.terminal != "completed" || dom.visited == 0 || dom.elements.is_empty() {
+                return Err("positive-production-webview2-document-not-observed".into());
+            }
+            Ok::<_, String>((resource, dom))
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "owned process/Job/UDF/profile cleanup: {cleanup:?}"
+        );
+        let (resource, dom) = outcome.expect("real production HTTPS document must render");
+        assert_eq!(resource.page_generation, dom.page_generation);
+        eprintln!("PRODUCTION_POSITIVE_HTTPS_DOCUMENT=PASS TF3 HTTPS COM DOM Job UDF");
+    }
+
+    /// Controlled HTTPS alternative when public egress is unavailable. This
+    /// uses the *production* AppContainer, WebView2 and native COM broker; only
+    /// the Rust test binary receives a scoped TF3 owned-127.0.0.1 exception and
+    /// an ephemeral public trust anchor. No release code, host, or general
+    /// network policy can use that exception. A separate strictly-owned TLS
+    /// fixture must be listening at 127.0.0.1:443 with a matching certificate.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit owned HTTPS fixture only: read-only control turn, real WebView2 COM and TF3; no action consent or model tool"]
+    async fn physical_production_opt_in_exclusive_control_turn_snapshot() {
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_CONTROL_TURN").as_deref(),
+            Ok("1"),
+            "this real COM/TF3 probe is never automatic"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let certificate = std::fs::canonicalize(evidence.join("server.cer"))
+            .expect("active owned HTTPS fixture public certificate");
+        assert_eq!(
+            std::fs::canonicalize(
+                std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").expect("fixture certificate path")
+            )
+            .unwrap(),
+            certificate
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&certificate).unwrap()).unwrap();
+        let host = PathBuf::from(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").expect("feature-enabled owned host"),
+        );
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let private = tempfile::Builder::new()
+            .prefix("tf4-control-turn-")
+            .tempdir_in(manifest.join("target"))
+            .unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).unwrap();
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-control-turn-readonly".into(),
+                session_id: "tf4-control-turn-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: private.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .unwrap();
+        let observed = async {
+            tokio::time::timeout(
+                Duration::from_secs(18),
+                browser.verify_ready_for_control_turns(),
+            )
+            .await
+            .map_err(|_| "control-turn-ready-timeout")??;
+            let requester = browser
+                .control_turn_requester()
+                .ok_or("turns-not-negotiated")?;
+            // First prove actual parent-only TF3 GET and UI-apartment native
+            // COM completion. The owned fixture's /page.css 302 is DENIED
+            // (no followed /style.css GET), so the CSS-dependent font need
+            // not load. Unsolicited host turns never compete with these
+            // three original-URI resource receipts.
+            for expected in 1..=3u64 {
+                let resource = tokio::time::timeout(
+                    Duration::from_secs(17),
+                    browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+                )
+                .await
+                .map_err(|_| "control-turn-tf3-com-timeout")??;
+                let tf3 = resource
+                    .tf3
+                    .as_ref()
+                    .ok_or("control-turn-tf3-receipt-missing")?;
+                let denied_css_redirect = tf3
+                    .requested_url
+                    .as_deref()
+                    .and_then(|value| reqwest::Url::parse(value).ok())
+                    .is_some_and(|value| value.path() == "/page.css");
+                if resource.request_id != expected
+                    || !resource.native_com_completed
+                    || !tf3.redirect_chain.is_empty()
+                    || if denied_css_redirect {
+                        resource.terminal != "denied"
+                            || resource.bytes != 0
+                            || tf3.terminal != "denied"
+                            || tf3.reason_code != "browser-resource-redirect-denied"
+                            || tf3.retry != "NEVER_REPLAY"
+                            || tf3.effect_state != "Unknown"
+                    } else {
+                        resource.terminal != "completed"
+                            || tf3.terminal != "completed"
+                            || tf3.reason_code != "ok"
+                    }
+                {
+                    return Err("control-turn-real-com-not-proven".into());
+                }
+            }
+            requester.request(); // scheduling request, NOT central consent
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "control-turn-exclusive-offer-timeout")??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("control-turn-host-idle-offer-not-proven".into());
+            }
+            let snapshot = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "control-turn-physical-dom-timeout")??;
+            if snapshot.elements.is_empty()
+                || snapshot.page_generation == 0
+                || !snapshot.title.is_empty()
+                || !snapshot.visible_text.is_empty()
+                || browser.has_control_turn()
+                || browser
+                    .observe_closed_snapshot_in_control_turn()
+                    .await
+                    .is_ok()
+            {
+                return Err("control-turn-one-use-closed-dom-invalid".into());
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "owned Job/UDF/AppContainer cleanup required: {cleanup:?}"
+        );
+        assert!(
+            observed.is_ok(),
+            "real read-only control turn: {observed:?}"
+        );
+    }
+
+    /// Independent physical read-only original FORM successful-control
+    /// capture, BEFORE user consent. A separately opted-in invocation against
+    /// -InteractiveControls covers ordinary named controls and CRLF textarea
+    /// bytes without changing the historical hidden-only acceptance variant.
+    /// Both run through the exact retained
+    /// native FORM and submitter COM identities, the production control-turn
+    /// pipe and the normal WebView2 AppContainer/TF3 document broker.
+    /// It does not consume any user approval or issue the POST, so a positive
+    /// capture MUST NOT be reported as an installed form submission effect.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[tokio::test]
+    #[ignore = "opt-in original FORM capture; optional INTERACTIVE=1 ordinary controls; no consent, POST or installed E2E"]
+    async fn physical_production_owned_https_original_form_capture_before_consent() {
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_FORM_CAPTURE").as_deref(),
+            Ok("1"),
+            "explicit real original-form capture opt-in required"
+        );
+        let interactive = std::env::var("CLACK_TF4_NATIVE_FORM_INTERACTIVE").as_deref() == Ok("1");
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let owned_cert = std::fs::canonicalize(evidence.join("server.cer"))
+            .expect("live test-owned ephemeral HTTPS public cert");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("explicit owned certificate required");
+        assert_eq!(
+            std::fs::canonicalize(supplied_cert).unwrap(),
+            owned_cert,
+            "form physical test does not authorize arbitrary TLS roots"
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&owned_cert).unwrap())
+            .expect("actual owned fixture public DER");
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact pinned native host required");
+        let host_digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact native host"))
+        );
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_SHA256").as_deref(),
+            Ok(host_digest.as_str()),
+            "pinned native-host SHA must be independently supplied"
+        );
+        let private = tempfile::Builder::new()
+            .prefix("tf4-original-form-physical-")
+            .tempdir_in(manifest.join("target"))
+            .expect("new bounded owned private UDF parent");
+        let workspace = manifest.parent().expect("project root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize owned workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-original-form-capture".into(),
+                session_id: "tf4-original-form-capture-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: private.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: host_digest,
+            },
+            &registry,
+        )
+        .expect("real AppContainer+WebView2 host launch");
+        let result = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready_for_control_turns())
+                .await
+                .map_err(|_| "original-form-physical-ready-deadline".to_owned())??;
+            let resource = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "original-form-document-com-deadline".to_owned())??;
+            let tf3 = resource.tf3.as_ref().ok_or("original-form-tf3-receipt-missing")?;
+            if resource.request_id != 1
+                || resource.terminal != "completed"
+                || !resource.native_com_completed
+                || tf3.terminal != "completed"
+                || tf3.reason_code != "ok"
+                || tf3.status_code != Some(200)
+                || tf3.tls_state != "https_transport_observed"
+                || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+            {
+                return Err("original-form-physical-https-original-not-proven".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let requester = browser
+                .control_turn_requester()
+                .ok_or("original-form-native-control-turns-unavailable")?;
+            requester.request();
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "original-form-observation-turn-deadline".to_owned())??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("original-form-observation-original-host-turn-missing".into());
+            }
+            let snapshot = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "original-form-observation-com-deadline".to_owned())??;
+            if snapshot.url != "https://127.0.0.1/"
+                || snapshot.page_generation != 1
+                || !snapshot.truncated // hidden controls must be withheld
+                || !snapshot.title.is_empty()
+                || !snapshot.visible_text.is_empty()
+                || browser.has_control_turn()
+            {
+                return Err("original-form-sensitive-successful-control-observation-leaked".into());
+            }
+            let form = snapshot
+                .elements
+                .iter()
+                .find(|element| element.role == SemanticRole::Form)
+                .ok_or("original-form-exact-form-not-retained")?;
+            let submitter = snapshot
+                .elements
+                .iter()
+                .find(|element| {
+                    element.role == SemanticRole::Button
+                        && element.field_type.as_deref() == Some("submit")
+                })
+                .ok_or("original-form-exact-submitter-not-retained")?;
+            let target = ActionTarget {
+                browser_session_id: snapshot.browser_session_id.clone(),
+                page_id: snapshot.page_id.clone(),
+                page_generation: snapshot.page_generation,
+                snapshot_id: snapshot.snapshot_id.clone(),
+                element_ref: submitter.element_ref.clone(),
+            };
+            requester.request();
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "original-form-capture-turn-deadline".to_owned())??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("original-form-capture-host-turn-missing".into());
+            }
+            let intent = tokio::time::timeout(
+                Duration::from_secs(12),
+                browser.capture_form_in_control_turn(
+                    &target,
+                    NativeRetainedAction::Submit(form.element_ref.clone()),
+                ),
+            )
+            .await
+            .map_err(|_| "original-form-real-com-capture-deadline".to_owned())??;
+            let expected_body: &[u8] = if interactive {
+                b"flow=owned+browser&message=hello+world&notes=first%0D%0Asecond&flags=ok&color=blue&choice=one&choice=two&commit=send"
+            } else {
+                b"flow=owned+browser&stamp=unique%2Btoken"
+            };
+            if intent.target != target
+                || intent.observation_id == 0
+                || intent.original_form_index == intent.original_submitter_index
+                || intent.destination.as_str() != "https://127.0.0.1/capture-only"
+                || intent.body.as_slice() != expected_body
+                || intent.body_sha256 != format!("{:x}", Sha256::digest(expected_body))
+                || browser.has_control_turn()
+                || browser.last_resource_request_id() != 1
+                || browser
+                    .capture_form_in_control_turn(
+                        &target,
+                        NativeRetainedAction::Submit(form.element_ref.clone()),
+                    )
+                    .await
+                    .is_ok()
+            {
+                return Err("original-form-physical-original-body-or-no-post-invalid".into());
+            }
+            eprintln!(
+                "PRODUCTION_NATIVE_ORIGINAL_FORM=CAPTURED original_page_generation={} exact_original_form=true exact_submitter=true encoded_bytes={} body_sha_bound=true no_native_post=true one_use=true; CENTRAL_CONSENT_TF3_POST_AND_INSTALLED_EFFECT=NOT_PROVEN",
+                snapshot.page_generation,
+                intent.body.len()
+            );
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original FORM owned Job/UDF cleanup: {cleanup:?}"
+        );
+        assert!(result.is_ok(), "real original FORM capture: {result:?}");
+    }
+
+    /// A test-only physical screenshot allow/deny probe of real WebView2 from
+    /// one minimal, controlled HTTPS document. There is no model/Tauri
+    /// screenshot API and no substituted screenshot consent here: production
+    /// TF4 must separately consume application approval and send the verified
+    /// image through TF2's existing evidence authority. Only a run-scoped
+    /// loopback fixture and its public ephemeral TLS certificate are trusted.
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[tokio::test]
+    #[ignore = "opt-in real WebView2 screenshot COM callback on one owned minimal HTTPS page; no installed-app approval or evidence write"]
+    async fn physical_production_owned_https_screenshot_original_page_and_one_use() {
+        use std::time::Duration;
+        let expect_sensitive_denial =
+            std::env::var("CLACK_TF4_NATIVE_SCREENSHOT_DENY_SENSITIVE").as_deref() == Ok("1");
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_SCREENSHOT_CAPTURE").as_deref(),
+            Ok("1"),
+            "real WebView2 screenshot opt-in required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let certificate = std::fs::canonicalize(evidence.join("server.cer"))
+            .expect("live owned HTTPS fixture public certificate");
+        let supplied = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("explicit exact test certificate");
+        assert_eq!(
+            std::fs::canonicalize(supplied).unwrap(),
+            certificate,
+            "the fixture must own the exact TLS trust anchor"
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&certificate).unwrap())
+            .expect("owned public DER certificate");
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact pinned production-capable browser host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact owned host"))
+        );
+        assert_eq!(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_SHA256").as_deref(),
+            Ok(digest.as_str()),
+            "separately checked exact host SHA256 required"
+        );
+        let private = tempfile::Builder::new()
+            .prefix("tf4-physical-screenshot-")
+            .tempdir_in(manifest.join("target"))
+            .expect("isolated private browser directory");
+        let workspace = manifest.parent().expect("workspace root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize test workspace only");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-physical-screenshot".into(),
+                session_id: "tf4-physical-screenshot-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: private.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("launch real zero-network-capability production host");
+        let outcome = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready_for_control_turns())
+                .await
+                .map_err(|_| "physical-screenshot-ready-deadline".to_owned())??;
+            let resource = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-document-deadline".to_owned())??;
+            let tf3 = resource.tf3.as_ref().ok_or("physical-screenshot-no-tf3-receipt")?;
+            if resource.request_id != 1
+                || resource.terminal != "completed"
+                || !resource.native_com_completed
+                || tf3.terminal != "completed"
+                || tf3.reason_code != "ok"
+                || tf3.status_code != Some(200)
+                || tf3.tls_state != "https_transport_observed"
+                || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+            {
+                return Err("physical-screenshot-original-https-not-proven".into());
+            }
+            // Either -MinimalRecheckDocument or -MinimalSensitiveDocument
+            // has no remote scripts, images, CSS, fonts or iframes. The
+            // sensitive variant contains only synthetic password and hidden
+            // original controls, which must produce an omitted snapshot and
+            // fail closed BEFORE the CDP image could cross the parent pipe.
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let requester = browser.control_turn_requester().ok_or("screenshot-no-control-turns")?;
+            requester.request();
+            let observation_turn = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-observation-offer-deadline".to_owned())??;
+            if observation_turn.terminal != "idle"
+                || observation_turn.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("physical-screenshot-observation-host-turn-missing".into());
+            }
+            let original = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-original-dom-deadline".to_owned())??;
+            if original.truncated != expect_sensitive_denial
+                || original.elements.is_empty()
+                || original.page_generation != 1
+                || original.url != "https://127.0.0.1/"
+                || !original.title.is_empty()
+                || !original.visible_text.is_empty()
+                || browser.has_control_turn()
+            {
+                return Err("physical-screenshot-source-observation-not-safe".into());
+            }
+            // A screenshot requires a SECOND, independently offered native
+            // turn. An observation's consumed lease is never reused.
+            requester.request();
+            let offered = tokio::time::timeout(
+                Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-host-offer-deadline".to_owned())??;
+            if offered.terminal != "idle"
+                || offered.reason != "host-exclusive-control-turn-offered"
+                || !browser.has_control_turn()
+            {
+                return Err("physical-screenshot-original-host-turn-missing".into());
+            }
+            let attempted = tokio::time::timeout(
+                Duration::from_secs(12),
+                browser.capture_screenshot_in_control_turn(),
+            )
+            .await
+            .map_err(|_| "physical-screenshot-webview2-cdp-deadline".to_owned())?;
+            if expect_sensitive_denial {
+                if attempted.is_ok() {
+                    return Err("physical-screenshot-sensitive-omission-was-captured".into());
+                }
+                // The host explicitly refuses any image request when its
+                // original structural observation omitted a sensitive
+                // password/hidden control. Do not treat the failure as a
+                // positive screenshot; never return or log the page pixels.
+                eprintln!(
+                    "PRODUCTION_NATIVE_SCREENSHOT_SENSITIVE=DENIED original_page_generation={} omitted_structural_controls=true png_payload_observed=false; INSTALLED_PRIVACY_ACCEPTANCE=NOT_PROVEN",
+                    original.page_generation
+                );
+                return Ok::<_, String>(());
+            }
+            let captured = attempted?;
+            if captured.browser_session_id != original.browser_session_id
+                || captured.page_id != original.page_id
+                || captured.snapshot_id != original.snapshot_id
+                || captured.page_generation != original.page_generation
+                || captured.url != original.url
+                || captured.width == 0
+                || captured.width > 1024
+                || captured.height == 0
+                || captured.height > 768
+                || captured.png.len() < 64
+                || captured.png.len() > 64 * 1024
+                || captured.sha256 != format!("{:x}", Sha256::digest(&captured.png))
+                || !captured.png.starts_with(b"\x89PNG\r\n\x1a\n")
+                || browser.has_control_turn()
+                || browser.capture_screenshot_in_control_turn().await.is_ok()
+            {
+                return Err("physical-screenshot-original-identity-image-or-one-use-invalid".into());
+            }
+            eprintln!(
+                "PRODUCTION_NATIVE_SCREENSHOT=PASS original_page_generation={} bounded_png_bytes={} dimensions={}x{} actual_webview2_cdp=true one_use=true; CONSENT_AND_TF2_INSTALLED=NOT_PROVEN",
+                captured.page_generation,
+                captured.png.len(),
+                captured.width,
+                captured.height
+            );
+            Ok::<_, String>(())
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(
+            cleanup.is_ok(),
+            "original host Job/UDF cleanup: {cleanup:?}"
+        );
+        assert!(outcome.is_ok(), "real native screenshot: {outcome:?}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit scoped HTTPS fixture with real production WebView2/TF3 COM path"]
+    async fn physical_production_owned_https_document_resources_and_dom() {
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact feature-enabled production host required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence_dir = manifest.join("target").join("tf4-owned-https");
+        let expected_cert = evidence_dir.join("server.cer");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("explicit owned HTTPS public certificate is required");
+        assert_eq!(
+            std::fs::canonicalize(&supplied_cert).expect("owned public cert available"),
+            std::fs::canonicalize(&expected_cert).expect("expected exact cert file"),
+            "only the owned acceptance public certificate is permitted"
+        );
+        let cert = reqwest::Certificate::from_der(
+            &std::fs::read(&expected_cert).expect("read the temporary public TLS cert"),
+        )
+        .expect("valid DER public certificate");
+        let private_parent = manifest
+            .join("target")
+            .join("tf4-production-owned-https-acceptance");
+        std::fs::create_dir_all(&private_parent).expect("create exact owned browser parent");
+        let workspace = manifest.parent().expect("approved project root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("approve only workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-https".into(),
+                session_id: "tf4-owned-https-once".into(),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                // Trusted test-only manifest for the exact fixture assets.
+                // Production has no page-generated manifest auto-grant.
+                resource_manifest: vec![
+                    BrowserResourceCapability {
+                        url: "https://127.0.0.1/page.css".into(),
+                        class: BrowserPassiveClass::Stylesheet,
+                        max_bytes: 4096,
+                    },
+                    BrowserResourceCapability {
+                        url: "https://127.0.0.1/pixel.png".into(),
+                        class: BrowserPassiveClass::Image,
+                        max_bytes: 4096,
+                    },
+                ],
+                private_parent,
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("real zero-network-capability production AppContainer launch");
+        let outcome = async {
+            browser.verify_ready().await?;
+            let mut paths = std::collections::HashSet::<String>::new();
+            let mut generation = None;
+            // The real production host intentionally disables untrusted
+            // remote JavaScript until effect classification/approval exists.
+            // Read-only acceptance proves the HTML and PNG originals and
+            // DENIAL of the CSS 302 without fetching /style.css. A denied
+            // stylesheet does not have to initiate its dependent font GET.
+            for expected_id in 1..=3u64 {
+                let resource = tokio::time::timeout(
+                    std::time::Duration::from_secs(17),
+                    browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+                )
+                .await
+                .map_err(|_| "owned-https-native-resource-deadline".to_owned())??;
+                let tf3 = resource.tf3.as_ref().ok_or("owned-https-tf3-receipt-missing")?;
+                eprintln!(
+                    "PRODUCTION_OWNED_HTTPS_RESOURCE id={} terminal={} tf3={} reason={} tls={} bytes={} com={} dns_hops={}",
+                    resource.request_id,
+                    resource.terminal,
+                    tf3.terminal,
+                    tf3.reason_code,
+                    tf3.tls_state,
+                    resource.bytes,
+                    resource.native_com_completed,
+                    tf3.dns_evidence.len(),
+                );
+                let requested = tf3
+                    .requested_url
+                    .as_deref()
+                    .ok_or("owned-https-request-url-missing")?;
+                let uri = reqwest::Url::parse(requested)
+                    .map_err(|_| "owned-https-request-url-invalid")?;
+                if uri.path() == "/page.css" {
+                    // The fixture intentionally redirects CSS to /style.css.
+                    // The first TF3 GET can observe 302, but there MUST NOT
+                    // be any second GET or synthesized 200 for /page.css.
+                    if resource.request_id != expected_id
+                        || resource.terminal != "denied"
+                        || !resource.native_com_completed
+                        || resource.bytes != 0
+                        || tf3.terminal != "denied"
+                        || tf3.reason_code != "browser-resource-redirect-denied"
+                        || tf3.retry != "NEVER_REPLAY"
+                        || tf3.effect_state != "Unknown"
+                        || !tf3.redirect_chain.is_empty()
+                        || tf3.dns_evidence.len() != 1
+                        || tf3
+                            .final_url
+                            .as_deref()
+                            .is_some_and(|url| url != requested)
+                    {
+                        return Err("owned-https-css-redirect-not-denied-at-original-uri".into());
+                    }
+                    if generation.is_some_and(|g| g != resource.page_generation) {
+                        return Err("owned-https-generation-changed".into());
+                    }
+                    generation = Some(resource.page_generation);
+                    paths.insert(uri.path().to_owned());
+                    continue;
+                }
+                if resource.request_id != expected_id
+                    || resource.terminal != "completed"
+                    || !resource.native_com_completed
+                    || resource.bytes == 0
+                    || tf3.terminal != "completed"
+                    || tf3.reason_code != "ok"
+                    || tf3.tls_state != "https_transport_observed"
+                    || tf3.truncated
+                    || tf3.content_sha256.as_deref().is_none_or(|s| s.len() != 64)
+                    || tf3.dns_evidence.is_empty()
+                    || tf3.dns_evidence.iter().any(|d| {
+                        d.host != "127.0.0.1" || d.classification != "all-allowed"
+                    })
+                {
+                    return Err("owned-https-tf3-com-or-ssl-delivery-failed".into());
+                }
+                if generation.is_some_and(|g| g != resource.page_generation) {
+                    return Err("owned-https-generation-changed".into());
+                }
+                generation = Some(resource.page_generation);
+                let owned_origin = reqwest::Url::parse("https://127.0.0.1/").unwrap().origin();
+                if uri.origin() != owned_origin
+                    || tf3
+                        .final_url
+                        .as_deref()
+                        .and_then(|url| reqwest::Url::parse(url).ok())
+                        .is_none_or(|final_url| final_url.origin() != owned_origin)
+                {
+                    return Err("owned-https-origin-escaped".into());
+                }
+                let expected_mime = match uri.path() {
+                    "/" => "text/html",
+                    "/page.css" => return Err("owned-https-css-redirect-must-not-succeed".into()),
+                    "/page.js" => return Err("owned-https-untrusted-script-not-disabled".into()),
+                    "/pixel.png" => "image/png",
+                    "/font.woff2" => "font/woff2",
+                    _ => return Err("owned-https-unexpected-browser-resource".into()),
+                };
+                if checked_mime(tf3.content_type.as_deref()) != Some(expected_mime) {
+                    return Err("owned-https-resource-content-type-mismatch".into());
+                }
+                if !tf3.redirect_chain.is_empty() {
+                    return Err("owned-https-unexpected-redirect".into());
+                }
+                paths.insert(uri.path().to_owned());
+            }
+            for expected in ["/", "/page.css", "/pixel.png"] {
+                if !paths.contains(expected) {
+                    return Err("owned-https-required-dependent-resource-not-delivered".into());
+                }
+            }
+            let dom = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_structure(),
+            )
+            .await
+            .map_err(|_| "owned-https-dom-observation-timeout".to_owned())??;
+            if dom.terminal != "completed"
+                || dom.elements.is_empty()
+                || dom.visited == 0
+                || Some(dom.page_generation) != generation
+            {
+                return Err("owned-https-rendered-dom-not-verified".into());
+            }
+            let has = |role: &str, control: &str| {
+                dom.elements.iter().any(|item| {
+                    item.role == role && item.control_type.as_deref() == Some(control)
+                })
+            };
+            if dom.omitted_fields < 2
+                || !dom.truncated
+                || !has("input", "text")
+                || !dom.elements.iter().any(|item| {
+                    item.role == "input"
+                        && item.control_type.as_deref() == Some("text")
+                        && item.required == Some(true)
+                })
+                || !has("textbox", "textarea")
+                || !has("select", "select")
+                || !dom.elements.iter().any(|item| {
+                    item.role == "checkbox"
+                        && item.control_type.as_deref() == Some("checkbox")
+                        && item.checked == Some(true)
+                })
+                || !dom.elements.iter().any(|item| {
+                    item.role == "option" && item.selected == Some(true)
+                })
+                || !dom.elements.iter().any(|item| {
+                    item.role == "button"
+                        && item.control_type.as_deref() == Some("button")
+                        && !item.enabled
+                })
+                || dom.elements.iter().any(|item| {
+                    matches!(item.control_type.as_deref(), Some("password" | "hidden" | "file"))
+                })
+            {
+                return Err("owned-https-closed-control-state-or-secret-omission-not-verified".into());
+            }
+            eprintln!(
+                "PRODUCTION_OWNED_HTTPS_DOM=PASS visited={} elements={} generation={} omitted_sensitive_fields={} controls=closed-states-only",
+                dom.visited,
+                dom.elements.len(),
+                dom.page_generation,
+                dom.omitted_fields,
+            );
+            let first = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_closed_snapshot(),
+            )
+            .await
+            .map_err(|_| "owned-https-first-reference-snapshot-deadline".to_owned())??;
+            if first.page_generation != dom.page_generation
+                || first.browser_session_id != browser.nonce
+                || first.url != "https://127.0.0.1/"
+                || first.origin != "https://127.0.0.1"
+                || !first.truncated
+                || first.elements.len() != dom.elements.len()
+                || !first.elements.iter().zip(&dom.elements).all(|(snapshot, native)| {
+                    snapshot.depth == native.depth
+                        && snapshot.heading_level == native.heading_level
+                })
+                || !first.elements.iter().any(|item| {
+                    item.role == SemanticRole::Heading && item.heading_level == Some(1)
+                })
+                || !first.title.is_empty()
+                || !first.visible_text.is_empty()
+                || first.elements.iter().any(|item| {
+                    item.element_ref.len() != 48
+                        || !item.element_ref.bytes().all(|b| b.is_ascii_hexdigit())
+                        || !item.accessible_name.is_empty()
+                        || item.href.is_some()
+                        || item.form_target.is_some()
+                        || item.form_method.is_some()
+                })
+            {
+                return Err("owned-https-opaque-reference-snapshot-bounds-or-privacy-invalid".into());
+            }
+            let first_ref = ActionTarget {
+                browser_session_id: first.browser_session_id.clone(),
+                page_id: first.page_id.clone(),
+                page_generation: first.page_generation,
+                snapshot_id: first.snapshot_id.clone(),
+                element_ref: first.elements[0].element_ref.clone(),
+            };
+            let second = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.observe_closed_snapshot(),
+            )
+            .await
+            .map_err(|_| "owned-https-second-reference-snapshot-deadline".to_owned())??;
+            if first.snapshot_id == second.snapshot_id
+                || first.elements[0].element_ref == second.elements[0].element_ref
+                || browser
+                    .verify_closed_reference_without_execution_for_test(first_ref)
+                    .unwrap_err()
+                    != "STALE_ELEMENT"
+            {
+                return Err("owned-https-reobserved-old-reference-not-stale".into());
+            }
+            let fresh = second
+                .elements
+                .iter()
+                .find(|item| {
+                    item.state.visible == Some(true) && item.state.enabled == Some(true)
+                })
+                .ok_or("owned-https-current-visible-element-not-observed")?;
+            let fresh_ref = ActionTarget {
+                browser_session_id: second.browser_session_id.clone(),
+                page_id: second.page_id.clone(),
+                page_generation: second.page_generation,
+                snapshot_id: second.snapshot_id.clone(),
+                element_ref: fresh.element_ref.clone(),
+            };
+            browser
+                .verify_closed_reference_without_execution_for_test(fresh_ref.clone())
+                .map_err(|_| "owned-https-current-reference-not-recognized")?;
+            // Optional next-stage physical assertion: only the native-held
+            // PreparedAction.observed_serial and authenticated COM order may
+            // select a read-only exact element recheck. No live action is
+            // dispatched and no model ordinal/selector is accepted.
+            let rechecked = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                browser.recheck_closed_reference_for_test(fresh_ref.clone()),
+            )
+            .await
+            .map_err(|_| "owned-https-exact-recheck-deadline".to_owned())??;
+            if !rechecked {
+                return Err("owned-https-native-exact-element-recheck-stale".into());
+            }
+            eprintln!(
+                "PRODUCTION_OWNED_HTTPS_SNAPSHOT_REF=PASS page_generation={} elements={} stale_previous=STALE_ELEMENT fresh_reference=accepted_without_execution native_exact_recheck=ACCEPTED private_values=withheld",
+                second.page_generation,
+                second.elements.len()
+            );
+            Ok::<_, String>(fresh_ref)
+        }
+        .await;
+        let cleanup = browser.shutdown();
+        assert!(cleanup.is_ok(), "real Job/UDF/profile cleanup: {cleanup:?}");
+        let previously_live =
+            outcome.expect("real production COM must receive all owned HTTPS resources and DOM");
+        assert_eq!(
+            browser
+                .verify_closed_reference_without_execution_for_test(previously_live)
+                .unwrap_err(),
+            "STALE",
+            "closed owned session must reject every formerly live reference"
+        );
+        eprintln!(
+            "PRODUCTION_OWNED_HTTPS_READ_ONLY=PASS four native COM resources, TF3 TLS, structural DOM, owned Job/UDF; UNTRUSTED_JAVASCRIPT=DISABLED"
+        );
+    }
+
+    /// ONE independent physical cancellation/close probe: the *production*
+    /// zero-network AppContainer/WebView2 COM host must originate a real
+    /// deferred document GET, the existing parent must reach native TF3 HTTPS
+    /// transport, and the separately owned TLS server must accept that exact
+    /// request but deliberately withhold the response. Dropping the still-
+    /// pending parent flight invokes its existing Job-killing cancellation
+    /// fence; shutdown then independently proves process count zero, removed
+    /// UDF and successful native AppContainer profile deletion. No synthetic
+    /// COM ACK, fixture-only child, second executor, or production exception.
+    ///
+    /// Explicitly run only this new ignored test while a distinct terminal
+    /// serves Run-Tf4OwnedHttpsFixture.ps1 -Action Serve
+    /// -PendingDocumentDelayMilliseconds 2500. Stop that fixture with its
+    /// printed -RunId even if the test fails; the server's finally cleans
+    /// CurrentUser certificate, CNG key, DER and run-scoped signal.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit production AppContainer/WebView2 pending COM document cancellation: requires unique delayed owned HTTPS fixture and RunId Stop"]
+    async fn physical_production_owned_https_pending_document_cancel_close_no_replay() {
+        use std::time::Duration;
+
+        assert_eq!(
+            std::env::var("CLACK_TF4_PENDING_DOCUMENT_CANCEL").as_deref(),
+            Ok("1"),
+            "explicit CLACK_TF4_PENDING_DOCUMENT_CANCEL=1 required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let expected_cert = evidence.join("server.cer");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("exact live owned fixture DER path required");
+        assert_eq!(
+            std::fs::canonicalize(&supplied_cert).expect("live fixture public cert"),
+            std::fs::canonicalize(&expected_cert).expect("owned server.cer present"),
+            "never accept an arbitrary certificate or unrelated TLS fixture"
+        );
+        let run_id = std::fs::read_to_string(evidence.join("active.run"))
+            .expect("active owned fixture RunId")
+            .trim()
+            .to_owned();
+        assert!(
+            run_id.len() == 32
+                && run_id.bytes().all(|c| c.is_ascii_hexdigit())
+                && run_id == run_id.to_ascii_lowercase(),
+            "invalid scoped active RunId"
+        );
+        let signal = evidence.join(format!("pending-document-{run_id}.signal"));
+        assert!(
+            !signal.exists(),
+            "pending signal pre-existed; use a fresh RunId and dedicated fixture"
+        );
+        let certificate = reqwest::Certificate::from_der(
+            &std::fs::read(&expected_cert).expect("owned public DER readable"),
+        )
+        .expect("owned public DER decodes");
+
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("exact feature-enabled production host required");
+        let host_sha256 = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read production host"))
+        );
+        // Dedicated self-cleaning parent; no reuse of the accepted 8+9
+        // multi-resource test's browser profile or temporary directory.
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-owned-pending-close-")
+            .tempdir_in(manifest.join("target"))
+            .expect("unique owned temporary browser parent");
+        let workspace = manifest.parent().expect("project workspace");
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).expect("approve workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-pending-cancel".into(),
+                session_id: format!("tf4-pending-close-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256,
+            },
+            &registry,
+        )
+        .expect("real production zero-network-capability AppContainer launched");
+        let ready = tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+            .await
+            .expect("real COM / process readiness deadline");
+        if let Err(reason) = ready {
+            let cleanup = browser.shutdown();
+            panic!("real production host readiness: {reason}; cleanup: {cleanup:?}");
+        }
+
+        // Poll the *actual* production COM -> ChildGet -> TF3 HTTPS future.
+        // A fixture marker can only be written after an authenticated TLS
+        // request for / reaches the server, before the delayed HTTP body.
+        // The pending future MUST NOT finish while this marker first appears.
+        let mut flight =
+            Box::pin(browser.serve_one_owned_https_for_test(&registry, &web, &certificate));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+        loop {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "real COM pending-document/TF3 fixture signal not observed"
+            );
+            tokio::select! {
+                finished = &mut flight => {
+                    panic!("document COM/TF3 completed before the required delayed pending signal: {finished:?}");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            }
+            match std::fs::read(&signal) {
+                Ok(bytes) => {
+                    assert_eq!(
+                        bytes.as_slice(),
+                        b"D",
+                        "exactly one physically accepted real pending document GET"
+                    );
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("pending document TLS signal unreadable: {e}"),
+            }
+        }
+        // Cancelling the still-pending parent future drops FlightFence:
+        // terminate the original constrained Job. Do NOT claim COM Complete;
+        // instead prove no success ACK, unsafe fallback or later reuse occurs.
+        drop(flight);
+        let closed = browser.shutdown();
+        assert!(
+            closed.is_ok(),
+            "owned Job/UDF/profile cancellation cleanup: {closed:?}"
+        );
+        browser
+            .verify_cancelled_document_shutdown_for_test(1)
+            .expect("same original Job active count zero, profile deleted, UDF gone");
+        assert!(
+            parent
+                .path()
+                .read_dir()
+                .expect("inspect test-only parent")
+                .next()
+                .is_none(),
+            "no child UDF/browser working-directory residue"
+        );
+        // The server's maximum authorized delay is 3.5 seconds. Observing
+        // after that bound proves the only accepted document GET was not
+        // replayed by stale callbacks, pipe workers or parent retries.
+        tokio::time::sleep(Duration::from_millis(4_100)).await;
+        assert_eq!(
+            std::fs::read(&signal).expect("live RunId signal before explicit Stop"),
+            b"D",
+            "late or duplicate document GET after native cancel/shutdown"
+        );
+        assert!(
+            browser
+                .serve_one_owned_https_for_test(&registry, &web, &certificate)
+                .await
+                .is_err(),
+            "closed browser session must reject late/replayed resource work"
+        );
+        browser
+            .verify_cancelled_document_shutdown_for_test(1)
+            .expect("zero process/profile/UDF residue still holds after late window");
+        eprintln!(
+            "PRODUCTION_OWNED_PENDING_HTTPS_CANCEL=PASS original AppContainer/WebView2 COM deferral pending, one delayed TF3 TLS GET, cancelled FlightFence, JobActive=0, UDF=absent, AppContainerProfile=deleted, late/duplicate GET=0, no COM Complete claim; FIXTURE_RUN_ID={run_id} stop via Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId {run_id}"
+        );
+    }
+
+    /// Separate opt-in physical read-only identity recheck: a deliberately
+    /// minimal one-document HTTPS fixture, NOT the previously accepted 8+9
+    /// multi-resource fixture. The original *production* zero-network host
+    /// issues exactly one WebView2 GetDeferral -> TF3 HTTPS GET -> COM ACK.
+    /// A held native COM snapshot is rechecked via authenticated v2 sealed
+    /// pipe without JS action, selectors, model ordinal or mutation.
+    ///
+    /// Start -MinimalRecheckDocument in a separate terminal, set the same
+    /// explicit host and public DER env vars, run only this ignored test,
+    /// and STOP the displayed fixture RunId, including on failure.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "explicit separate single-document production WebView2 native exact-element recheck; RunId-scoped owned HTTPS minimal fixture required"]
+    async fn physical_production_owned_https_one_document_exact_element_recheck() {
+        use std::time::Duration;
+
+        // A separate, deliberate debug-host acceptance variant of this
+        // one-document test. Absent by default; the fixed H1 replacement
+        // hook is excluded from optimized production host builds.
+        let physical_replacement =
+            std::env::var("CLACK_TF4_EXACT_DOM_MUTATION").as_deref() == Ok("1");
+
+        assert_eq!(
+            std::env::var("CLACK_TF4_EXACT_ELEMENT_RECHECK").as_deref(),
+            Ok("1"),
+            "explicit CLACK_TF4_EXACT_ELEMENT_RECHECK=1 required"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let expected_cert = evidence.join("server.cer");
+        let supplied_cert = std::env::var_os("CLACK_TF4_OWNED_HTTPS_CERT")
+            .map(PathBuf::from)
+            .expect("exact live owned fixture DER required");
+        assert_eq!(
+            std::fs::canonicalize(&supplied_cert).expect("live fixture public cert"),
+            std::fs::canonicalize(&expected_cert).expect("expected owned server.cer"),
+            "no arbitrary trust anchor"
+        );
+        let cert = reqwest::Certificate::from_der(
+            &std::fs::read(&expected_cert).expect("owned public DER bytes"),
+        )
+        .expect("valid native public DER");
+        let run_id = std::fs::read_to_string(evidence.join("active.run"))
+            .expect("active owned fixture RunId")
+            .trim()
+            .to_owned();
+        assert!(
+            run_id.len() == 32
+                && run_id == run_id.to_ascii_lowercase()
+                && run_id.bytes().all(|c| c.is_ascii_hexdigit()),
+            "invalid active fixture RunId"
+        );
+        let host = std::env::var_os("CLACK_TF4_NATIVE_PROBE_HOST")
+            .map(PathBuf::from)
+            .expect("feature-enabled production WebView2 host path required");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&host).expect("read exact production host"))
+        );
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-owned-exact-recheck-")
+            .tempdir_in(manifest.join("target"))
+            .expect("new dedicated owned browser parent");
+        let workspace = manifest.parent().expect("project root");
+        let registry = WorkspaceRegistry::default();
+        registry
+            .authorize(workspace)
+            .expect("authorize only test workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-exact-readonly".into(),
+                session_id: format!("tf4-exact-recheck-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("real production zero-network AppContainer/Job launch");
+        let outcome = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+                .await
+                .map_err(|_| "exact-recheck-native-readiness-timeout".to_owned())??;
+            let resource = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "exact-recheck-single-document-timeout".to_owned())??;
+            let tf3 = resource
+                .tf3
+                .as_ref()
+                .ok_or("exact-recheck-missing-real-tf3-receipt")?;
+            if resource.request_id != 1
+                || resource.terminal != "completed"
+                || !resource.native_com_completed
+                || resource.bytes == 0
+                || tf3.terminal != "completed"
+                || tf3.reason_code != "ok"
+                || tf3.status_code != Some(200)
+                || tf3.tls_state != "https_transport_observed"
+                || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+                || tf3.content_type.as_deref() != Some("text/html")
+                || tf3.dns_evidence.len() != 1
+                || tf3.dns_evidence[0].host != "127.0.0.1"
+                || tf3.dns_evidence[0].classification != "all-allowed"
+            {
+                return Err("exact-recheck-real-com-tf3-document-not-attested".into());
+            }
+            // Minimal HTML has NO CSS/JS/images/fonts/iframe; only the
+            // original single network document is needed for native DOM.
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let first =
+                tokio::time::timeout(Duration::from_secs(10), browser.observe_closed_snapshot())
+                    .await
+                    .map_err(|_| "exact-recheck-first-com-snapshot-timeout".to_owned())??;
+            let heading = first
+                .elements
+                .iter()
+                .find(|e| e.role == SemanticRole::Heading && e.heading_level == Some(1))
+                .ok_or("exact-recheck-real-heading-not-observed")?;
+            let first_ref = ActionTarget {
+                browser_session_id: first.browser_session_id.clone(),
+                page_id: first.page_id.clone(),
+                page_generation: first.page_generation,
+                snapshot_id: first.snapshot_id.clone(),
+                element_ref: heading.element_ref.clone(),
+            };
+            let accepted = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.recheck_closed_reference_for_test(first_ref.clone()),
+            )
+            .await
+            .map_err(|_| "exact-recheck-native-com-deadline".to_owned())??;
+            if !accepted {
+                return Err("exact-recheck-current-real-com-element-was-stale".into());
+            }
+            if physical_replacement {
+                #[cfg(not(debug_assertions))]
+                return Err("exact-recheck-debug-replacement-unavailable-in-release".into());
+                #[cfg(debug_assertions)]
+                {
+                // This dispatches ONLY the debug-host's fixed, one-shot,
+                // exact-loopback retained-H1 replacement. No arbitrary page
+                // script, selector, tag, value or model command is accepted.
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    browser.replace_owned_heading_for_test(first_ref.clone()),
+                )
+                .await
+                .map_err(|_| "exact-recheck-debug-replacement-deadline".to_owned())??;
+                let still_original = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    browser.recheck_closed_reference_for_test(first_ref.clone()),
+                )
+                .await
+                .map_err(|_| "exact-recheck-post-mutation-com-deadline".to_owned())??;
+                if still_original {
+                    return Err("exact-recheck-replaced-node-resolved-successor".into());
+                }
+                eprintln!(
+                    "PRODUCTION_NATIVE_SAME_INDEX_REPLACEMENT=PASS original heading native COM retained node replaced by same H1 tag at same parent position, original exact node STALE, no selector fallback or untrusted page JS"
+                );
+                }
+            }
+            // A SECOND authenticated native observation invalidates the
+            // previous opaque snapshot. No model action or page mutation.
+            let second =
+                tokio::time::timeout(Duration::from_secs(10), browser.observe_closed_snapshot())
+                    .await
+                    .map_err(|_| "exact-recheck-reobservation-timeout".to_owned())??;
+            if first.snapshot_id == second.snapshot_id
+                || browser
+                    .recheck_closed_reference_for_test(first_ref.clone())
+                    .await
+                    .unwrap_err()
+                    != "STALE_ELEMENT"
+            {
+                return Err("exact-recheck-old-reference-not-stale-after-reobservation".into());
+            }
+            let current = second
+                .elements
+                .iter()
+                .find(|e| e.role == SemanticRole::Heading && e.heading_level == Some(1))
+                .ok_or("exact-recheck-second-real-heading-unavailable")?;
+            let current_ref = ActionTarget {
+                browser_session_id: second.browser_session_id.clone(),
+                page_id: second.page_id.clone(),
+                page_generation: second.page_generation,
+                snapshot_id: second.snapshot_id.clone(),
+                element_ref: current.element_ref.clone(),
+            };
+            if !tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.recheck_closed_reference_for_test(current_ref.clone()),
+            )
+            .await
+            .map_err(|_| "exact-recheck-fresh-com-deadline".to_owned())??
+            {
+                return Err("exact-recheck-reobserved-current-element-stale".into());
+            }
+            Ok::<_, String>((first_ref, current_ref))
+        }
+        .await;
+        let closed = browser.shutdown();
+        assert!(
+            closed.is_ok(),
+            "production one-document recheck Job/UDF/profile cleanup: {closed:?}"
+        );
+        let (old_ref, current_ref) =
+            outcome.expect("real production read-only exact COM element recheck must pass");
+        browser
+            .verify_clean_readonly_close_for_test(1)
+            .expect("one GET; native Job0, host exit, removed UDF/profile");
+        assert!(
+            parent
+                .path()
+                .read_dir()
+                .expect("inspect owned parent residue")
+                .next()
+                .is_none(),
+            "no owned browser profile/UDF working directories"
+        );
+        for target in [old_ref, current_ref] {
+            assert_eq!(
+                browser
+                    .verify_closed_reference_without_execution_for_test(target.clone())
+                    .unwrap_err(),
+                "STALE",
+                "closed session has no future native element authority"
+            );
+            assert!(
+                browser
+                    .recheck_closed_reference_for_test(target)
+                    .await
+                    .is_err(),
+                "closed session cannot issue new COM observation/recheck"
+            );
+        }
+        eprintln!(
+            "PRODUCTION_OWNED_EXACT_ELEMENT_RECHECK=PASS original production AppContainer/WebView2 COM+TF3 TLS one document, exact PreparedAction serial/ordinal read-only native recheck ACCEPTED twice, stale prior snapshot after reobservation, close stale, JobActive=0, UDF=absent, profile=deleted, no click/selector/JS action; FIXTURE_RUN_ID={run_id} stop via Run-Tf4OwnedHttpsFixture.ps1 -Action Stop -RunId {run_id}"
+        );
+        if physical_replacement {
+            eprintln!("PRODUCTION_OWNED_EXACT_DOM_MUTATION=PASS native one-shot debug-controlled same-index replacement, old exact recheck STALE, fresh authenticated snapshot ACCEPTED, clean Job/UDF/profile; RELEASE_HOOK=ABSENT");
+        }
+    }
+
+    /// Distinct physical WebView2/AppContainer/COM/TF3 native activation probe.
+    /// The parent grant is explicitly TEST-ONLY, not central Tool Fabric
+    /// approval. An actual GET /clicked (separate from its dispatch ACK) is
+    /// needed to prove page navigation. Never call this production acceptance.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in separate owned HTTPS two-page real WebView2 exact-node programmatic click; NOT central-policy approval or 17-step E2E"]
+    async fn physical_production_owned_https_exact_click_navigation_probe() {
+        physical_owned_https_exact_click_successor_case(true).await;
+    }
+
+    /// Negative physical case: the native host still observes and accepts
+    /// ONLY the exact ORIGINAL node action, but the independently trusted
+    /// parent intentionally grants NO successor document to TF3. The actual
+    /// WebView2 successor request must be denied before any second HTTPS GET.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in exact original-node WebView2 click with parent successor grant intentionally ABSENT; TEST-ONLY negative"]
+    async fn physical_production_owned_https_unapproved_successor_denied() {
+        physical_owned_https_exact_click_successor_case(false).await;
+    }
+
+    /// One fixed debug-only native CDP mutation in actual WebView2 per run.
+    /// Production WebView2 keeps page scripts disabled; this is NOT an
+    /// operator-controlled JS command or a central/human authorization.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in real WebView2 original-link mutation test; one fixed fixture kind; test-only parent grant is NOT human acceptance"]
+    async fn physical_production_owned_https_original_link_mutation_probe() {
+        let kind = std::env::var("CLACK_TF4_OWNED_NATIVE_MUTATION")
+            .expect("explicit fixed mutation fixture kind");
+        assert!(matches!(kind.as_str(), "unrelated" | "replace-link" | "href-change"
+            | "head-change" | "head-attr-value" | "hide-ancestor"
+            | "form-mutation" | "form-attr-value" | "link-text"));
+        physical_owned_https_exact_click_successor_case(true).await;
+    }
+
+    /// Debug-only synchronous mutation *inside* the actual WebView2 identity
+    /// baseline capture. The first read must be denied despite the restored
+    /// DOM; a separate observation ID then receives a fresh, non-actionable
+    /// snapshot. This fixture never requests an exact click or successor GET.
+    #[cfg(all(windows, debug_assertions))]
+    #[tokio::test]
+    #[ignore = "opt-in actual WebView2 baseline-capture MutationObserver race; test-only fixture, no human authorization"]
+    async fn physical_production_owned_https_baseline_capture_race() {
+        use std::time::Duration;
+        assert_eq!(std::env::var("CLACK_TF4_OWNED_BASELINE_CAPTURE_RACE").as_deref(), Ok("1"));
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let cert_path = std::fs::canonicalize(evidence.join("server.cer")).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").unwrap()).unwrap(),
+            cert_path,
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(cert_path).unwrap()).unwrap();
+        let run_id = std::fs::read_to_string(evidence.join("active.run")).unwrap();
+        let run_id = run_id.trim();
+        assert!(run_id.len() == 32 && run_id.bytes().all(|b| b.is_ascii_hexdigit()));
+        let host = PathBuf::from(std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").unwrap());
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-baseline-race-")
+            .tempdir_in(manifest.join("target"))
+            .unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).unwrap();
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-baseline-race-test-only".into(),
+                session_id: format!("tf4-baseline-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        ).unwrap();
+        let result = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+                .await.map_err(|_| "race-native-ready-deadline")??;
+            let initial = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            ).await.map_err(|_| "race-initial-document-deadline")??;
+            if initial.request_id != 1 || initial.terminal != "completed"
+                || !initial.native_com_completed
+            {
+                return Err("race-initial-document-not-attested".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let denied = tokio::time::timeout(
+                Duration::from_secs(10), browser.observe_closed_snapshot(),
+            ).await.map_err(|_| "race-mutated-capture-timeout")?;
+            if denied.as_ref().err().map(String::as_str) != Some("STALE") {
+                return Err(format!("race-capture-was-actionable: {denied:?}"));
+            }
+            // A failed observation has no authorized retained element.
+            if browser.baseline_probe_scope_for_test() != (1, false) {
+                return Err("race-failed-capture-retained-authority".into());
+            }
+            // Observation ID 2 has its own exact node slots and baseline;
+            // it is NOT a retry of the consumed first identity capture.
+            let fresh = tokio::time::timeout(
+                Duration::from_secs(10), browser.observe_closed_snapshot(),
+            ).await.map_err(|_| "race-fresh-capture-timeout")??;
+            if !fresh.elements.iter().any(|element| element.role == SemanticRole::Link)
+                || browser.baseline_probe_scope_for_test() != (2, true)
+            {
+                return Err("race-fresh-observation-not-separately-scoped".into());
+            }
+            Ok::<_, String>(())
+        }.await;
+        let close = browser.shutdown();
+        assert!(close.is_ok(), "baseline race native shutdown: {close:?}");
+        result.expect("same-WebView2 baseline mutation denied, fresh separately scoped observation");
+        browser.verify_clean_readonly_close_for_test(1)
+            .expect("only initial GET; Job0 and private WebView2 profile cleaned");
+        assert!(parent.path().read_dir().unwrap().next().is_none());
+        eprintln!("TF4_OWNED_BASELINE_CAPTURE_RACE=PASS actual WebView2 mutation after observer installation; initial observation STALE, second read latched, fresh observation ID 2 separately scoped; no click or successor GET; Job0/UDF clean; TEST-ONLY fixture; FIXTURE_RUN_ID={run_id}");
+    }
+
+    #[cfg(windows)]
+    async fn physical_owned_https_exact_click_successor_case(approved: bool) {
+        use crate::modules::net::tf_browser_contract::NativeEffectTerminal;
+        use std::time::Duration;
+        assert_eq!(
+            std::env::var("CLACK_TF4_OWNED_NATIVE_CLICK").as_deref(),
+            Ok("1")
+        );
+        assert_eq!(
+            std::env::var("CLACK_TF4_OWNED_NATIVE_DENY_SUCCESSOR").as_deref() == Ok("1"),
+            !approved,
+            "the run-scoped negative flag must match this exact test case",
+        );
+        let mutation = std::env::var("CLACK_TF4_OWNED_NATIVE_MUTATION")
+            .unwrap_or_else(|_| "none".into());
+        let negative_mutation = matches!(mutation.as_str(), "replace-link" | "href-change"
+            | "head-change" | "head-attr-value" | "hide-ancestor" | "form-mutation"
+            | "form-attr-value" | "link-text");
+        assert!(matches!(mutation.as_str(), "none" | "unrelated" | "replace-link"
+            | "href-change" | "head-change" | "head-attr-value"
+            | "hide-ancestor" | "form-mutation" | "form-attr-value" | "link-text"));
+        assert!(approved || mutation == "none", "negative successor fixture is separate");
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let canonical =
+            std::fs::canonicalize(evidence.join("server.cer")).expect("live fixture public DER");
+        assert_eq!(
+            std::fs::canonicalize(
+                std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").expect("run-scoped public DER path")
+            )
+            .unwrap(),
+            canonical
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&canonical).unwrap())
+            .expect("owned DER certificate");
+        let run_id = std::fs::read_to_string(evidence.join("active.run"))
+            .expect("run-scoped active fixture")
+            .trim()
+            .to_owned();
+        assert!(run_id.len() == 32 && run_id.bytes().all(|b| b.is_ascii_hexdigit()));
+        let host = PathBuf::from(
+            std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").expect("actual feature-enabled host path"),
+        );
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-native-click-")
+            .tempdir_in(manifest.join("target"))
+            .unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).expect("owned workspace only");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-owned-click-test-only".into(),
+                session_id: format!("tf4-click-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        )
+        .expect("real isolated AppContainer WebView2 host");
+        let result = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+                .await
+                .map_err(|_| "click-native-ready-deadline")??;
+            let first = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "click-initial-document-deadline")??;
+            if first.request_id != 1
+                || first.terminal != "completed"
+                || !first.native_com_completed
+                || first.tf3.as_ref().is_none_or(|tf3| {
+                    tf3.status_code != Some(200)
+                        || tf3.requested_url.as_deref() != Some("https://127.0.0.1/")
+                })
+            {
+                return Err("click-initial-native-document-not-attested".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let snapshot =
+                tokio::time::timeout(Duration::from_secs(10), browser.observe_closed_snapshot())
+                    .await
+                    .map_err(|_| "click-closed-native-snapshot-deadline")??;
+            let link = snapshot
+                .elements
+                .iter()
+                .find(|element| {
+                    element.role == SemanticRole::Link
+                        && element.state.enabled == Some(true)
+                        && element.state.visible == Some(true)
+                })
+                .ok_or("click-live-link-not-observed")?;
+            let target = ActionTarget {
+                browser_session_id: snapshot.browser_session_id.clone(),
+                page_id: snapshot.page_id.clone(),
+                page_generation: snapshot.page_generation,
+                snapshot_id: snapshot.snapshot_id.clone(),
+                element_ref: link.element_ref.clone(),
+            };
+            if mutation != "none" {
+                // A fixed, host-authored DEBUG function uses only the exact
+                // originally retained Node in the real WebView2 document.
+                // It acknowledges mutation before the original action; there
+                // is NO page-script timer and no replacement-node rematching.
+                #[cfg(not(debug_assertions))]
+                return Err("debug-owned-mutation-unavailable-in-release".into());
+                #[cfg(debug_assertions)]
+                tokio::time::timeout(Duration::from_secs(10),
+                    browser.mutate_owned_link_for_test(target.clone(), mutation.as_str()))
+                    .await.map_err(|_| "debug-owned-link-mutation-com-timeout")??;
+            }
+            let native = tokio::time::timeout(
+                Duration::from_secs(10),
+                browser.exact_click_owned_fixture_for_test(target.clone()),
+            )
+            .await
+            .map_err(|_| "click-actual-com-deadline")??;
+            if negative_mutation {
+                let expected_reason = match mutation.as_str() {
+                    "replace-link" => "native-exact-stale-node-detached",
+                    "href-change" => "native-exact-stale-destination-changed",
+                    "head-change" | "head-attr-value" | "form-mutation" | "form-attr-value" =>
+                        "native-exact-stale-mutation-observed",
+                    "link-text" => "native-exact-stale-node-changed",
+                    "hide-ancestor" => "native-exact-stale-node-changed",
+                    _ => unreachable!(),
+                };
+                if native.terminal != NativeEffectTerminal::Stale
+                    || native.effect_state != "NotAttempted"
+                    || native.reason_code != expected_reason
+                    || native.auto_retry || native.retry != "SAFE_REPREPARE" {
+                    return Err(format!("mutation-{mutation}-not-fail-closed: {native:?}"));
+                }
+                if browser.verify_closed_reference_without_execution_for_test(target).is_ok() {
+                    return Err("mutated-original-reference-reusable".into());
+                }
+                return Ok::<_, String>(());
+            }
+            if native.terminal != NativeEffectTerminal::Dispatched
+                || native.auto_retry
+                || native.effect_state != "Unknown"
+                || native.retry != "NEVER_REPLAY"
+            {
+                return Err(format!("click-dispatch-not-closed-ack: {:?}", native));
+            }
+            if browser
+                .verify_closed_reference_without_execution_for_test(target)
+                .is_ok()
+            {
+                return Err("click-consumed-native-reference-reusable".into());
+            }
+            let destination = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            )
+            .await
+            .map_err(|_| "click-navigation-TF3-deadline")??;
+            if destination.request_id != 2 || !destination.native_com_completed {
+                return Err("click-original-successor-no-independent-native-COM-receipt".into());
+            }
+            if approved {
+                if destination.terminal != "completed"
+                    || destination.tf3.as_ref().is_none_or(|tf3| {
+                        tf3.requested_url.as_deref() != Some("https://127.0.0.1/clicked")
+                            || tf3.status_code != Some(200)
+                            || tf3.terminal != "completed"
+                    })
+                {
+                    return Err("click-actual-navigation-TF3-not-observed".into());
+                }
+            } else if destination.terminal != "denied"
+                || destination.reason != "browser-resource-lifecycle-denied"
+                || destination.tf3.is_some()
+                || destination.causal_native_action_id.is_some()
+            {
+                return Err("unapproved-native-successor-was-not-denied-before-TF3".into());
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        let close = browser.shutdown();
+        assert!(
+            close.is_ok(),
+            "owned native click cleanup failed: {close:?}"
+        );
+        result.expect("actual WebView2 original-node action and correct native security result");
+        browser
+            .verify_clean_readonly_close_for_test(if negative_mutation { 1 } else { 2 })
+            .expect("exact bounded native GET count, Job0, host terminated, UDF/profile removed");
+        assert!(parent.path().read_dir().unwrap().next().is_none());
+        if negative_mutation {
+            eprintln!("PRODUCTION_OWNED_ORIGINAL_LINK_MUTATION=PASS kind={mutation} actual WebView2 source link STALE/NotAttempted, exact closed native reason, no successor GET, original reference consumed, Job0/UDF/profile clean; TEST-ONLY fixture; FIXTURE_RUN_ID={run_id}");
+        } else if mutation == "unrelated" {
+            eprintln!("PRODUCTION_OWNED_UNRELATED_MUTATION=PASS actual WebView2 inert sibling changed after retained original link snapshot; SAME original Node DISPATCHED and independently verified TF3 /clicked GET; Job0/UDF/profile clean; TEST-ONLY fixture; FIXTURE_RUN_ID={run_id}");
+        } else if approved {
+            eprintln!("PRODUCTION_OWNED_EXACT_CLICK_NAVIGATION_PROBE=PASS real AppContainer/WebView2 COM retained exact link node programmatic DOM click, independent TF3 HTTPS GET /clicked, native Job0/UDF/profile clean; TEST-ONLY parent grant; NOT trusted pointer or central approval or full E2E; FIXTURE_RUN_ID={run_id}");
+        } else {
+            eprintln!("PRODUCTION_OWNED_UNAPPROVED_SUCCESSOR_DENIAL=PASS real AppContainer/WebView2 original retained link click DISPATCHED UNKNOWN/NEVER_REPLAY, independent native document request2 denied before TF3, no /clicked HTTPS GET, COM403, Job0/UDF/profile clean; no surrogate parent successor grant; NOT human or installed approval; FIXTURE_RUN_ID={run_id}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in real scriptless HTML target=_blank WebView2 popup veto and one-use native intent capture; NOT central UI child approval"]
+    async fn physical_production_owned_https_original_popup_intent_capture() {
+        use crate::modules::net::tf_browser_contract::NativeEffectTerminal;
+        use std::time::Duration;
+        assert_eq!(std::env::var("CLACK_TF4_OWNED_NATIVE_POPUP").as_deref(), Ok("1"));
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let canonical = std::fs::canonicalize(evidence.join("server.cer")).expect("live public DER");
+        assert_eq!(
+            std::fs::canonicalize(std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").expect("live cert path")).unwrap(),
+            canonical,
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(&canonical).unwrap()).unwrap();
+        let run_id = std::fs::read_to_string(evidence.join("active.run")).unwrap();
+        let run_id = run_id.trim();
+        assert!(run_id.len() == 32 && run_id.bytes().all(|b| b.is_ascii_hexdigit()));
+        let host = PathBuf::from(std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").unwrap());
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let parent = tempfile::Builder::new().prefix("tf4-popup-")
+            .tempdir_in(manifest.join("target")).unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).expect("authorized workspace");
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(BrowserRuntimeStart {
+            actor: "tf4-owned-popup-capture-test-only".into(),
+            session_id: format!("tf4-popup-{}", &run_id[..12]),
+            workspace_root: workspace.to_path_buf(),
+            initial_url: "https://127.0.0.1/".into(),
+            resource_manifest: Vec::new(),
+            private_parent: parent.path().to_path_buf(),
+            host_executable: host,
+            host_sha256: digest,
+        }, &registry).expect("isolated original AppContainer");
+        let outcome = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready_for_control_turns())
+                .await.map_err(|_| "popup-ready-timeout")?
+                .map_err(|reason| format!("popup-ready: {reason}"))?;
+            let initial = tokio::time::timeout(Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert))
+                .await.map_err(|_| "popup-original-document-timeout")?
+                .map_err(|reason| format!("popup-original-document: {reason}"))?;
+            if initial.request_id != 1 || initial.terminal != "completed" || !initial.native_com_completed
+                || initial.tf3.as_ref().is_none_or(|v| v.status_code != Some(200)) {
+                return Err("popup-initial-document-unattested".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let requester = browser.control_turn_requester().ok_or("popup-control-turns-unavailable")?;
+            requester.request();
+            let offer = tokio::time::timeout(Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert))
+                .await.map_err(|_| "popup-observe-turn-timeout")?
+                .map_err(|reason| format!("popup-observe-turn: {reason}"))?;
+            if offer.terminal != "idle" || !browser.has_control_turn() {
+                return Err("popup-observe-turn-not-offered".into());
+            }
+            let snapshot = tokio::time::timeout(Duration::from_secs(10),
+                browser.observe_closed_snapshot_in_control_turn())
+                .await.map_err(|_| "popup-observe-timeout")?
+                .map_err(|reason| format!("popup-observe: {reason}"))?;
+            let anchor = snapshot.elements.iter().find(|e| e.role == SemanticRole::Link
+                && e.state.visible == Some(true) && e.state.enabled == Some(true))
+                .ok_or("popup-original-anchor-unobserved")?;
+            let target = ActionTarget {
+                browser_session_id: snapshot.browser_session_id.clone(),
+                page_id: snapshot.page_id.clone(),
+                page_generation: snapshot.page_generation,
+                snapshot_id: snapshot.snapshot_id.clone(),
+                element_ref: anchor.element_ref.clone(),
+            };
+            requester.request();
+            let action_offer = tokio::time::timeout(Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert))
+                .await.map_err(|_| "popup-action-turn-timeout")?
+                .map_err(|reason| format!("popup-action-turn: {reason}"))?;
+            if action_offer.terminal != "idle" || !browser.has_control_turn() {
+                return Err("popup-native-action-turn-not-offered".into());
+            }
+            let dispatched = tokio::time::timeout(Duration::from_secs(12),
+                browser.exact_popup_click_owned_fixture_for_test(target.clone()))
+                .await.map_err(|_| "popup-native-anchor-action-timeout")?
+                .map_err(|reason| format!("popup-native-anchor-action: {reason}"))?;
+            if dispatched.terminal != NativeEffectTerminal::Dispatched
+                || dispatched.effect_state != "Unknown" || dispatched.retry != "NEVER_REPLAY"
+                || dispatched.auto_retry {
+                return Err(format!("popup-native-action-not-dispatched: {dispatched:?}"));
+            }
+            if browser.verify_closed_reference_without_execution_for_test(target).is_ok() {
+                return Err("popup-triggered-anchor-replayable".into());
+            }
+            // A *new* authenticated host idle offer is required; no first-turn
+            // observation or action claim is reused to capture the popup.
+            requester.request();
+            let capture_offer = tokio::time::timeout(Duration::from_secs(14),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert))
+                .await.map_err(|_| "popup-capture-turn-timeout")?
+                .map_err(|reason| format!("popup-capture-turn: {reason}"))?;
+            if capture_offer.terminal != "idle" || !browser.has_control_turn() {
+                return Err("popup-capture-turn-not-offered".into());
+            }
+            let intent = tokio::time::timeout(Duration::from_secs(10),
+                browser.capture_popup_in_control_turn("https://127.0.0.1/"))
+                .await.map_err(|_| "popup-original-intent-capture-timeout")?
+                .map_err(|reason| format!("popup-original-intent-capture: {reason}"))?
+                .ok_or("popup-original-native-event-never-captured")?;
+            if intent.destination != "https://127.0.0.1/" || intent.page_generation != 1
+                || intent.id.len() != 64 || intent.source_sha256 != format!("{:x}", Sha256::digest(b"https://127.0.0.1/")) {
+                return Err("popup-native-intent-not-exact-original".into());
+            }
+            // No child is launched here: this is only native event/veto/intent
+            // evidence, not authorization to create a child or to dispatch TF3.
+            Ok::<_, String>(intent.id)
+        }.await;
+        if outcome.is_err() {
+            // This fixture-only diagnostic reads the bounded, already-safe
+            // native startup trace before shutdown removes the private UDF.
+            // It cannot grant a popup or turn a failed probe into acceptance.
+            for session in std::fs::read_dir(parent.path()).into_iter().flatten().flatten() {
+                if !session.path().is_dir() { continue; }
+                for entry in std::fs::read_dir(session.path()).into_iter().flatten().flatten() {
+                    if entry.file_name().to_string_lossy().starts_with("browser-host-startup-") {
+                        if let Ok(log) = std::fs::read_to_string(entry.path()) {
+                            for line in log.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev() {
+                                eprintln!("POPUP_PHYSICAL_HOST_STAGE {line}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let close = browser.shutdown();
+        assert!(close.is_ok(), "popup original owner cleanup: {close:?}");
+        let id = outcome.expect("real native original popup event veto/capture");
+        browser.verify_clean_readonly_close_for_test(1)
+            .expect("only original HTTP GET, stopped Job, deleted UDF");
+        assert!(parent.path().read_dir().unwrap().next().is_none());
+        eprintln!("PRODUCTION_OWNED_ORIGINAL_NATIVE_POPUP_INTENT=PASS intent={} original_webview2_event_vetoed=true TF3_child_dispatch=false central_popup_approval=NOT_PROVEN", id);
+    }
+}

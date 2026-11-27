@@ -262,6 +262,45 @@ describe("TF1 security policy: registry, scopes, approval and no inferred trust"
     expect(networkRetryClass("POST","timeout","Unknown")).toBe("UNKNOWN");
     expect(networkRetryClass("POST","completed","NoEffect")).toBe("UNSAFE_RETRY");
   });
+  it("registers browser sessions under the existing native network policy without enabling writes",()=>{
+    const supported=["tf_browser_open","tf_browser_navigate","tf_browser_inspect",
+      "tf_browser_click","tf_browser_back","tf_browser_close"];
+    const network:ToolScope={kind:"network",protocol:"https",host:"docs.example.org",
+      port:443,path:"/manual",method:"GET",queryPresent:false,operation:"read",
+      resolution:"native-pending",tls:"required",maxBytes:32768,
+      maxRedirects:5,timeoutMs:15000};
+    for(const name of supported){
+      const tool=builtinToolSecurity(name);
+      expect(tool).toMatchObject({name,category:"native-browser",
+        requiresApproval:true,provenance:"clack-builtin"});
+      const policy=evaluateToolFabricPolicy(request(name,{scopes:[network],
+        requestedEffects:name==="tf_browser_close"?["read-only"]:["network-read"]}));
+      expect(policy).toMatchObject({decision:"REQUIRE_APPROVAL",
+        reasonCode:"explicit-approval-required"});
+    }
+    for(const name of ["tf_browser_find","tf_browser_type","tf_browser_select",
+      "tf_browser_scroll","tf_browser_forward","tf_browser_refresh",
+      "tf_browser_screenshot","tf_browser_download","tf_browser_upload"]){
+      const unsupported=builtinToolSecurity(name)!;
+      expect(unsupported.available).toBe(false);
+      expect(evaluateToolFabricPolicy(request(name,{scopes:[network]})))
+        .toMatchObject({decision:"UNSUPPORTED",reasonCode:"tool-unavailable"});
+    }
+    const input=request("tf_browser_open",{scopes:[network],
+      requestedEffects:["network-read"]});
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...network,
+      resolution:"unknown"}]}).decision).toBe("UNKNOWN");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...network,
+      method:"POST",operation:"write"}],
+      requestedEffects:["network-read","network-write"]}).reasonCode)
+      .toBe("effect-unclassified");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...network,
+      timeoutMs:20000}]}).reasonCode).toBe("network-time-budget-invalid");
+    expect(evaluateToolFabricPolicy({...input,scopes:[{...network,
+      maxBytes:65537}]}).reasonCode).toBe("network-byte-budget-invalid");
+    expect(evaluateToolFabricPolicy({...input,permissionMode:"chat-only"}).decision)
+      .toBe("DENY");
+  });
 
   it("uses references only; no expired, revoked, cross-tool or unobserved credential grant",()=>{
     const cred:ToolScope={kind:"credential",reference:"credential:repo-token",

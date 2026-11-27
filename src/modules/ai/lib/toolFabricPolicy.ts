@@ -171,6 +171,26 @@ const BUILTIN_SECURITY:Readonly<Record<string,BuiltinDeclaration>> = {
   tf_http_fetch:builtin("native-network",["network-read"],["network"],true),
   tf_http_head:builtin("native-network",["network-read"],["network"],true),
   tf_web_search:{...builtin("native-search",["network-read","credential-use"],["network","credential"],true),requiresCredentials:true},
+  // The browser's isolated page snapshot is an external network effect, not a
+  // privileged model-owned WebView. Native always reauthorizes its session and
+  // destination; no browser tool inherits a harmless read-only default.
+  tf_browser_open:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_navigate:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_inspect:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_find:builtin("native-browser",["network-read"],["network"],true),
+  // Only snapshot-verified hyperlinks are callable in this slice. No generic
+  // click, submit, script or other unclassified page effect is executable.
+  tf_browser_click:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_type:builtin("native-browser",["unknown"],["network"],true),
+  tf_browser_select:builtin("native-browser",["unknown"],["network"],true),
+  tf_browser_scroll:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_back:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_forward:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_refresh:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_screenshot:builtin("native-browser",["network-read"],["network"],true),
+  tf_browser_download:builtin("native-browser",["network-read","local-reversible-write"],["network","filesystem"],true),
+  tf_browser_upload:builtin("native-browser",["network-write","external-side-effect"],["network","filesystem"],true),
+  tf_browser_close:builtin("native-browser",["read-only"],["network"],true),
   fetch_web_page:builtin("network",["network-read"],["network"],true),
   compare_web_sources:builtin("network",["network-read"],["network"],true),
   run_subagent:builtin("agent",["external-side-effect"],[],true),
@@ -190,11 +210,21 @@ const BUILTIN_SECURITY:Readonly<Record<string,BuiltinDeclaration>> = {
   open_preview:builtin("browser",["network-read"],["network"],true),
 };
 
+/** Future browser operations are registered for explicit unsupported-state
+ * discovery only. They cannot acquire runnable Tool Fabric authority until a
+ * verified native executor and security acceptance are implemented. */
+const UNSUPPORTED_NATIVE_BROWSER = new Set([
+  "tf_browser_find","tf_browser_type","tf_browser_select","tf_browser_scroll",
+  "tf_browser_forward","tf_browser_refresh","tf_browser_screenshot",
+  "tf_browser_download","tf_browser_upload",
+]);
+
 export function builtinToolSecurity(name:string):ToolRegistrySecurity|null {
   const row=BUILTIN_SECURITY[name];
   if(!row)return null;
   return {id:JSON.stringify(["builtin","clack",name]),revision:"builtin",
-    provider:"clack",name,available:true,provenance:"clack-builtin",...row};
+    provider:"clack",name,available:!UNSUPPORTED_NATIVE_BROWSER.has(name),
+    provenance:"clack-builtin",...row};
 }
 
 export function unknownToolSecurity(name:string,id:string,revision:string):ToolRegistrySecurity {
@@ -337,7 +367,8 @@ export function evaluateToolFabricPolicy(input:ToolSecurityRequest):ToolPolicyRe
           return result("DENY","network-scheme-unsupported");
         if(scope.resolution==="unknown")return result("UNKNOWN","network-resolution-unknown");
         if(scope.resolution==="native-pending" &&
-           !["tf_http_fetch","tf_http_head","tf_web_search"].includes(tool.name))
+           !["tf_http_fetch","tf_http_head","tf_web_search"].includes(tool.name) &&
+           !tool.name.startsWith("tf_browser_"))
           return result("UNKNOWN","network-native-resolver-not-bound");
         if(scope.resolution==="resolved" &&
            (!scope.resolvedAddresses?.length ||
