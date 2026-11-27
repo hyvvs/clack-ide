@@ -1121,6 +1121,75 @@ mod tests {
         );
     }
     #[test]
+    fn retained_original_link_crosses_snapshot_deadline_during_separate_approval() {
+        // Focused reproduction of the installed generic pre-dispatch STALE
+        // candidate: capture/prepare on the original opaque LINK succeeds,
+        // then a separate, still-live OS approval waits beyond the native
+        // observation's independent 30-second deadline. No DOM mutation,
+        // page-generation change, destination replacement, selector lookup,
+        // revision change, or dispatch is needed to produce STALE_ELEMENT.
+        //
+        // This models the central retained-node predicate only; it neither
+        // clicks a Windows consent dialog nor claims the IANA timing was
+        // independently recorded. Production TTLs remain unchanged.
+        let mut p = session();
+        let link = element(
+            1,
+            SemanticRole::Link,
+            "Read",
+            Some("https://example.org/next"),
+            None,
+            None,
+        );
+        p.observe(
+            1,
+            "https://example.org/form",
+            "",
+            "",
+            vec![link.clone()],
+            1,
+        )
+        .unwrap();
+        let original = target(&p);
+        let captured = p
+            .prepare_action(BrowserActionKind::Click, original.clone(), None)
+            .unwrap();
+        assert_eq!(captured.effect, BrowserEffect::Unknown);
+        assert!(captured.requires_approval);
+        let page_id = p.live.page_id.clone();
+        let generation = p.live.page_generation;
+        let snapshot_id = p.snapshot.as_ref().unwrap().snapshot_id.clone();
+        // A 25-second pre-prepare freshness check does not reserve 30
+        // seconds of authority for the subsequent OS dialog.
+        p.snapshot_created = Some(Instant::now() - Duration::from_secs(25));
+        assert!(p
+            .prepare_action(BrowserActionKind::Click, original.clone(), None)
+            .is_ok());
+        p.snapshot_created = Some(Instant::now() - MAX_SNAPSHOT_LIFETIME - Duration::from_millis(1));
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Click, original.clone(), None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+        assert_eq!(p.live.page_id, page_id);
+        assert_eq!(p.live.page_generation, generation);
+        assert_eq!(p.snapshot.as_ref().unwrap().snapshot_id, snapshot_id);
+        assert_eq!(p.snapshot.as_ref().unwrap().elements.len(), 1);
+        assert_eq!(
+            p.verify_completion(&captured).unwrap_err(),
+            "UNKNOWN_COMPLETION"
+        );
+        // A genuinely new observation may authorize a *new* capability,
+        // never revive this expired original reference.
+        p.observe(1, "https://example.org/form", "", "", vec![link], 2)
+            .unwrap();
+        assert_eq!(
+            p.prepare_action(BrowserActionKind::Click, original, None)
+                .unwrap_err(),
+            "STALE_ELEMENT"
+        );
+    }
+    #[test]
     fn failed_new_observation_revokes_old_live_reference() {
         let mut p = session();
         p.observe(

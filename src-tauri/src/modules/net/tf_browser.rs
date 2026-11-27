@@ -7597,6 +7597,42 @@ mod tests {
     }
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[test]
+    fn native_original_link_approval_boundary_distinguishes_snapshot_from_reservation() {
+        // A successfully displayed original-link consent dialog means
+        // pre-consent CaptureLink returned and the original destination was
+        // sealed. After the dialog the parent can still fail without ever
+        // entering the fixed original-node host dispatch.
+        //
+        // Distinguish the actual generic installed STALE category from the
+        // nearby revision/reservation mismatch: the latter MUST remain a
+        // DENIED, not be misleadingly attributed to renderer DOM mutation.
+        for reason in [
+            "STALE_ELEMENT",
+            "STALE_SESSION",
+            "native-click-observation-stale",
+            "confined-native-snapshot-stale",
+            "confined-native-central-page-or-element-changed",
+        ] {
+            let effect = NativeEffectReceipt::classify(native_pre_dispatch_terminal(reason));
+            assert_eq!(effect.terminal, NativeEffectTerminal::Stale, "{reason}");
+            assert_eq!(effect.reason_code, "native-effect-exact-node-stale", "{reason}");
+            assert_eq!(effect.effect_state, "NotAttempted", "{reason}");
+            assert_eq!(effect.retry, "SAFE_REPREPARE", "{reason}");
+            assert!(!effect.auto_retry, "{reason}");
+        }
+        for reason in [
+            "confined-native-central-approval-expired-or-scope-changed",
+            "confined-native-central-session-or-source-changed",
+            "unknown-or-consumed-browser-token",
+        ] {
+            let effect = NativeEffectReceipt::classify(native_pre_dispatch_terminal(reason));
+            assert_eq!(effect.terminal, NativeEffectTerminal::Denied, "{reason}");
+            assert_ne!(effect.reason_code, "native-effect-exact-node-stale", "{reason}");
+            assert_eq!(effect.effect_state, "NotAttempted", "{reason}");
+        }
+    }
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
     fn native_click_confirmation_requires_independent_next_document_receipt() {
         const ACTION_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let source = "https://example.org/";

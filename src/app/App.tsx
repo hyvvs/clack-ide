@@ -22,6 +22,7 @@ import {
   useSelectionAskAi,
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
+import { StandaloneNativeAcceptance } from "@/modules/ai/components/StandaloneNativeAcceptance";
 import { useSelfHostedInventory } from "@/modules/ai/hooks/useSelfHostedInventory";
 import { routeAiPaneShortcut } from "@/modules/ai/lib/aiPaneShortcuts";
 import { native } from "@/modules/ai/lib/native";
@@ -1797,6 +1798,12 @@ export default function App() {
             keysLoaded={keysLoaded}
             onConnect={() => void openSettingsWindow("models")}
           />
+
+          {/* TF4's human-operated native acceptance must remain reachable
+              when no AI provider is configured. The separate component
+              retains the actual saved-chat scope and native OS consent; it
+              does not create any model-facing browser capability. */}
+          {!hasComposer ? <StandaloneNativeAcceptance /> : null}
 
           {!zenMode && (
             <StatusBar
