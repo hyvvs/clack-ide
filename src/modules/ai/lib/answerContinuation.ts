@@ -1,29 +1,39 @@
 import {
-  wrapLanguageModel,
-  type LanguageModel,
-  type UIMessage,
-  type UIMessageChunk,
-} from "ai";
+  type BudgetLimits,
+  ContextBudgetError,
+  measureRequest,
+  resolveContextBudget,
+} from "@/modules/ai/lib/contextBudget";
+import { sanitizeAiErrorText } from "@/modules/ai/lib/errors";
+import {
+  deferStreamFailure,
+  InferenceTransportError,
+} from "@/modules/ai/lib/inferenceErrors";
+import {
+  copyNativeResponseAssociation,
+  OllamaParserFailureState,
+} from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
+import {
+  createOutputWatchdog,
+  describeWatchdog,
+  type OutputWatchdog,
+  readWatchdogError,
+  watchdogInstruction,
+  watchdogSchema,
+} from "@/modules/ai/lib/outputWatchdog";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider";
+import {
+  type LanguageModel,
+  type UIMessage,
+  type UIMessageChunk,
+  wrapLanguageModel,
+} from "ai";
 import { z } from "zod";
-import {
-  ContextBudgetError,
-  measureRequest,
-  resolveContextBudget,
-  type BudgetLimits,
-} from "@/modules/ai/lib/contextBudget";
-import {
-  InferenceTransportError,
-  deferStreamFailure,
-} from "@/modules/ai/lib/inferenceErrors";
-import { sanitizeAiErrorText } from "@/modules/ai/lib/errors";
-import { OllamaParserFailureState, copyNativeResponseAssociation } from "@/modules/ai/lib/ollamaParserFailureDiagnostics";
-import { createOutputWatchdog, readWatchdogError, describeWatchdog, watchdogSchema, watchdogInstruction, type OutputWatchdog } from "@/modules/ai/lib/outputWatchdog";
 
 export const ANSWER_LIMITS = {
   continuations: 3,
@@ -35,6 +45,11 @@ export const ANSWER_LIMITS = {
   segments: 256,
   overlap: 256,
 } as const;
+
+// Bound the bytes handed to AI SDK response.text()/json() consumers, including
+// provider error bodies and streamed native-provider responses. The native
+// Rust bridge enforces the same ceiling before forwarding IPC chunks.
+export const MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 export class ReasoningOutputExhaustedError extends Error {
   readonly reasoningOutputExhaustion = true;
@@ -60,9 +75,10 @@ function currentTurnHasProgress(
     if (message.role === "tool") return true;
     return (
       message.role === "assistant" &&
-      message.content.some((part) =>
-        part.type === "tool-call" ||
-        (part.type === "text" && part.text.trim().length > 0),
+      message.content.some(
+        (part) =>
+          part.type === "tool-call" ||
+          (part.type === "text" && part.text.trim().length > 0),
       )
     );
   });
@@ -269,13 +285,62 @@ export function recoverAnswerMessages(messages: UIMessage[]): UIMessage[] {
   });
 }
 
-export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: () => void): typeof fetch {
+function limitProviderResponseBody(response: Response): Response {
+  if (!response.body) return response;
+  const reader = response.body.getReader();
+  let totalBytes = 0;
+  const limitedBody = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          controller.close();
+          return;
+        }
+        if (next.value.byteLength > MAX_PROVIDER_RESPONSE_BYTES - totalBytes) {
+          void reader.cancel().catch(() => {});
+          controller.error(new InferenceTransportError("response-too-large"));
+          return;
+        }
+        totalBytes += next.value.byteLength;
+        controller.enqueue(next.value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  const limited = new Response(limitedBody, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  copyNativeResponseAssociation(limited, response);
+  return limited;
+}
+
+export function verifiedProviderFetch(
+  fetcher: typeof fetch,
+  onResponseBody?: () => void,
+): typeof fetch {
   return async (input, init) => {
-    const response = await fetcher(input, init);
+    const response = limitProviderResponseBody(await fetcher(input, init));
     if (!response.ok || !response.body) return response;
-    const nativeOllama = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).pathname.endsWith("/api/chat") &&
+    const nativeOllama =
+      new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      ).pathname.endsWith("/api/chat") &&
       response.headers.get("content-type")?.includes("ndjson");
-    if (!nativeOllama && !response.headers.get("content-type")?.includes("text/event-stream")) {
+    if (
+      !nativeOllama &&
+      !response.headers.get("content-type")?.includes("text/event-stream")
+    ) {
       onResponseBody?.();
       return response;
     }
@@ -286,13 +351,15 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
           ? input.href
           : input.url;
     const path = new URL(url).pathname;
-    const protocol = nativeOllama ? "ollama" : path.endsWith("/chat/completions")
-      ? "chat"
-      : path.endsWith("/messages")
-        ? "messages"
-        : path.endsWith("/responses")
-          ? "responses"
-          : null;
+    const protocol = nativeOllama
+      ? "ollama"
+      : path.endsWith("/chat/completions")
+        ? "chat"
+        : path.endsWith("/messages")
+          ? "messages"
+          : path.endsWith("/responses")
+            ? "responses"
+            : null;
     const scannerDiagnostic = new OllamaParserFailureState();
     const decoder = new TextDecoder();
     let buffer = "",
@@ -386,7 +453,13 @@ export function verifiedProviderFetch(fetcher: typeof fetch, onResponseBody?: ()
               throw new InferenceTransportError("missing-final-event");
             controller.close();
           } catch (error) {
-            scannerDiagnostic.failure("completion-scanner", response, error, buffer, false);
+            scannerDiagnostic.failure(
+              "completion-scanner",
+              response,
+              error,
+              buffer,
+              false,
+            );
             // Drain adapter buffers before reporting failure; tool quarantine remains closed.
             if (deferStreamFailure(signal, error)) {
               await new Promise<void>((resolve) => {
@@ -444,7 +517,11 @@ export function answerMetadataStream(
           if (next.done || !active) break;
           // Passive, bounded qualification observation must never change a
           // Chat response or fail a provider request.
-          try { onObservedChunk?.(next.value); } catch { /* observation only */ }
+          try {
+            onObservedChunk?.(next.value);
+          } catch {
+            /* observation only */
+          }
           controller.enqueue(next.value);
           if (!started && next.value.type === "start") {
             started = true;
@@ -531,7 +608,10 @@ export function withAnswerContinuation(
     recovery?: boolean;
     watchdog?: OutputWatchdog;
     onWatchdog?: (error: unknown) => void;
-    imitatedTool?: (text: string, exposed: ReadonlySet<string>) => string | null;
+    imitatedTool?: (
+      text: string,
+      exposed: ReadonlySet<string>,
+    ) => string | null;
   },
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -569,7 +649,9 @@ export function withAnswerContinuation(
       specificationVersion: "v3",
       async wrapStream({ params }) {
         check();
-        const watchdog = options.watchdog ?? createOutputWatchdog(watchdogInstruction(params.prompt));
+        const watchdog =
+          options.watchdog ??
+          createOutputWatchdog(watchdogInstruction(params.prompt));
         if (watchdog.error) throw watchdog.error;
         const deadline = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -667,7 +749,9 @@ export function withAnswerContinuation(
                   generatedCharacters = 0,
                   finish: FinishPart | undefined,
                   failed = false;
-                const continuing = state.segments[state.segments.length - 2]?.finish === "length" || segment.recovery === true;
+                const continuing =
+                  state.segments[state.segments.length - 2]?.finish ===
+                    "length" || segment.recovery === true;
                 const calls = new Map<
                   string,
                   {
@@ -850,8 +934,14 @@ export function withAnswerContinuation(
                     state.segments.length === 1
                   )
                     controller.enqueue(part);
-                  if (part.type === "text-delta" || part.type === "reasoning-delta") {
-                    const stop = watchdog.observe(part.delta, part.type === "text-delta" ? "text" : "reasoning");
+                  if (
+                    part.type === "text-delta" ||
+                    part.type === "reasoning-delta"
+                  ) {
+                    const stop = watchdog.observe(
+                      part.delta,
+                      part.type === "text-delta" ? "text" : "reasoning",
+                    );
                     if (stop) throw stop;
                   }
                   if (
@@ -892,7 +982,11 @@ export function withAnswerContinuation(
                   ),
                 );
                 generated += segment.budgetTokens;
-                const loop = !failed && ["stop", "length", "tool-calls"].includes(segment.finish) ? watchdog.segment(text, continuing) : null;
+                const loop =
+                  !failed &&
+                  ["stop", "length", "tool-calls"].includes(segment.finish)
+                    ? watchdog.segment(text, continuing)
+                    : null;
                 if (loop) throw loop;
                 if (finish) usage = sumUsage(usage, finish.usage);
                 const toolComplete =
@@ -939,20 +1033,26 @@ export function withAnswerContinuation(
                   throw new Error(
                     "Tool repair was not complete and identity-preserving; no tool executed.",
                   );
-                const imitation = !failed && calls.size === 0 && segment.finish === "stop"
-                  ? options.imitatedTool?.(text, allowed) ?? null : null;
+                const imitation =
+                  !failed && calls.size === 0 && segment.finish === "stop"
+                    ? (options.imitatedTool?.(text, allowed) ?? null)
+                    : null;
                 if (imitation) state.nativeToolImitationBlocked = true;
                 if (pseudoToolCorrectionSent && calls.size && toolComplete)
                   state.nativeToolImitationBlocked = false;
                 if (pseudoToolCorrectionSent && calls.size === 0) {
                   state.state = "incomplete";
-                  state.reason = "Coder did not invoke a native tool after the bounded pseudo-tool correction; no tool executed.";
+                  state.reason =
+                    "Coder did not invoke a native tool after the bounded pseudo-tool correction; no tool executed.";
                   publish();
                   if (finish)
                     controller.enqueue({
                       ...finish,
                       usage: usage ?? finish.usage,
-                      finishReason: { unified: "other", raw: "native-tool-imitation-unresolved" },
+                      finishReason: {
+                        unified: "other",
+                        raw: "native-tool-imitation-unresolved",
+                      },
                     });
                   else throw new InferenceTransportError("remote-disconnect");
                   break;
@@ -1032,8 +1132,14 @@ export function withAnswerContinuation(
                 if ((options.maxContinuations ?? 3) <= 0)
                   throw new Error("Automatic output continuation is disabled.");
                 if (imitation) {
-                  if (pseudoToolCorrectionSent || state.continuations >= Math.min(3, options.maxContinuations ?? 3))
-                    throw new Error("Native tool correction limit reached; no tool executed.");
+                  if (
+                    pseudoToolCorrectionSent ||
+                    state.continuations >=
+                      Math.min(3, options.maxContinuations ?? 3)
+                  )
+                    throw new Error(
+                      "Native tool correction limit reached; no tool executed.",
+                    );
                   pseudoToolCorrectionSent = true;
                   state.continuations++;
                 } else if (calls.size) {
@@ -1063,8 +1169,8 @@ export function withAnswerContinuation(
                 const directive = imitation
                   ? `Your previous response imitated the exposed ${JSON.stringify(imitation)} tool in plain text. No tool was called or executed. For the still-requested workspace action, invoke the *actual native structured function interface* with valid tool arguments. Do not print XML, JSON, Markdown, or function-call text as a substitute. Only one corrective attempt is available; if no authorized tool can be invoked, report the limitation honestly.`
                   : repair
-                  ? `Complete the interrupted tool call ONLY. Re-emit the full JSON object for tool ${JSON.stringify(repair.name)} with the SAME call ID ${JSON.stringify(repair.id)}. Preserve this exact argument prefix: ${JSON.stringify(repair.input)}. Do not execute anything or create another call.`
-                  : "Continue the SAME assistant answer exactly from its last character. Do not repeat any prior text, restart the task, or add a new introduction. Preserve whitespace, code and Markdown. Existing permissions and approvals remain in force.";
+                    ? `Complete the interrupted tool call ONLY. Re-emit the full JSON object for tool ${JSON.stringify(repair.name)} with the SAME call ID ${JSON.stringify(repair.id)}. Preserve this exact argument prefix: ${JSON.stringify(repair.input)}. Do not execute anything or create another call.`
+                    : "Continue the SAME assistant answer exactly from its last character. Do not repeat any prior text, restart the task, or add a new introduction. Preserve whitespace, code and Markdown. Existing permissions and approvals remain in force.";
                 prompt = [
                   ...prompt.filter((m) => m.role === "system"),
                   { role: "system", content: directive },
@@ -1124,8 +1230,9 @@ export function withAnswerContinuation(
               state.state = "incomplete";
               const watchdogStop = readWatchdogError(error);
               if (watchdogStop) state.watchdog = watchdogStop;
-              state.reason =
-                watchdogStop ? describeWatchdog(watchdogStop.reason) : options.signal?.aborted || !options.isCurrent()
+              state.reason = watchdogStop
+                ? describeWatchdog(watchdogStop.reason)
+                : options.signal?.aborted || !options.isCurrent()
                   ? "Continuation cancelled."
                   : error instanceof ContextBudgetError
                     ? "Continuation stopped at the context limit."
@@ -1136,9 +1243,11 @@ export function withAnswerContinuation(
               if (last && !last.endedAt) last.pending = interruptedCalls;
               if (last && !last.endedAt) {
                 last.endedAt = Date.now();
-                last.finish = watchdogStop ? "watchdog" : options.signal?.aborted
-                  ? "cancelled"
-                  : "interrupted";
+                last.finish = watchdogStop
+                  ? "watchdog"
+                  : options.signal?.aborted
+                    ? "cancelled"
+                    : "interrupted";
               }
               publish();
               if (active && options.isCurrent() && !options.signal?.aborted) {

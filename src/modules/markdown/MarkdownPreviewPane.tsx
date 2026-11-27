@@ -22,20 +22,26 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import {
-  defaultUrlTransform,
-  defaultRehypePlugins,
-  Streamdown,
+  type ComponentProps,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
   type Components,
+  defaultRehypePlugins,
+  defaultUrlTransform,
   type ExtraProps,
+  Streamdown,
   type StreamdownProps,
   type UrlTransform,
 } from "streamdown";
 import {
+  type MarkdownContext as MarkdownContextState,
   markdownContextActions,
   openableMarkdownLink,
-  type MarkdownContext as MarkdownContextState,
 } from "./lib/contextActions";
 import {
   isConvertedLocalAssetUrl,
@@ -125,7 +131,14 @@ function rewriteMarkdownImages(
     if (child?.type === "element" && child.tagName === "img") {
       const properties = child.properties ?? {};
       const src = stringProperty(properties.src);
-      if (src && isConvertedLocalAssetUrl(src)) continue;
+      // A document may author an asset:// or asset.localhost URL directly.
+      // Treat it as untrusted input; otherwise it bypasses the workspace
+      // boundary enforced for ordinary relative image paths. This plugin
+      // creates the trusted converted URLs only after resolving local paths.
+      if (src && isConvertedLocalAssetUrl(src)) {
+        node.children[i] = blockedImageNode("untrusted local asset URL");
+        continue;
+      }
       const resolved = resolveMarkdownImageRenderSrc(
         {
           src,
@@ -154,6 +167,36 @@ function markdownImageResolverPlugin(
   return (tree: HastNode) => rewriteMarkdownImages(tree, options);
 }
 
+export function createMarkdownUrlTransform(
+  path: string,
+  workspaceRoot: string | null | undefined,
+): UrlTransform {
+  return (url, key, node) => {
+    if (key === "src" && node.tagName === "img") {
+      if (isConvertedLocalAssetUrl(url)) return url;
+      const resolved = resolveMarkdownImageRenderSrc(
+        { src: url, markdownPath: path, workspaceRoot },
+        convertFileSrc,
+      );
+      if (resolved.kind === "render") return resolved.src;
+      return blockedImageSrc(resolved.reason);
+    }
+    return defaultUrlTransform(url, key, node);
+  };
+}
+
+export function createMarkdownRehypePlugins(
+  path: string,
+  workspaceRoot: string | null | undefined,
+): NonNullable<StreamdownProps["rehypePlugins"]> {
+  return [
+    defaultRehypePlugins.raw,
+    [markdownImageResolverPlugin, { markdownPath: path, workspaceRoot }],
+    defaultRehypePlugins.sanitize,
+    defaultRehypePlugins.harden,
+  ];
+}
+
 function MarkdownImage({
   node: _node,
   src,
@@ -176,9 +219,7 @@ function MarkdownImage({
     );
   }
   return (
-    <span
-      className="clack-image-transparency-canvas my-2 inline-flex max-w-full overflow-hidden rounded border border-[var(--clack-border-subtle)] p-1 align-middle"
-    >
+    <span className="clack-image-transparency-canvas my-2 inline-flex max-w-full overflow-hidden rounded border border-[var(--clack-border-subtle)] p-1 align-middle">
       <img
         {...props}
         src={src}
@@ -267,34 +308,12 @@ export function MarkdownPreviewPane({
     canAttach: Boolean(onAttachFileToAgent),
   });
   const openableLink = openableMarkdownLink(menuContext.linkUrl);
-  const markdownUrlTransform = useMemo<UrlTransform>(
-    () => (url, key, node) => {
-      if (key === "src" && node.tagName === "img") {
-        if (isConvertedLocalAssetUrl(url)) return url;
-        const resolved = resolveMarkdownImageRenderSrc({
-          src: url,
-          markdownPath: path,
-          workspaceRoot,
-        }, convertFileSrc);
-        if (resolved.kind === "render") return resolved.src;
-        return blockedImageSrc(resolved.reason);
-      }
-      return defaultUrlTransform(url, key, node);
-    },
+  const markdownUrlTransform = useMemo(
+    () => createMarkdownUrlTransform(path, workspaceRoot),
     [path, workspaceRoot],
   );
-  const markdownRehypePlugins = useMemo<
-    NonNullable<StreamdownProps["rehypePlugins"]>
-  >(
-    () => [
-      defaultRehypePlugins.raw,
-      [
-        markdownImageResolverPlugin,
-        { markdownPath: path, workspaceRoot },
-      ],
-      defaultRehypePlugins.sanitize,
-      defaultRehypePlugins.harden,
-    ],
+  const markdownRehypePlugins = useMemo(
+    () => createMarkdownRehypePlugins(path, workspaceRoot),
     [path, workspaceRoot],
   );
 

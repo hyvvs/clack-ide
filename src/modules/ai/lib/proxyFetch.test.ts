@@ -1,30 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
   Channel: class {
     onmessage: (event: unknown) => void = () => {};
   },
 }));
+
 import { invoke } from "@tauri-apps/api/core";
-import { createProxyFetch } from "./proxyFetch";
+import { streamText, tool } from "ai";
+import { z } from "zod";
+import { classifyContextFailure } from "./contextCalibration";
+import {
+  armDeploymentQualification,
+  disarmDeploymentQualification,
+  QualificationOperationDeadline,
+  qualificationDispatchAuthority,
+} from "./deploymentQualificationFlight";
+import { normalizeAiError } from "./errors";
+import { INFERENCE_ERRORS, InferenceTransportError } from "./inferenceErrors";
 import {
   cancelSessionInference,
   inferenceLabel,
   sessionInference,
   subscribeInference,
 } from "./inferenceLifecycle";
-import { INFERENCE_ERRORS, InferenceTransportError } from "./inferenceErrors";
-import { normalizeAiError } from "./errors";
-import { classifyContextFailure } from "./contextCalibration";
-import { streamText, tool } from "ai";
-import { z } from "zod";
 import { createOllamaModel } from "./ollamaModel";
-import { withProviderRetryTracking, type ProviderRecoveryObservation } from "./providerRetry";
 import { installOllamaParserFailureObserver } from "./ollamaParserFailureDiagnostics";
 import {
-  QualificationOperationDeadline, armDeploymentQualification,
-  disarmDeploymentQualification, qualificationDispatchAuthority,
-} from "./deploymentQualificationFlight";
+  type ProviderRecoveryObservation,
+  withProviderRetryTracking,
+} from "./providerRetry";
+import { createProxyFetch } from "./proxyFetch";
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -133,23 +140,36 @@ describe("native inference attempt transport", () => {
   it("only forwards an explicit diagnostic run ID and preserves raw request bytes", async () => {
     const runId = "muse-one-0123456789abcdef";
     const permit = "a".repeat(64);
-    const body = '{"model":"muse-glimmer:30b","messages":[{"role":"user","content":"offline"}]}';
-    const pending = createProxyFetch({ diagnosticRunId: runId, selfHosted: true,
-      diagnosticPermit: permit, allowPrivateNetwork: true })('http://127.0.0.1:11435/api/chat', {
-        method: "POST", body,
-      });
+    const body =
+      '{"model":"muse-glimmer:30b","messages":[{"role":"user","content":"offline"}]}';
+    const pending = createProxyFetch({
+      diagnosticRunId: runId,
+      selfHosted: true,
+      diagnosticPermit: permit,
+      allowPrivateNetwork: true,
+    })("http://127.0.0.1:11435/api/chat", {
+      method: "POST",
+      body,
+    });
     const attempt = await untilAttempt();
-    expect(attempt.args).toMatchObject({ diagnosticRunId: runId, diagnosticPermit: permit,
-      body: [...new TextEncoder().encode(body)] });
+    expect(attempt.args).toMatchObject({
+      diagnosticRunId: runId,
+      diagnosticPermit: permit,
+      body: [...new TextEncoder().encode(body)],
+    });
     headers(attempt);
     chunk(attempt, "offline");
     terminal(attempt);
     attempt.done.resolve();
     expect(await (await pending).text()).toBe("offline");
-    const other = fetchFor()('http://localhost');
+    const other = fetchFor()("http://localhost");
     const normal = await untilAttempt(1);
-    expect(Object.prototype.hasOwnProperty.call(normal.args, "diagnosticRunId")).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(normal.args, "diagnosticPermit")).toBe(false);
+    expect(
+      Reflect.getOwnPropertyDescriptor(normal.args, "diagnosticRunId"),
+    ).toBeUndefined();
+    expect(
+      Reflect.getOwnPropertyDescriptor(normal.args, "diagnosticPermit"),
+    ).toBeUndefined();
     headers(normal);
     chunk(normal, "normal");
     terminal(normal);
@@ -158,26 +178,48 @@ describe("native inference attempt transport", () => {
   });
   it("joins Agent recovery generation, native IPC, response and done without changing the payload", async () => {
     const observations: ProviderRecoveryObservation[] = [];
-    const model = withProviderRetryTracking(createOllamaModel({
-      modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor(),
-    }), { onRetry: vi.fn(), onRecovered: vi.fn() }, 0, {
-      onDiagnostic: entry => observations.push(entry),
+    const model = withProviderRetryTracking(
+      createOllamaModel({
+        modelId: "fixture",
+        baseURL: "http://localhost",
+        fetch: fetchFor(),
+      }),
+      { onRetry: vi.fn(), onRecovered: vi.fn() },
+      0,
+      {
+        onDiagnostic: (entry) => observations.push(entry),
+      },
+    );
+    const result = streamText({
+      model,
+      prompt: "PRIVATE_PROMPT_VALUE",
+      maxOutputTokens: 512,
+      maxRetries: 0,
     });
-    const result = streamText({ model, prompt: "PRIVATE_PROMPT_VALUE", maxOutputTokens: 512, maxRetries: 0 });
     const completed = (async () => {
-      for await (const part of result.fullStream) if (part.type === "error") throw part.error;
+      for await (const part of result.fullStream)
+        if (part.type === "error") throw part.error;
     })();
     const a = await untilAttempt();
-    expect(observations.some(o => o.stage === "native-id-linked" && o.nativeRequestId === a.args.requestId)).toBe(true);
+    expect(
+      observations.some(
+        (o) =>
+          o.stage === "native-id-linked" &&
+          o.nativeRequestId === a.args.requestId,
+      ),
+    ).toBe(true);
     headers(a);
-    chunk(a, '{"model":"fixture","message":{"content":"PRIVATE_GENERATED_TEXT"},"done":true,"done_reason":"stop"}\n');
+    chunk(
+      a,
+      '{"model":"fixture","message":{"content":"PRIVATE_GENERATED_TEXT"},"done":true,"done_reason":"stop"}\n',
+    );
     terminal(a);
     a.done.resolve();
     await completed;
     const id = observations[0].generationId;
     expect(id).toMatch(/^[0-9a-f-]{36}$/i);
-    expect(observations.every(o => o.generationId === id)).toBe(true);
-    const stages = observations.map(o => o.stage);
+    expect(observations.every((o) => o.generationId === id)).toBe(true);
+    const stages = observations.map((o) => o.stage);
     expect(stages).toContain("native-ipc-start");
     expect(stages).toContain("native-response-headers");
     expect(stages).toContain("native-first-chunk");
@@ -185,91 +227,163 @@ describe("native inference attempt transport", () => {
     expect(stages).toContain("first-meaningful-output");
     expect(stages).toContain("deadline-clear");
     expect(stages).not.toContain("retry-scheduled");
-    expect(JSON.stringify(observations)).not.toMatch(/PRIVATE_|http:\/\/localhost|authorization/i);
+    expect(JSON.stringify(observations)).not.toMatch(
+      /PRIVATE_|http:\/\/localhost|authorization/i,
+    );
     expect(attempts).toHaveLength(1);
   });
   it("joins a pre-header recovery deadline, parent cancellation and delayed native settlement", async () => {
     vi.useFakeTimers();
     const observations: ProviderRecoveryObservation[] = [];
-    const tracked = withProviderRetryTracking(createOllamaModel({
-      modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor(),
-    }), { onRetry: vi.fn(), onRecovered: vi.fn() }, 0, {
-      totalMs: 30, onDiagnostic: event => observations.push(event),
-    });
-    if (typeof tracked === "string") throw new Error("Expected v3 wrapped model");
-    const result = Promise.resolve(tracked.doStream({ prompt: [] } as never)).catch(e => e);
+    const tracked = withProviderRetryTracking(
+      createOllamaModel({
+        modelId: "fixture",
+        baseURL: "http://localhost",
+        fetch: fetchFor(),
+      }),
+      { onRetry: vi.fn(), onRecovered: vi.fn() },
+      0,
+      {
+        totalMs: 30,
+        onDiagnostic: (event) => observations.push(event),
+      },
+    );
+    if (typeof tracked === "string")
+      throw new Error("Expected v3 wrapped model");
+    const result = Promise.resolve(
+      tracked.doStream({ prompt: [] } as never),
+    ).catch((e) => e);
     await vi.advanceTimersByTimeAsync(0);
     expect(attempts).toHaveLength(1);
     const a = attempts[0];
-    expect(observations.some(o => o.stage === "native-id-linked" && o.nativeRequestId === a.args.requestId)).toBe(true);
+    expect(
+      observations.some(
+        (o) =>
+          o.stage === "native-id-linked" &&
+          o.nativeRequestId === a.args.requestId,
+      ),
+    ).toBe(true);
     await vi.advanceTimersByTimeAsync(30);
     const failure = await result;
     expect(failure).toBeInstanceOf(Error);
-    expect(cancels()[0]).toEqual(["ai_http_cancel", {
-      requestId: a.args.requestId, cancellationOrigin: "parent-signal",
-    }]);
-    const deadline = observations.find(o => o.stage === "deadline-fire");
-    expect(deadline).toMatchObject({ nativeRequestId: a.args.requestId, attempt: 0,
-      transportStage: "native-ipc-start" });
-    expect(observations.some(o => o.stage === "native-parent-abort" &&
-      o.nativeRequestId === a.args.requestId)).toBe(true);
+    expect(cancels()[0]).toEqual([
+      "ai_http_cancel",
+      {
+        requestId: a.args.requestId,
+        cancellationOrigin: "parent-signal",
+      },
+    ]);
+    const deadline = observations.find((o) => o.stage === "deadline-fire");
+    expect(deadline).toMatchObject({
+      nativeRequestId: a.args.requestId,
+      attempt: 0,
+      transportStage: "native-ipc-start",
+    });
+    expect(
+      observations.some(
+        (o) =>
+          o.stage === "native-parent-abort" &&
+          o.nativeRequestId === a.args.requestId,
+      ),
+    ).toBe(true);
     a.cancel.resolve();
     terminal(a, "cancelled");
     a.done.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(observations.some(o => o.stage === "native-settled" &&
-      o.nativeRequestId === a.args.requestId && o.generationId === deadline?.generationId)).toBe(true);
-    expect(observations.filter(o => o.stage === "retry-scheduled")).toHaveLength(0);
+    expect(
+      observations.some(
+        (o) =>
+          o.stage === "native-settled" &&
+          o.nativeRequestId === a.args.requestId &&
+          o.generationId === deadline?.generationId,
+      ),
+    ).toBe(true);
+    expect(
+      observations.filter((o) => o.stage === "retry-scheduled"),
+    ).toHaveLength(0);
     expect(JSON.stringify(observations)).not.toContain("PRIVATE_");
   });
-  it.each(["terminal-before-ack", "ack-before-terminal"])(
-    "completes one valid structured native tool call and SDK finish across %s ordering",
-    async ordering => {
-      const onFinish = vi.fn(async () => {});
-      const model = createOllamaModel({
-        modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor(), onFinish,
-      });
-      const result = streamText({
-        model, prompt: "Invoke the one available probe tool.", maxOutputTokens: 512,
-        maxRetries: 0, tools: {
-          get_probe_value: tool({ inputSchema: z.object({
-            key: z.literal("clack-probe-v1"), count: z.literal(1),
-          }) }),
-        },
-      });
-      const parts = (async () => {
-        const seen: { type: string; toolName?: string; input?: unknown }[] = [];
-        for await (const part of result.fullStream) {
-          if (part.type === "error") throw part.error;
-          if (part.type === "tool-call")
-            seen.push({ type: part.type, toolName: part.toolName, input: part.input });
-        }
-        return seen;
-      })();
-      const a = await untilAttempt();
-      headers(a);
-      chunk(a, JSON.stringify({
-        model: "fixture", done: true, done_reason: "stop", message: { role: "assistant",
-          tool_calls: [{ function: { name: "get_probe_value", arguments: {
-            key: "clack-probe-v1", count: 1,
-          } } }],
-        },
-      }) + "\n");
-      if (ordering === "terminal-before-ack") {
-        terminal(a);
-        a.done.resolve();
-      } else {
-        a.done.resolve();
-        await Promise.resolve();
-        terminal(a);
+  it.each([
+    "terminal-before-ack",
+    "ack-before-terminal",
+  ])("completes one valid structured native tool call and SDK finish across %s ordering", async (ordering) => {
+    const onFinish = vi.fn(async () => {});
+    const model = createOllamaModel({
+      modelId: "fixture",
+      baseURL: "http://localhost",
+      fetch: fetchFor(),
+      onFinish,
+    });
+    const result = streamText({
+      model,
+      prompt: "Invoke the one available probe tool.",
+      maxOutputTokens: 512,
+      maxRetries: 0,
+      tools: {
+        get_probe_value: tool({
+          inputSchema: z.object({
+            key: z.literal("clack-probe-v1"),
+            count: z.literal(1),
+          }),
+        }),
+      },
+    });
+    const parts = (async () => {
+      const seen: { type: string; toolName?: string; input?: unknown }[] = [];
+      for await (const part of result.fullStream) {
+        if (part.type === "error") throw part.error;
+        if (part.type === "tool-call")
+          seen.push({
+            type: part.type,
+            toolName: part.toolName,
+            input: part.input,
+          });
       }
-      expect(await parts).toEqual([{ type: "tool-call", toolName: "get_probe_value",
-        input: { key: "clack-probe-v1", count: 1 } }]);
-      expect(await result.finishReason).toBe("tool-calls");
-      expect(onFinish).toHaveBeenCalledTimes(1);
-      expect(cancels()).toHaveLength(0);
-    },
-  );
+      return seen;
+    })();
+    const a = await untilAttempt();
+    headers(a);
+    chunk(
+      a,
+      JSON.stringify({
+        model: "fixture",
+        done: true,
+        done_reason: "stop",
+        message: {
+          role: "assistant",
+          tool_calls: [
+            {
+              function: {
+                name: "get_probe_value",
+                arguments: {
+                  key: "clack-probe-v1",
+                  count: 1,
+                },
+              },
+            },
+          ],
+        },
+      }) + "\n",
+    );
+    if (ordering === "terminal-before-ack") {
+      terminal(a);
+      a.done.resolve();
+    } else {
+      a.done.resolve();
+      await Promise.resolve();
+      terminal(a);
+    }
+    expect(await parts).toEqual([
+      {
+        type: "tool-call",
+        toolName: "get_probe_value",
+        input: { key: "clack-probe-v1", count: 1 },
+      },
+    ]);
+    expect(await result.finishReason).toBe("tool-calls");
+    expect(onFinish).toHaveBeenCalledTimes(1);
+    expect(cancels()).toHaveLength(0);
+  });
   it("records the parent abort before cancelling the native request without persisting its reason", async () => {
     const signal = new AbortController();
     const onStop = vi.fn();
@@ -277,26 +391,37 @@ describe("native inference attempt transport", () => {
       scope: { ...scope(), onStop },
       selfHosted: true,
     });
-    const outcome = request("http://localhost", { signal: signal.signal }).catch(error => error);
+    const outcome = request("http://localhost", {
+      signal: signal.signal,
+    }).catch((error) => error);
     const a = await untilAttempt();
     signal.abort({ secret: "PRIVATE_ABORT_REASON" });
-    expect(cancels()[0]).toEqual(["ai_http_cancel", {
-      requestId: a.args.requestId, cancellationOrigin: "parent-signal",
-    }]);
+    expect(cancels()[0]).toEqual([
+      "ai_http_cancel",
+      {
+        requestId: a.args.requestId,
+        cancellationOrigin: "parent-signal",
+      },
+    ]);
     expect(onStop).toHaveBeenCalledExactlyOnceWith({
-      source: "parent-signal", reason: "parent-abort",
+      source: "parent-signal",
+      reason: "parent-abort",
     });
     a.cancel.resolve();
     terminal(a, "cancelled");
     a.done.resolve();
     expect(await outcome).toMatchObject({ code: "cancelled" });
-    expect(JSON.stringify(onStop.mock.calls)).not.toContain("PRIVATE_ABORT_REASON");
+    expect(JSON.stringify(onStop.mock.calls)).not.toContain(
+      "PRIVATE_ABORT_REASON",
+    );
   });
   it("does not misidentify an SDK request-settled cleanup as an external parent stop", async () => {
     const signal = new AbortController();
     const onStop = vi.fn();
     const request = createProxyFetch({ scope: { ...scope(), onStop } });
-    const outcome = request("http://localhost", { signal: signal.signal }).catch(error => error);
+    const outcome = request("http://localhost", {
+      signal: signal.signal,
+    }).catch((error) => error);
     const a = await untilAttempt();
     signal.abort(new DOMException("Request settled", "AbortError"));
     expect(onStop).not.toHaveBeenCalled();
@@ -307,18 +432,32 @@ describe("native inference attempt transport", () => {
   });
   it("forwards admission once per attempt, shows native queue state and drains queued Stop", async () => {
     const admission = { endpointId: "server", profileId: "model", capacity: 2 };
-    const request = createProxyFetch({ admission, scope: scope(), selfHosted: true });
-    const pending = request("http://localhost/v1/chat/completions").catch((e) => e);
+    const request = createProxyFetch({
+      admission,
+      scope: scope(),
+      selfHosted: true,
+    });
+    const pending = request("http://localhost/v1/chat/completions").catch(
+      (e) => e,
+    );
     const a = await untilAttempt();
     expect(a.args.admission).toEqual(admission);
     expect(current("a").phase).toBe("awaiting-admission");
-    const observation = { ...admission, queueEnteredAt: 1, admittedAt: null, attemptStartedAt: null, settledAt: null };
+    const observation = {
+      ...admission,
+      queueEnteredAt: 1,
+      admittedAt: null,
+      attemptStartedAt: null,
+      settledAt: null,
+    };
     event(a, { kind: "admission", observation });
     event(a, { kind: "phase", phase: "queued" });
     expect(current("a").admission).toEqual(observation);
     expect(inferenceLabel(current("a"))).toContain("at capacity");
     const stopping = cancelSessionInference("a");
-    expect(cancels()[0][1]).toMatchObject({ cancellationOrigin: "session-stop" });
+    expect(cancels()[0][1]).toMatchObject({
+      cancellationOrigin: "session-stop",
+    });
     expect(current("a").phase).toBe("stopping");
     a.cancel.resolve();
     terminal(a, "cancelled");
@@ -348,7 +487,9 @@ describe("native inference attempt transport", () => {
     expect(b.args.admission).toEqual(admission);
     event(a, { kind: "settled", phase: "cancelled" });
     expect(current("a").nativeId).toBe(b.args.requestId);
-    headers(b); terminal(b); b.done.resolve();
+    headers(b);
+    terminal(b);
+    b.done.resolve();
     await (await retry).text();
     expect(sessionInference("a")).toBeNull();
   });
@@ -407,7 +548,10 @@ describe("native inference attempt transport", () => {
     signal.abort();
     const stopping = cancelSessionInference("a");
     expect(cancels()).toEqual([
-      ["ai_http_cancel", { requestId: a.args.requestId, cancellationOrigin: "parent-signal" }],
+      [
+        "ai_http_cancel",
+        { requestId: a.args.requestId, cancellationOrigin: "parent-signal" },
+      ],
     ]);
     expect(sessionInference("a")?.phase).toBe("stopping");
     chunk(a, "must not append");
@@ -447,7 +591,12 @@ describe("native inference attempt transport", () => {
     expect(sessionInference("a")?.phase).toBe("stopping");
     opened.resolve("reserved");
     expect(await outcome).toMatchObject({ code: "cancelled" });
-    expect(cancels()).toEqual([["ai_http_cancel", { requestId: "reserved", cancellationOrigin: "parent-signal" }]]);
+    expect(cancels()).toEqual([
+      [
+        "ai_http_cancel",
+        { requestId: "reserved", cancellationOrigin: "parent-signal" },
+      ],
+    ]);
     expect(sessionInference("a")).toBeNull();
   });
   it("LM11: Stop before native inference registration forbids late dispatch and cancels only the owned ID", async () => {
@@ -459,12 +608,17 @@ describe("native inference attempt transport", () => {
       throw new Error("Late native ai_http_stream must not be called");
     });
     const budget = new QualificationOperationDeadline(5_000);
-    armDeploymentQualification("lm11", "managed-fixture", "builtin:coder", { operation: budget });
+    armDeploymentQualification("lm11", "managed-fixture", "builtin:coder", {
+      operation: budget,
+    });
     const authority = qualificationDispatchAuthority("lm11")!;
     const request = createProxyFetch({
-      scope: { ...scope("lm11"), isCurrent: authority }, selfHosted: true,
+      scope: { ...scope("lm11"), isCurrent: authority },
+      selfHosted: true,
     });
-    const outcome = request("http://localhost/v1/chat/completions").catch(error => error);
+    const outcome = request("http://localhost/v1/chat/completions").catch(
+      (error) => error,
+    );
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("ai_http_open"));
     const stopped = cancelSessionInference("lm11");
     expect(authority()).toBe(false);
@@ -478,8 +632,11 @@ describe("native inference attempt transport", () => {
     expect(["session-stop", "parent-signal"]).toContain(
       nativeCancel.mock.calls[0][0].cancellationOrigin,
     );
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "ai_http_stream"))
-      .toHaveLength(0);
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "ai_http_stream"),
+    ).toHaveLength(0);
     expect(sessionInference("lm11")).toBeNull();
     disarmDeploymentQualification("lm11");
     budget.finish();
@@ -576,7 +733,9 @@ describe("native inference attempt transport", () => {
     const a = await untilAttempt();
     // Mirror the frozen R5r native acceptance guard: the command rejects
     // before native HTTP dispatch, without any Channel headers or chunks.
-    a.done.reject("Acceptance stopped: serialized reasoning/output controls changed");
+    a.done.reject(
+      "Acceptance stopped: serialized reasoning/output controls changed",
+    );
     await vi.waitFor(() => expect(cancels()).toHaveLength(1));
     a.cancel.resolve();
     const error = await outcome;
@@ -586,7 +745,8 @@ describe("native inference attempt transport", () => {
       nativeRejection: {
         phase: "acceptance-host-intercept",
         nativeCode: "acceptance-wire-contract-rejected",
-        safeMessage: "Acceptance stopped: serialized reasoning/output controls changed",
+        safeMessage:
+          "Acceptance stopped: serialized reasoning/output controls changed",
       },
     });
     expect(classifyContextFailure(error)).toBe("transient");
@@ -599,7 +759,10 @@ describe("native inference attempt transport", () => {
   it("retains a safe serialized Rust failure code without leaking native errors", async () => {
     const pending = fetchFor()("http://localhost").catch((error) => error);
     const a = await untilAttempt();
-    a.done.reject({ code: "connection-failed", message: "PRIVATE_HEADER_BEARER" });
+    a.done.reject({
+      code: "connection-failed",
+      message: "PRIVATE_HEADER_BEARER",
+    });
     await vi.waitFor(() => expect(cancels()).toHaveLength(1));
     a.cancel.resolve();
     const error = await pending;
@@ -612,27 +775,44 @@ describe("native inference attempt transport", () => {
         safeMessage: INFERENCE_ERRORS["connection-failed"].message,
       },
     });
-    expect(JSON.stringify({ code: error.code, nativeRejection: error.nativeRejection }))
-      .not.toContain("PRIVATE_HEADER_BEARER");
+    expect(
+      JSON.stringify({
+        code: error.code,
+        nativeRejection: error.nativeRejection,
+      }),
+    ).not.toContain("PRIVATE_HEADER_BEARER");
   });
   it("does not surface unrecognized invoke rejection strings or object causes", async () => {
-    const pending = fetchFor()("http://localhost").catch(error => error);
+    const pending = fetchFor()("http://localhost").catch((error) => error);
     const a = await untilAttempt();
-    a.done.reject({ code: "PRIVATE_ENDPOINT_TOKEN", cause: { secret: "PRIVATE_BODY_TEXT" } });
+    a.done.reject({
+      code: "PRIVATE_ENDPOINT_TOKEN",
+      cause: { secret: "PRIVATE_BODY_TEXT" },
+    });
     await vi.waitFor(() => expect(cancels()).toHaveLength(1));
     a.cancel.resolve();
     const error = await pending;
     expect(error).toMatchObject({
       code: "native-transport",
-      nativeRejection: { phase: "invoke-rejected", nativeCode: "native-transport" },
+      nativeRejection: {
+        phase: "invoke-rejected",
+        nativeCode: "native-transport",
+      },
     });
-    expect(JSON.stringify({ nativeRejection: error.nativeRejection, message: error.message }))
-      .not.toMatch(/PRIVATE_ENDPOINT_TOKEN|PRIVATE_BODY_TEXT/);
+    expect(
+      JSON.stringify({
+        nativeRejection: error.nativeRejection,
+        message: error.message,
+      }),
+    ).not.toMatch(/PRIVATE_ENDPOINT_TOKEN|PRIVATE_BODY_TEXT/);
   });
   it("retains a static pre-handler Rust connection error without exposing a raw cause", async () => {
-    const pending = fetchFor()("http://localhost").catch(error => error);
+    const pending = fetchFor()("http://localhost").catch((error) => error);
     const a = await untilAttempt();
-    a.done.reject({ code: "remote-connection-unavailable", detail: "PRIVATE_SSH_TOKEN" });
+    a.done.reject({
+      code: "remote-connection-unavailable",
+      detail: "PRIVATE_SSH_TOKEN",
+    });
     await vi.waitFor(() => expect(cancels()).toHaveLength(1));
     a.cancel.resolve();
     const error = await pending;
@@ -645,7 +825,9 @@ describe("native inference attempt transport", () => {
         safeMessage: "The native remote connection is unavailable.",
       },
     });
-    expect(JSON.stringify(error.nativeRejection)).not.toContain("PRIVATE_SSH_TOKEN");
+    expect(JSON.stringify(error.nativeRejection)).not.toContain(
+      "PRIVATE_SSH_TOKEN",
+    );
   });
   it("stream consumer cancellation also sends native cancellation", async () => {
     const pending = fetchFor()("http://localhost");
@@ -655,9 +837,13 @@ describe("native inference attempt transport", () => {
     if (!response.body) throw new Error("Expected response stream");
     const cancellation = response.body.cancel();
     expect(cancels()).toHaveLength(1);
-    expect(cancels()[0]).toEqual(["ai_http_cancel", {
-      requestId: a.args.requestId, cancellationOrigin: "stream-consumer",
-    }]);
+    expect(cancels()[0]).toEqual([
+      "ai_http_cancel",
+      {
+        requestId: a.args.requestId,
+        cancellationOrigin: "stream-consumer",
+      },
+    ]);
     expect(sessionInference("a")?.phase).toBe("stopping");
     a.cancel.resolve();
     terminal(a, "cancelled");
@@ -668,32 +854,56 @@ describe("native inference attempt transport", () => {
   });
   it("marks SDK stream parse failure without retaining provider content or changing cancellation", async () => {
     const failures: { requestId: string | null }[] = [];
-    const uninstall = installOllamaParserFailureObserver(record => failures.push(record));
+    const uninstall = installOllamaParserFailureObserver((record) =>
+      failures.push(record),
+    );
     try {
-    const model = createOllamaModel({ modelId: "fixture", baseURL: "http://localhost", fetch: fetchFor() });
-    const result = streamText({ model, prompt: "offline fixture", maxOutputTokens: 512, maxRetries: 0 });
-    const completion = (async () => {
-      try {
-        for await (const part of result.fullStream) if (part.type === "error") throw part.error;
-      } catch (error) { return error; }
-      return null;
-    })();
-    const a = await untilAttempt();
-    headers(a);
-    chunk(a, '{"message":{"thinking":"partial fixture"},"done":false}\n');
-    chunk(a, '{"error":"PRIVATE_PROVIDER_CONTENT"}\n');
-    await vi.waitFor(() => expect(cancels()).toHaveLength(1));
-    expect(cancels()[0]).toEqual(["ai_http_cancel", {
-      requestId: a.args.requestId, cancellationOrigin: "sdk-stream-error",
-    }]);
-    expect(JSON.stringify(cancels())).not.toContain("PRIVATE_PROVIDER_CONTENT");
-    a.cancel.resolve();
-    terminal(a, "cancelled");
-    a.done.resolve();
-    expect(await completion).not.toBeNull();
-    expect(sessionInference("a")).toBeNull();
-    expect(failures.some(record => record.requestId === a.args.requestId)).toBe(true);
-    } finally { uninstall(); }
+      const model = createOllamaModel({
+        modelId: "fixture",
+        baseURL: "http://localhost",
+        fetch: fetchFor(),
+      });
+      const result = streamText({
+        model,
+        prompt: "offline fixture",
+        maxOutputTokens: 512,
+        maxRetries: 0,
+      });
+      const completion = (async () => {
+        try {
+          for await (const part of result.fullStream)
+            if (part.type === "error") throw part.error;
+        } catch (error) {
+          return error;
+        }
+        return null;
+      })();
+      const a = await untilAttempt();
+      headers(a);
+      chunk(a, '{"message":{"thinking":"partial fixture"},"done":false}\n');
+      chunk(a, '{"error":"PRIVATE_PROVIDER_CONTENT"}\n');
+      await vi.waitFor(() => expect(cancels()).toHaveLength(1));
+      expect(cancels()[0]).toEqual([
+        "ai_http_cancel",
+        {
+          requestId: a.args.requestId,
+          cancellationOrigin: "sdk-stream-error",
+        },
+      ]);
+      expect(JSON.stringify(cancels())).not.toContain(
+        "PRIVATE_PROVIDER_CONTENT",
+      );
+      a.cancel.resolve();
+      terminal(a, "cancelled");
+      a.done.resolve();
+      expect(await completion).not.toBeNull();
+      expect(sessionInference("a")).toBeNull();
+      expect(
+        failures.some((record) => record.requestId === a.args.requestId),
+      ).toBe(true);
+    } finally {
+      uninstall();
+    }
   });
   it("preserves non-2xx provider bodies for existing structured SDK diagnostics", async () => {
     const pending = createProxyFetch()("https://provider.test");
@@ -746,6 +956,7 @@ describe("native inference attempt transport", () => {
     "stream-idle-timeout",
     "overall-deadline",
     "remote-disconnect",
+    "response-too-large",
     "dns-failure",
     "tls-failure",
   ])("preserves structured %s without provider retries or raw secret text", async (code) => {
@@ -763,6 +974,9 @@ describe("native inference attempt transport", () => {
       Object.assign(new Error("outer secret"), { cause: error }),
     );
     expect(normalized).toMatchObject({
+      ...(code === "response-too-large"
+        ? { kind: "provider_unavailable" }
+        : {}),
       errorCode: code,
       requestId: a.args.requestId,
       message: INFERENCE_ERRORS[code].message,

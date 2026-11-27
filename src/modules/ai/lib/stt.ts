@@ -1,3 +1,4 @@
+import { verifiedProviderFetch } from "./answerContinuation";
 import type { ProviderKeys } from "./keyring";
 
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
@@ -21,7 +22,10 @@ async function fetchWithTimeout(
 async function transcribeOpenAI(blob: Blob, apiKey: string): Promise<string> {
   const [{ createOpenAI }, { experimental_transcribe: transcribe }] =
     await Promise.all([import("@ai-sdk/openai"), import("ai")]);
-  const openai = createOpenAI({ apiKey });
+  const openai = createOpenAI({
+    apiKey,
+    fetch: verifiedProviderFetch(globalThis.fetch),
+  });
   const buf = new Uint8Array(await blob.arrayBuffer());
   const { text } = await transcribe({
     model: openai.transcription("whisper-1"),
@@ -44,11 +48,14 @@ async function transcribeViaRest(
   const headers: Record<string, string> = {};
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-  const res = await fetchWithTimeout(`${baseURL}/audio/transcriptions`, {
+  const fetch = verifiedProviderFetch((input, init) =>
+    fetchWithTimeout(input, init, STT_TIMEOUT_GROQ_MS),
+  );
+  const res = await fetch(`${baseURL}/audio/transcriptions`, {
     method: "POST",
     headers,
     body: form,
-  }, STT_TIMEOUT_GROQ_MS);
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -70,7 +77,8 @@ async function toWav(blob: Blob): Promise<Blob> {
     const view = new DataView(buffer);
 
     const writeStr = (offset: number, s: string) => {
-      for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+      for (let i = 0; i < s.length; i++)
+        view.setUint8(offset + i, s.charCodeAt(i));
     };
 
     writeStr(0, "RIFF");
@@ -90,7 +98,7 @@ async function toWav(blob: Blob): Promise<Blob> {
     let offset = 44;
     for (let i = 0; i < length; i++) {
       const s = Math.max(-1, Math.min(1, channel[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
       offset += 2;
     }
 
@@ -109,10 +117,16 @@ async function transcribeWhisperCpp(
   form.append("file", wav, "audio.wav");
   form.append("response_format", "text");
 
-  const res = await fetchWithTimeout(`${baseURL}/inference`, {
+  const fetch = verifiedProviderFetch((input, init) =>
+    fetchWithTimeout(input, init, STT_TIMEOUT_WHISPERCPP_MS),
+  );
+  const res = await fetch(`${baseURL}/inference`, {
     method: "POST",
     body: form,
-  }, STT_TIMEOUT_WHISPERCPP_MS);
+    // This offline provider must not forward the recorded audio to a redirect
+    // target, even when the configured initial endpoint is loopback.
+    redirect: "error",
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -165,7 +179,8 @@ export async function transcribeAudio(
     }
     case "whispercpp": {
       const baseURL =
-        options.whispercppBaseURL?.replace(/\/+$/, "") || "http://127.0.0.1:8080";
+        options.whispercppBaseURL?.replace(/\/+$/, "") ||
+        "http://127.0.0.1:8080";
       assertLoopbackUrl(baseURL);
       return transcribeWhisperCpp(baseURL, blob);
     }

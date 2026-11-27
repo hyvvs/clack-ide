@@ -550,6 +550,152 @@ async fn run_fault(
     (result, events.into_inner().unwrap())
 }
 
+#[test]
+fn oversized_native_response_delivers_one_truthful_failed_terminal() {
+    let result = Err(Failure::new("response-too-large"));
+    let mut delivered = Vec::new();
+    deliver_terminal_once(
+        |event| {
+            delivered.push(event);
+            true
+        },
+        "budget-terminal-test".into(),
+        terminal(&result),
+        result,
+        None,
+    );
+    assert_eq!(delivered.len(), 1);
+    assert!(matches!(
+        &delivered[0].payload,
+        Payload::Settled {
+            phase: Phase::Failed,
+            error: Some(error),
+            ..
+        } if error.code == "response-too-large"
+    ));
+}
+
+async fn run_budget_response(
+    status: u16,
+    body: Vec<u8>,
+    chunked: bool,
+) -> (Result<(), Failure>, Vec<Payload>) {
+    let mut parts = vec![format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n",
+        if status < 400 { "OK" } else { "Bad Gateway" }
+    )
+    .into_bytes()];
+    if chunked {
+        parts[0].extend_from_slice(b"Transfer-Encoding: chunked\r\n\r\n");
+        for part in body.chunks(1024 * 1024) {
+            let mut frame = format!("{:X}\r\n", part.len()).into_bytes();
+            frame.extend_from_slice(part);
+            frame.extend_from_slice(b"\r\n");
+            parts.push(frame);
+        }
+        parts.push(b"0\r\n\r\n".to_vec());
+    } else {
+        parts[0].extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+        parts.extend(body.chunks(1024 * 1024).map(<[u8]>::to_vec));
+    }
+    let fixture = paced_server(parts, false, true, Duration::from_millis(1));
+    let state = InferenceState::default();
+    let id = state.open("budget-test").unwrap();
+    let lease = state.start("budget-test", &id).unwrap();
+    let events = Mutex::new(Vec::new());
+    let timeouts = Timeouts {
+        connect: Duration::from_secs(2),
+        first: Some(Duration::from_secs(10)),
+        idle: None,
+        overall: Duration::from_secs(30),
+    };
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(fixture.url),
+        timeouts,
+        None,
+        &|event| {
+            events.lock().unwrap().push(event);
+            true
+        },
+    )
+    .await;
+    drop(lease);
+    assert_eq!(
+        state.len(),
+        0,
+        "response settlement releases native request ownership"
+    );
+    tokio::time::timeout(Duration::from_secs(5), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.thread.join().unwrap();
+    (result, events.into_inner().unwrap())
+}
+
+#[tokio::test]
+async fn native_response_budget_accepts_exact_limit_from_real_http_body() {
+    let body = vec![b'x'; response_budget::MAX_PROVIDER_RESPONSE_BYTES];
+    let (result, events) = run_budget_response(200, body.clone(), false).await;
+    assert!(
+        result.is_ok(),
+        "exactly 16 MiB must be accepted: {result:?}"
+    );
+    let received: usize = events
+        .iter()
+        .map(|event| match event {
+            Payload::Chunk { bytes } => bytes.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(received, body.len());
+}
+
+#[tokio::test]
+async fn native_response_budget_rejects_first_byte_over_limit_and_emits_no_overflow_chunk() {
+    let body = vec![b'x'; response_budget::MAX_PROVIDER_RESPONSE_BYTES + 1];
+    let (result, events) = run_budget_response(200, body, false).await;
+    assert_eq!(result.unwrap_err().code, "response-too-large");
+    let forwarded: usize = events
+        .iter()
+        .map(|event| match event {
+            Payload::Chunk { bytes } => bytes.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(forwarded <= response_budget::MAX_PROVIDER_RESPONSE_BYTES);
+}
+
+#[tokio::test]
+async fn native_response_budget_applies_to_chunked_body_without_content_length() {
+    let body = vec![b'x'; response_budget::MAX_PROVIDER_RESPONSE_BYTES + 1];
+    let (result, _) = run_budget_response(200, body, true).await;
+    assert_eq!(result.unwrap_err().code, "response-too-large");
+}
+
+#[tokio::test]
+async fn native_response_budget_also_bounds_oversized_error_bodies() {
+    let body = vec![b'e'; response_budget::MAX_PROVIDER_RESPONSE_BYTES + 1];
+    let (result, events) = run_budget_response(502, body, false).await;
+    assert_eq!(result.unwrap_err().code, "response-too-large");
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Payload::Headers { status: 502, .. })));
+    let forwarded: usize = events
+        .iter()
+        .map(|event| match event {
+            Payload::Chunk { bytes } => bytes.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(forwarded <= response_budget::MAX_PROVIDER_RESPONSE_BYTES);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Payload::Settled { .. })));
+}
+
 fn admission_spec(capacity: usize) -> admission::Admission {
     admission::Admission {
         endpoint_id: "server".into(),
