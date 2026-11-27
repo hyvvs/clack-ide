@@ -118,10 +118,12 @@ jobs:
               fileVersion = $entry.VersionInfo.FileVersion
             }
           }
-          if ($artifacts.compiledHost.sha256 -ne $artifacts.stagedHost.sha256 -or
-              $artifacts.stagedHost.sha256 -ne $artifacts.extractedHost.sha256) {
-            throw 'Native host identity drifted during independent build/packaging'
-          }
+          # A previous isolated runner confirmed a hash mismatch here but
+          # discarded the entire hash table on throw. Preserve all measured
+          # digests before reporting a failing security-provenance assertion.
+          # This changes only the evidence collector, never any build input.
+          $hostConsistent = ($artifacts.compiledHost.sha256 -eq $artifacts.stagedHost.sha256 -and
+            $artifacts.stagedHost.sha256 -eq $artifacts.extractedHost.sha256)
           $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue
           $report = [ordered]@{
             intent = 'Independent source-pinned build provenance only; NOT a safety verdict'
@@ -143,6 +145,8 @@ jobs:
             cargoLockBlob = (git rev-parse 'HEAD:src-tauri/Cargo.lock').Trim()
             npmLockBlob = (git rev-parse 'HEAD:package-lock.json').Trim()
             artifacts = $artifacts
+            compiledStagedAndPackagedHostIdentical = [bool]$hostConsistent
+            nativeHostIdentityStatus = if ($hostConsistent) { 'PASS' } else { 'FAIL_NEEDS_FORENSIC_REVIEW' }
             avRunningMode = if ($mp) { [string]$mp.AMRunningMode } else { 'NOT_REPORTED' }
             avRealTimeEnabled = if ($mp) { [bool]$mp.RealTimeProtectionEnabled } else { $null }
             appExecuted = $false
@@ -153,6 +157,10 @@ jobs:
           [IO.File]::WriteAllText($outfile,($report | ConvertTo-Json -Depth 10),[Text.Encoding]::UTF8)
           $validated = Get-Content $outfile -Raw | ConvertFrom-Json
           if ($validated.verifiedSource -ne $expected) { throw 'Report source mismatch' }
+          if (-not $hostConsistent) {
+            Write-Warning 'Host mismatch: digests recorded in retained JSON before failing.'
+            throw 'Native host identity drifted during independent build/packaging'
+          }
           Write-Output 'Independent static build hashes generated; no binaries executed/uploaded' | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
           Write-Output "SECURITY_EVIDENCE_JSON=$outfile"
 
