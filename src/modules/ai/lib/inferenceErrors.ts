@@ -1,5 +1,5 @@
-import { APICallError } from "ai";
 import type { AiErrorKind } from "@/modules/ai/lib/errors";
+import { APICallError } from "ai";
 
 type StreamValidation = {
   error?: unknown;
@@ -7,7 +7,9 @@ type StreamValidation = {
   timer?: ReturnType<typeof setTimeout>;
 };
 const streamValidation = new WeakMap<AbortSignal, StreamValidation>();
-export function streamValidationFailure(signal: AbortSignal | undefined): unknown {
+export function streamValidationFailure(
+  signal: AbortSignal | undefined,
+): unknown {
   return signal ? streamValidation.get(signal)?.error : undefined;
 }
 export function beginStreamValidation(signal: AbortSignal) {
@@ -100,6 +102,11 @@ export const INFERENCE_ERRORS: Record<
     kind: "internal",
     message: "The server returned an invalid or oversized stream.",
   },
+  "response-too-large": {
+    kind: "provider_unavailable",
+    message:
+      "The inference server response exceeded Clack's 16 MiB safety limit.",
+  },
   "dns-failure": {
     kind: "network",
     message: "The inference server name could not be resolved.",
@@ -138,7 +145,10 @@ export const INFERENCE_ERRORS: Record<
  * that Rust reached reqwest, TCP, or even the command handler.
  */
 export type NativeInvokeRejection = {
-  phase: "acceptance-host-intercept" | "tauri-command-rejected" | "invoke-rejected";
+  phase:
+    | "acceptance-host-intercept"
+    | "tauri-command-rejected"
+    | "invoke-rejected";
   nativeCode: string;
   safeMessage: string;
 };
@@ -147,15 +157,19 @@ const ACCEPTANCE_WIRE_REJECTION =
 // Other safe, *static* Rust Failure codes that are returned directly by
 // ai_http_stream before a Settled channel event. Keep this allowlist explicit.
 const PRE_DISPATCH_NATIVE_ERRORS: Record<string, string> = {
-  "remote-connection-unavailable": "The native remote connection is unavailable.",
+  "remote-connection-unavailable":
+    "The native remote connection is unavailable.",
   "fallback-consent-rejected": "The native fallback consent was rejected.",
-  "diagnostic-run-invalid": "The native diagnostic run identifier was rejected.",
+  "diagnostic-run-invalid":
+    "The native diagnostic run identifier was rejected.",
   "diagnostic-not-ready": "The native diagnostic capture is unavailable.",
   "diagnostic-permit-denied": "The native diagnostic permit was denied.",
   "diagnostic-request-denied": "The native diagnostic request was denied.",
   "diagnostic-run-unavailable": "The native diagnostic run is unavailable.",
 };
-export function inspectNativeInvokeRejection(error: unknown): NativeInvokeRejection {
+export function inspectNativeInvokeRejection(
+  error: unknown,
+): NativeInvokeRejection {
   if (error === ACCEPTANCE_WIRE_REJECTION) {
     return {
       phase: "acceptance-host-intercept",
@@ -166,16 +180,25 @@ export function inspectNativeInvokeRejection(error: unknown): NativeInvokeReject
   // The production Rust Failure serializer returns { code } only. Never
   // forward an arbitrary invoke string, exception message or nested object,
   // since these could contain endpoint credentials, headers or request text.
-  const raw = error && typeof error === "object" && "code" in error
-    ? (error as { code?: unknown }).code : undefined;
-  if (typeof raw === "string" && Object.prototype.hasOwnProperty.call(INFERENCE_ERRORS, raw)) {
+  const raw =
+    error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  if (
+    typeof raw === "string" &&
+    Object.getOwnPropertyDescriptor(INFERENCE_ERRORS, raw) !== undefined
+  ) {
     return {
       phase: "tauri-command-rejected",
       nativeCode: raw,
       safeMessage: INFERENCE_ERRORS[raw].message,
     };
   }
-  if (typeof raw === "string" && Object.prototype.hasOwnProperty.call(PRE_DISPATCH_NATIVE_ERRORS, raw)) {
+  if (
+    typeof raw === "string" &&
+    Object.getOwnPropertyDescriptor(PRE_DISPATCH_NATIVE_ERRORS, raw) !==
+      undefined
+  ) {
     return {
       phase: "tauri-command-rejected",
       nativeCode: raw,
@@ -193,7 +216,11 @@ export class InferenceTransportError extends APICallError {
   readonly code: string;
   readonly requestId?: string;
   readonly nativeRejection?: NativeInvokeRejection;
-  constructor(code: string, requestId?: string, nativeRejection?: NativeInvokeRejection) {
+  constructor(
+    code: string,
+    requestId?: string,
+    nativeRejection?: NativeInvokeRejection,
+  ) {
     const detail =
       INFERENCE_ERRORS[code] ?? INFERENCE_ERRORS["native-transport"];
     super({

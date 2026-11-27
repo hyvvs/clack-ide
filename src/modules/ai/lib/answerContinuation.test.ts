@@ -1,32 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
-import {
-  streamText,
-  tool,
-  jsonSchema,
-  readUIMessageStream,
-  stepCountIs,
-  type UIMessage,
-} from "ai";
-import type {
-  LanguageModelV3,
-  LanguageModelV3StreamPart,
-  LanguageModelV3CallOptions,
-} from "@ai-sdk/provider";
+import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import {
   ANSWER_LIMITS,
-  ReasoningOutputExhaustedError,
+  type AnswerState,
   answerMetadataStream,
   answerParts,
+  MAX_PROVIDER_RESPONSE_BYTES,
   normalizeAnswerFinish,
+  ReasoningOutputExhaustedError,
   readAnswer,
   recoverAnswerMessages,
   stitchAnswer,
   verifiedProviderFetch,
   withAnswerContinuation,
-  type AnswerState,
 } from "@/modules/ai/lib/answerContinuation";
-import { z } from "zod";
 import { normalizeAiError } from "@/modules/ai/lib/errors";
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3StreamPart,
+} from "@ai-sdk/provider";
+import {
+  jsonSchema,
+  readUIMessageStream,
+  stepCountIs,
+  streamText,
+  tool,
+  type UIMessage,
+} from "ai";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const usage = {
   inputTokens: { total: 20, noCache: 20, cacheRead: 0, cacheWrite: 0 },
@@ -317,25 +320,39 @@ describe("confirmed finish reasons and bounded continuation", () => {
     });
   });
   it("preserves the terminal exhaustion diagnosis through the SDK stream error path", async () => {
-    const exhausted = finish("length") as Extract<LanguageModelV3StreamPart, { type: "finish" }>;
-    exhausted.usage = { ...usage, outputTokens: { total: 2048, text: 0, reasoning: 2048 } };
-    const f = fixture([[
-      { type: "reasoning-start", id: "r" },
-      { type: "reasoning-delta", id: "r", delta: "reasoning" },
-      { type: "reasoning-end", id: "r" },
-      exhausted,
-    ]]);
+    const exhausted = finish("length") as Extract<
+      LanguageModelV3StreamPart,
+      { type: "finish" }
+    >;
+    exhausted.usage = {
+      ...usage,
+      outputTokens: { total: 2048, text: 0, reasoning: 2048 },
+    };
+    const f = fixture([
+      [
+        { type: "reasoning-start", id: "r" },
+        { type: "reasoning-delta", id: "r", delta: "reasoning" },
+        { type: "reasoning-end", id: "r" },
+        exhausted,
+      ],
+    ]);
     const errors: ReturnType<typeof normalizeAiError>[] = [];
     await streamText({
       model: withAnswerContinuation(f.model, f.options),
       prompt: "Build it",
       maxOutputTokens: 2048,
       maxRetries: 0,
-      onError: ({ error }) => { errors.push(normalizeAiError(error)); },
+      onError: ({ error }) => {
+        errors.push(normalizeAiError(error));
+      },
     }).consumeStream();
-    expect(errors).toEqual([expect.objectContaining({
-      errorCode: "reasoning-output-exhausted", disposition: "terminal", retryable: false,
-    })]);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        errorCode: "reasoning-output-exhausted",
+        disposition: "terminal",
+        retryable: false,
+      }),
+    ]);
     expect(f.doStream).toHaveBeenCalledOnce();
     expect(f.charge).not.toHaveBeenCalled();
   });
@@ -349,41 +366,86 @@ describe("confirmed finish reasons and bounded continuation", () => {
       outputTokens: { total: 2048, text: undefined, reasoning: undefined },
     };
     const f = fixture([
-      [...text("A substantive answer segment that needs more room."), exhausted],
+      [
+        ...text("A substantive answer segment that needs more room."),
+        exhausted,
+      ],
       [...text(" The rest."), finish()],
     ]);
     await collect(f, {}, { maxOutputTokens: 2048 });
     expect(f.doStream).toHaveBeenCalledTimes(2);
     expect(f.states[f.states.length - 1]).toMatchObject({ state: "complete" });
   });
-  it.each(["short answer", "prior answer", "later segment", "below allowance", "missing usage"])(
-    "does not misdiagnose reasoning exhaustion with %s",
-    async (scenario) => {
-      const exhausted = finish("length") as Extract<LanguageModelV3StreamPart, { type: "finish" }>;
-      exhausted.usage = {
-        ...usage,
-        outputTokens: { total: scenario === "missing usage" ? undefined : scenario === "below allowance" ? 1000 : 2048, text: undefined, reasoning: undefined },
-      };
-      const f = fixture([
-        ...(scenario === "later segment" ? [[...text(), finish("length")]] : []),
-        [
-          { type: "reasoning-delta", id: "r", delta: "reasoning" },
-          ...(scenario === "short answer" ? text("42") : []),
-          exhausted,
-        ],
-      ]);
-      const output = await collect(f, {}, {
+  it.each([
+    "short answer",
+    "prior answer",
+    "later segment",
+    "below allowance",
+    "missing usage",
+  ])("does not misdiagnose reasoning exhaustion with %s", async (scenario) => {
+    const exhausted = finish("length") as Extract<
+      LanguageModelV3StreamPart,
+      { type: "finish" }
+    >;
+    exhausted.usage = {
+      ...usage,
+      outputTokens: {
+        total:
+          scenario === "missing usage"
+            ? undefined
+            : scenario === "below allowance"
+              ? 1000
+              : 2048,
+        text: undefined,
+        reasoning: undefined,
+      },
+    };
+    const f = fixture([
+      ...(scenario === "later segment" ? [[...text(), finish("length")]] : []),
+      [
+        { type: "reasoning-delta", id: "r", delta: "reasoning" },
+        ...(scenario === "short answer" ? text("42") : []),
+        exhausted,
+      ],
+    ]);
+    const output = await collect(
+      f,
+      {},
+      {
         maxOutputTokens: 2048,
-        ...(scenario === "prior answer" ? { prompt: [
-          { role: "user" as const, content: [{ type: "text" as const, text: "Implement it" }] },
-          { role: "assistant" as const, content: [{ type: "text" as const, text: "A useful partial answer." }] },
-        ] } : {}),
-      });
-      expect(output.some(p => p.type === "error" && p.error instanceof ReasoningOutputExhaustedError)).toBe(false);
-      expect(f.states[f.states.length - 1]).toMatchObject({ state: "incomplete", reason: "Answer continuation made insufficient progress." });
-      expect(f.doStream).toHaveBeenCalledTimes(scenario === "later segment" ? 2 : 1);
-    },
-  );
+        ...(scenario === "prior answer"
+          ? {
+              prompt: [
+                {
+                  role: "user" as const,
+                  content: [{ type: "text" as const, text: "Implement it" }],
+                },
+                {
+                  role: "assistant" as const,
+                  content: [
+                    { type: "text" as const, text: "A useful partial answer." },
+                  ],
+                },
+              ],
+            }
+          : {}),
+      },
+    );
+    expect(
+      output.some(
+        (p) =>
+          p.type === "error" &&
+          p.error instanceof ReasoningOutputExhaustedError,
+      ),
+    ).toBe(false);
+    expect(f.states[f.states.length - 1]).toMatchObject({
+      state: "incomplete",
+      reason: "Answer continuation made insufficient progress.",
+    });
+    expect(f.doStream).toHaveBeenCalledTimes(
+      scenario === "later segment" ? 2 : 1,
+    );
+  });
   it("does not advertise reasoning-only retry guidance after current-turn tool progress", async () => {
     const exhausted = finish("length") as Extract<
       LanguageModelV3StreamPart,
@@ -395,38 +457,46 @@ describe("confirmed finish reasons and bounded continuation", () => {
     };
     const f = fixture([
       [
-        { type: "reasoning-delta", id: "r", delta: "summarizing completed work" },
+        {
+          type: "reasoning-delta",
+          id: "r",
+          delta: "summarizing completed work",
+        },
         exhausted,
       ],
     ]);
-    await collect(f, {}, {
-      maxOutputTokens: 2048,
-      prompt: [
-        { role: "user", content: [{ type: "text", text: "Implement it" }] },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool-call",
-              toolCallId: "write-1",
-              toolName: "edit",
-              input: "{}",
-            },
-          ],
-        },
-        {
-          role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: "write-1",
-              toolName: "edit",
-              output: { type: "json", value: { ok: true } },
-            },
-          ],
-        },
-      ],
-    });
+    await collect(
+      f,
+      {},
+      {
+        maxOutputTokens: 2048,
+        prompt: [
+          { role: "user", content: [{ type: "text", text: "Implement it" }] },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "write-1",
+                toolName: "edit",
+                input: "{}",
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "write-1",
+                toolName: "edit",
+                output: { type: "json", value: { ok: true } },
+              },
+            ],
+          },
+        ],
+      },
+    );
     expect(f.doStream).toHaveBeenCalledOnce();
     expect(f.states[f.states.length - 1]).toMatchObject({
       state: "incomplete",
@@ -438,7 +508,10 @@ describe("confirmed finish reasons and bounded continuation", () => {
   });
   it("caps repeated length stops at three, preserving completed segments", async () => {
     const f = fixture(
-      Array.from({ length: 5 }, (_, i) => [...text(`A meaningful new answer segment with progress ${i}.`), finish("length")]),
+      Array.from({ length: 5 }, (_, i) => [
+        ...text(`A meaningful new answer segment with progress ${i}.`),
+        finish("length"),
+      ]),
     );
     await collect(f);
     expect(f.doStream).toHaveBeenCalledTimes(4);
@@ -656,6 +729,63 @@ describe("quarantined tool calls and bounded repair", () => {
     expect(f.states[f.states.length - 1].segments[0].pending).toEqual([
       { id: "call", name: "edit", input: "{}" },
     ]);
+  });
+  it("response-too-large after partial tool arguments keeps the call quarantined", async () => {
+    const f = fixture([
+      [
+        { type: "tool-input-start", id: "call", toolName: "edit" },
+        { type: "tool-input-delta", id: "call", delta: '{"path":' },
+        { type: "error", error: Object.assign(new Error("response-too-large"), { code: "response-too-large" }) },
+      ],
+    ]);
+    const wrapped = withAnswerContinuation(f.model, f.options) as LanguageModelV3;
+    const result = await wrapped.doStream({
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "Write the answer" }] },
+      ],
+      tools: [
+        { type: "function", name: "edit", inputSchema: { type: "object" } },
+      ],
+    });
+    const output: LanguageModelV3StreamPart[] = [];
+    for await (const part of result.stream) output.push(part);
+    expect(f.model.doStream).toHaveBeenCalledOnce();
+    expect(output.some((part) => part.type === "tool-call")).toBe(false);
+    expect(output.some((part) => part.type === "error" && part.error instanceof Error && part.error.message === "response-too-large")).toBe(true);
+    expect(f.states[f.states.length - 1].segments[0].pending).toEqual([
+      { id: "call", name: "edit", input: '{"path":' },
+    ]);
+  });
+  it("bounds decoded gzip response bytes from the real fetch transport", async () => {
+    const decoded = Buffer.alloc(MAX_PROVIDER_RESPONSE_BYTES + 1, 0x61);
+    const compressed = gzipSync(decoded);
+    const server = createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "text/plain",
+        "content-encoding": "gzip",
+        "content-length": String(compressed.byteLength),
+      });
+      response.end(compressed);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("gzip fixture did not bind a TCP port");
+      }
+      const fetch = verifiedProviderFetch(globalThis.fetch);
+      const response = await fetch(`http://127.0.0.1:${address.port}/transcriptions`);
+      await expect(response.text()).rejects.toMatchObject({
+        code: "response-too-large",
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
   it.each([
     "stop",
@@ -920,6 +1050,96 @@ describe("protocol completion receipts", () => {
         await verifiedProviderFetch(fetcher)("https://fixture/chat/completions")
       ).text(),
     ).rejects.toThrow(/interrupted/i);
+  });
+});
+describe("provider response byte budget", () => {
+  it.each([
+    {
+      label: "successful provider JSON",
+      status: 200,
+      url: "https://fixture/v1/responses",
+      contentType: "application/json",
+    },
+    {
+      label: "provider error JSON",
+      status: 502,
+      url: "https://fixture/v1/responses",
+      contentType: "application/json",
+    },
+    {
+      label: "native Ollama NDJSON",
+      status: 200,
+      url: "http://127.0.0.1:11435/api/chat",
+      contentType: "application/x-ndjson",
+    },
+  ])("rejects oversized $label bodies and cancels the source", async ({
+    status,
+    url,
+    contentType,
+  }) => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(MAX_PROVIDER_RESPONSE_BYTES + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetcher = vi.fn(
+      async () =>
+        new Response(body, {
+          status,
+          headers: { "content-type": contentType },
+        }),
+    );
+    const response = await verifiedProviderFetch(fetcher)(url);
+    await expect(response.arrayBuffer()).rejects.toMatchObject({
+      code: "response-too-large",
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it("allows a response exactly at the configured byte ceiling", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_PROVIDER_RESPONSE_BYTES));
+        controller.close();
+      },
+    });
+    const fetcher = vi.fn(async () => new Response(body));
+    const response = await verifiedProviderFetch(fetcher)(
+      "https://fixture/v1/responses",
+    );
+    expect((await response.arrayBuffer()).byteLength).toBe(
+      MAX_PROVIDER_RESPONSE_BYTES,
+    );
+  });
+
+  it("rejects cumulative small chunks one byte over the ceiling and cancels the source", async () => {
+    let cancelled = false;
+    let chunks = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunks += 1;
+        if (chunks === 1 || chunks === 2) {
+          controller.enqueue(new Uint8Array(MAX_PROVIDER_RESPONSE_BYTES / 2));
+        } else {
+          controller.enqueue(new Uint8Array(1));
+        }
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await verifiedProviderFetch(
+      async () => new Response(body),
+    )("https://fixture/v1/responses");
+    await expect(response.arrayBuffer()).rejects.toMatchObject({
+      code: "response-too-large",
+    });
+    expect(chunks).toBeGreaterThanOrEqual(3);
+    expect(cancelled).toBe(true);
   });
 });
 it("the actual SDK UI stream retains raw parts and reconstructs one coherent answer", async () => {

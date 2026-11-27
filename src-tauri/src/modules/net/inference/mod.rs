@@ -3,6 +3,7 @@ pub mod diagnostics;
 pub mod delivery;
 mod progress;
 mod registry;
+mod response_budget;
 #[cfg(test)]
 mod tests;
 use super::{
@@ -10,6 +11,7 @@ use super::{
 };
 use futures_util::StreamExt;
 use progress::Progress;
+use response_budget::ResponseByteBudget;
 pub use registry::InferenceState;
 use registry::{CancelOrigin, CancellationProvenance};
 pub(crate) use registry::Lease;
@@ -443,6 +445,7 @@ async fn execute_traced(
         lease.note_ipc_rejected();
         return Err(Failure::new("cancelled"));
     }
+    let mut response_budget = ResponseByteBudget::default();
     let mut stream = response.bytes_stream();
     let mut generating = false;
     let mut first_chunk = true;
@@ -455,6 +458,9 @@ async fn execute_traced(
             trace.record(Kind::Eof, 0);
             break;
         };
+        response_budget
+            .account(bytes.len())
+            .map_err(|_| Failure::new("response-too-large"))?;
         if first_chunk {
             first_chunk = false;
             trace.record(Kind::FirstBodyChunk, bytes.len());
@@ -517,6 +523,23 @@ fn terminal(result: &Result<(), Failure>) -> Phase {
         Some("remote-disconnect") => Phase::Disconnected,
         _ => Phase::Failed,
     }
+}
+
+fn deliver_terminal_once(
+    send: impl FnOnce(Event) -> bool,
+    request_id: String,
+    phase: Phase,
+    result: Result<(), Failure>,
+    cancellation: Option<CancellationProvenance>,
+) {
+    let _ = send(Event {
+        request_id,
+        payload: Payload::Settled {
+            phase,
+            error: result.err(),
+            cancellation,
+        },
+    });
 }
 
 async fn execute_admitted(
@@ -908,14 +931,13 @@ pub async fn ai_http_stream(
         lease.cancellation_provenance()
     } else { None };
     drop(lease);
-    let _ = on_event.send(Event {
-        request_id: request_id.clone(),
-        payload: Payload::Settled {
-            phase,
-            error: result.err(),
-            cancellation,
-        },
-    });
+    deliver_terminal_once(
+        |event| on_event.send(event).is_ok(),
+        request_id.clone(),
+        phase,
+        result,
+        cancellation,
+    );
     #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
     acceptance_schedule_post_terminal_channel_fault(&window, &request_id, phase, &on_event);
     Ok(())

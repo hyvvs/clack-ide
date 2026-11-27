@@ -38,5 +38,10 @@ describe("Markdown context actions", () => {
     );
     expect(openableMarkdownLink("./local.md")).toBeNull();
     expect(openableMarkdownLink("javascript:alert(1)")).toBeNull();
+    expect(
+      openableMarkdownLink("data:text/html,<script>alert(1)</script>"),
+    ).toBeNull();
+    expect(openableMarkdownLink("vbscript:msgbox(1)")).toBeNull();
+    expect(openableMarkdownLink("file:///etc/passwd")).toBeNull();
   });
 });
