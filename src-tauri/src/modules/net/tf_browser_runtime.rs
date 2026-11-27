@@ -446,7 +446,7 @@ impl NativeRetainedAction {
 /// Authenticated owner-issued, pre-consent *eligibility* for one exact
 /// central token. Not user consent; the central token must still be approved
 /// and consumed, and host COM must recheck the same original nodes.
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
 #[derive(Clone)]
 pub(crate) struct NativeActionReservation {
     token: String,
@@ -456,7 +456,7 @@ pub(crate) struct NativeActionReservation {
     pub(super) expires_at: Instant,
 }
 
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[cfg(all(windows, any(test, feature = "tf-browser-native-runtime")))]
 impl NativeActionReservation {
     pub(super) fn matches(
         &self,
