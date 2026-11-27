@@ -474,6 +474,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // An application-owned TF4 security presentation must be revoked
+            // before the desktop event loop tears down. A pending native
+            // dialog can never outlive its central one-use authority.
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                app.state::<net::tf_browser::TfBrowserState>()
+                    .shutdown_approvals();
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 modules::managed_local_runtime::shutdown();
                 modules::remote_ssh::shutdown();

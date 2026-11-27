@@ -237,7 +237,14 @@ mod host {
     // text, object ID, or secret is serialized to the parent. Deriving it from
     // the snapshot walker prevents a second traversal with different indexing
     // or sensitive-control exclusions.
+    #[cfg(test)]
     fn production_dom_identity_js() -> Result<String, &'static str> {
+        production_dom_identity_js_with_baseline_probe(false)
+    }
+
+    fn production_dom_identity_js_with_baseline_probe(
+        baseline_probe: bool,
+    ) -> Result<String, &'static str> {
         const RESULT_START: &str =
             "      const result = { version: 2, visited: 0, truncated: false,";
         const ELEMENT_PUSH: &str =
@@ -252,13 +259,213 @@ mod host {
         let script = PRODUCTION_DOM_JS.replacen(
             RESULT_START,
             concat!(
-                "      const identityState = { changed: false };\n",
-                "      const identityObserver = new MutationObserver(() => {\n",
-                "        identityState.changed = true;\n",
-                "      });\n",
-                "      identityObserver.observe(document, { subtree: true,\n",
-                "        childList: true, attributes: true, characterData: true });\n",
+                "      const identityState = { changed: false, mutated: false, reason: null };\n",
                 "      const identityNodes = [];\n",
+                "      const identityReasons = [];\n",
+                "      const identityLinks = [];\n",
+                // Start observing before any bounded baseline walk/clone. The
+                // callback runs at the renderer microtask checkpoint, after
+                // this synchronous script has populated its exact Node slots
+                // and installed the classifier below.
+                "      let classify = () => {};\n",
+                "      const identityObserver = new MutationObserver(records => classify(records));\n",
+                "      identityObserver.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });\n",
+                "      const originalBase = document.baseURI;\n",
+                // Snapshot an opaque, bounded inert DOM clone. `isEqualNode`
+                // compares all structural/text/attribute *values* in WebView2
+                // without reading, serializing or exporting any page content.
+                // No clone is ever inserted or exposed in the parent protocol.
+                "      const boundedClone = (root, maxNodes) => {\n",
+                "        if (!root) return null;\n",
+                "        const allowed = (n) => n.nodeType === 1 ? n.attributes.length <= 32\n",
+                "          : (n.nodeType === 3 || n.nodeType === 8) && n.length <= 8192;\n",
+                "        if (!allowed(root)) return null;\n",
+                "        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ALL);\n",
+                "        let visited = 1;\n",
+                "        while (walker.nextNode()) if (++visited > maxNodes || !allowed(walker.currentNode)) return null;\n",
+                "        return root.cloneNode(true);\n",
+                "      };\n",
+                "      const originalHead = document.head;\n",
+                "      const headBaseline = boundedClone(originalHead, 256);\n",
+                "      const headUnchanged = () => !!headBaseline && document.head === originalHead\n",
+                "        && originalHead.isEqualNode(headBaseline);\n",
+                "      const inertTags = new Set(['DIV','SPAN','P','LI','UL','OL','SECTION',\n",
+                "        'ARTICLE','MAIN','NAV','HEADER','FOOTER','ASIDE','H1','H2','H3',\n",
+                "        'H4','H5','H6','TIME','B','I','EM','STRONG','SMALL','BR','HR','CODE','PRE']);\n",
+                "      const inertElement = (n) => n && n.nodeType === 1 &&\n",
+                "        n.namespaceURI === 'http://www.w3.org/1999/xhtml' && inertTags.has(n.tagName);\n",
+                "      const inertAttribute = (name) => name === 'class' || name === 'id' ||\n",
+                "        (typeof name === 'string' && name.startsWith('data-'));\n",
+                // Verify security-relevant BODY nodes independently from
+                // MutationObserver, while allowing genuinely inert text and
+                // markup to be added elsewhere. Crucially this detects new
+                // FORM/STYLE/SCRIPT/interactive nodes even if page scripts
+                // are disabled and the observer callback has not fired.
+                "      const securitySnapshot = () => {\n",
+                "        if (!document.body) return null;\n",
+                "        const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);\n",
+                "        let visited = 0; const elements = [];\n",
+                "        while (walk.nextNode()) {\n",
+                "          if (++visited > 512) return null;\n",
+                "          const n = walk.currentNode;\n",
+                "          if (n.attributes.length > 32) return null;\n",
+                "          let relevant = !inertElement(n);\n",
+                "          for (const a of n.attributes) {\n",
+                "            if (a.namespaceURI || !inertAttribute(a.name)) relevant = true;\n",
+                "          }\n",
+                "          if (!relevant) continue;\n",
+                "          if (elements.length >= 128) return null;\n",
+                "          const attrs = [];\n",
+                "          for (const a of n.attributes) {\n",
+                "            if (a.name.length > 128) return null;\n",
+                "            attrs.push(a.cloneNode(false));\n",
+                "          }\n",
+                "          elements.push({node:n,attrs});\n",
+                "        }\n",
+                "        return {body:document.body,elements};\n",
+                "      };\n",
+                "      const securityBaseline = securitySnapshot();\n",
+                "      const securityUnchanged = () => {\n",
+                "        const now = securitySnapshot();\n",
+                "        if (!now || !securityBaseline || now.body !== securityBaseline.body ||\n",
+                "            now.elements.length !== securityBaseline.elements.length) return false;\n",
+                "        for (let i=0;i<now.elements.length;++i) {\n",
+                "          const a=now.elements[i],b=securityBaseline.elements[i];\n",
+                "          if (a.node !== b.node || a.attrs.length !== b.attrs.length) return false;\n",
+                "          for (let j=0;j<a.attrs.length;++j) {\n",
+                "            const x=a.attrs[j],y=b.attrs[j];\n",
+                "            if (!x.isEqualNode(y)) return false;\n",
+                "          }\n",
+                "        }\n",
+                "        return true;\n",
+                "      };\n",
+                "      const safeTree = (root, budget) => {\n",
+                "        let n = root;\n",
+                "        while (n) {\n",
+                "          if (--budget.left < 0) return false;\n",
+                "          if (n.nodeType === 1) {\n",
+                "            if (!inertElement(n) || n.attributes.length > 32) return false;\n",
+                "            for (const a of n.attributes) if (a.namespaceURI || !inertAttribute(a.name)) return false;\n",
+                "          } else if (n.nodeType !== 3 && n.nodeType !== 8) return false;\n",
+                "          if (n.firstChild) { n = n.firstChild; continue; }\n",
+                "          while (n !== root && !n.nextSibling) n = n.parentNode;\n",
+                "          if (n === root) break;\n",
+                "          n = n.nextSibling;\n",
+                "        }\n",
+                "        return true;\n",
+                "      };\n",
+                "      const rememberLink = (n) => {\n",
+                "        if (n.tagName !== 'A' || !n.hasAttribute('href')) return null;\n",
+                "        const ancestors = [];\n",
+                "        for (let p = n; p && p !== document; p = p.parentNode) {\n",
+                "          if (ancestors.length >= 18) return null;\n",
+                "          ancestors.push(p);\n",
+                "        }\n",
+                "        const href = n.href;\n",
+                "        const clone = boundedClone(n, 64);\n",
+                "        if (href.length > 2048 || !clone) return null;\n",
+                "        const ancestorAttrs = [];\n",
+                "        for (const p of ancestors) {\n",
+                "          if (p.attributes.length > 32) return null;\n",
+                "          ancestorAttrs.push(Array.from(p.attributes, a => a.cloneNode(false)));\n",
+                "        }\n",
+                "        return { ancestors, ancestorAttrs, href, clone };\n",
+                "      };\n",
+                "      classify = (records) => {\n",
+                "        if (!records.length) return;\n",
+                "        identityState.mutated = true;\n",
+                "        if (identityState.changed || identityState.reason) return;\n",
+                "        if (records.length > 256) { identityState.reason = 'mutation-bounds'; return; }\n",
+                "        const budget = { left: 256 };\n",
+                "        for (const record of records) {\n",
+                "          const target = record.target;\n",
+                "          if (!target || !document.body || !document.body.contains(target)) {\n",
+                "            identityState.reason = 'security-context'; return;\n",
+                "          }\n",
+                "          if (record.type === 'childList' &&\n",
+                "              record.addedNodes.length + record.removedNodes.length > 256) {\n",
+                "            identityState.reason = 'mutation-bounds'; return;\n",
+                "          }\n",
+                "          for (let i = 0; i < identityNodes.length; ++i) {\n",
+                "            const n = identityNodes[i];\n",
+                "            const link = identityLinks[i];\n",
+                "            if (!link || identityReasons[i]) continue;\n",
+                "            if (!n.isConnected || n.ownerDocument !== document) identityReasons[i] = 'detached';\n",
+                "            else if (n.contains(target)) {\n",
+                "              identityReasons[i] = target === n && record.attributeName === 'href'\n",
+                "                ? 'href-changed' : 'target-changed';\n",
+                "            } else if (record.type !== 'childList' &&\n",
+                "                (link.ancestors.includes(target) || target.contains(n))) {\n",
+                "              identityReasons[i] = 'ancestor-changed';\n",
+                "            } else if (record.type === 'childList') {\n",
+                "              for (const roots of [record.addedNodes, record.removedNodes]) {\n",
+                "                for (const root of roots) {\n",
+                "                  if (link.ancestors.includes(root) || root.contains(n) || n.contains(root))\n",
+                "                    identityReasons[i] = 'ancestor-changed';\n",
+                "                }\n",
+                "              }\n",
+                "            }\n",
+                "          }\n",
+                "          // Only ordinary text/markup changes can be unrelated. Anything\n",
+                "          // capable of changing document-wide navigation or execution\n",
+                "          // context (BASE, STYLE, SCRIPT, foreign/custom elements, etc.)\n",
+                "          // is a global denial, even if it is later removed.\n",
+                "          let safe = false;\n",
+                "          if (record.type === 'characterData') {\n",
+                "            safe = inertElement(target.parentElement) ||\n",
+                "              (target.parentElement && target.parentElement.tagName === 'A');\n",
+                "          } else if (record.type === 'attributes') {\n",
+                "            safe = !record.attributeNamespace &&\n",
+                "              (inertElement(target) && inertAttribute(record.attributeName) ||\n",
+                "               target.tagName === 'A' && ['href','target','ping','download',\n",
+                "                 'rel','referrerpolicy','class'].includes(record.attributeName));\n",
+                "          } else if (record.type === 'childList') {\n",
+                "            safe = target === document.body || inertElement(target) || target.tagName === 'A';\n",
+                "            for (const roots of [record.addedNodes, record.removedNodes])\n",
+                "              for (const root of roots) if (!safeTree(root, budget)) safe = false;\n",
+                "          }\n",
+                "          if (!safe) { identityState.reason = 'security-context'; return; }\n",
+                "        }\n",
+                "      };\n",
+                "      const check = (slot) => {\n",
+                "        classify(identityObserver.takeRecords());\n",
+                "        if (identityState.changed) return 'observation-consumed';\n",
+                "        const n = identityNodes[slot];\n",
+                "        if (!n || !n.isConnected || n.ownerDocument !== document) return 'detached';\n",
+                "        if (identityReasons[slot]) return identityReasons[slot];\n",
+                "        if (identityState.reason) return identityState.reason;\n",
+                "        if (!headUnchanged()) return 'security-context';\n",
+                "        const link = identityLinks[slot];\n",
+                "        if (n.tagName === 'A' && !link) return 'security-context';\n",
+                "        if (identityState.mutated && !link) return 'document-changed';\n",
+                "        if (n.isContentEditable) return 'security-context';\n",
+                "        if (link) {\n",
+                "          if (document.baseURI !== originalBase) return 'security-context';\n",
+                "          if (!n.hasAttribute('href') || n.href !== link.href) return 'href-changed';\n",
+                "          if (!n.isEqualNode(link.clone)) return 'target-changed';\n",
+                "          let p = n;\n",
+                "          for (let i=0;i<link.ancestors.length;++i) {\n",
+                "            const ancestor = link.ancestors[i];\n",
+                "            if (p !== ancestor) return 'ancestor-changed';\n",
+                "            const attrs = link.ancestorAttrs[i];\n",
+                "            if (p.attributes.length !== attrs.length) return 'ancestor-changed';\n",
+                "            for (let j=0;j<attrs.length;++j)\n",
+                "              if (!p.attributes[j].isEqualNode(attrs[j])) return 'ancestor-changed';\n",
+                "            if (p.inert || p.isContentEditable) return 'security-context';\n",
+                "            if (p.hidden) return 'ancestor-changed';\n",
+                "            if (p.nodeType === 1) {\n",
+                "              const style = window.getComputedStyle(p);\n",
+                "              if (style.display === 'none' || style.visibility !== 'visible'\n",
+                "                  || !(Number(style.opacity) > 0)) return 'security-context';\n",
+                "            }\n",
+                "            p = p.parentNode;\n",
+                "          }\n",
+                "          if (p !== document) return 'ancestor-changed';\n",
+                "          if (!n.getClientRects().length) return 'security-context';\n",
+                "        }\n",
+                "        if (!securityUnchanged()) return 'security-context';\n",
+                "        return null;\n",
+                "      };\n",
                 "      const result = { version: 2, visited: 0, truncated: false,"
             ),
             1,
@@ -267,14 +474,40 @@ mod host {
             ELEMENT_PUSH,
             concat!(
                 "          identityNodes.push(node);\n",
+                "          identityLinks.push(rememberLink(node));\n",
                 "          result.elements.push({ index: result.visited, role, depth,"
             ),
             1,
         );
-        Ok(script.replace(
+        let script = script.replace(
             RESULT_RETURN,
-            "return { result, nodes: identityNodes, observer: identityObserver, state: identityState };",
-        ))
+            "return { result, nodes: identityNodes, observer: identityObserver, state: identityState, check };",
+        );
+        if baseline_probe {
+            #[cfg(not(debug_assertions))]
+            return Err("observation-debug-probe-unavailable");
+            #[cfg(debug_assertions)]
+            {
+                // Deliberately mutate and restore an inert head attribute during
+                // the synchronous baseline capture. The final DOM is identical,
+                // so only the observer's queued records can reject this read.
+                // No caller-provided script, selector or page data is involved.
+                const INSERT_AFTER: &str =
+                    "      const originalBase = document.baseURI;\n";
+                const INJECTION: &str = concat!(
+                    "      const originalBase = document.baseURI;\n",
+                    "      const baselineProbeHead = document.head;\n",
+                    "      if (location.href !== 'https://127.0.0.1/' || !baselineProbeHead) throw Error('fixture-only');\n",
+                    "      baselineProbeHead.setAttribute('data-clack-baseline-probe', '1');\n",
+                    "      baselineProbeHead.removeAttribute('data-clack-baseline-probe');\n",
+                );
+                if script.matches(INSERT_AFTER).count() != 1 {
+                    return Err("observation-identity-probe-invalid");
+                }
+                return Ok(script.replacen(INSERT_AFTER, INJECTION, 1));
+            }
+        }
+        Ok(script)
     }
 
     // Both are fixed, host-authored CDP functions. They run only against the
@@ -282,27 +515,47 @@ mod host {
     // selector or a newly discovered node at the same tree position.
     // takeRecords() drains pending records: latch the stale bit BEFORE any
     // return so a rejected first check cannot become valid on a second check.
-    const DOM_CAPTURE_READ_JS: &str = "function() { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; return { snapshot: this.result, nodeCount: this.nodes.length }; }";
-    const DOM_NODE_RECHECK_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return null; const node = this.nodes[slot]; return node && node.isConnected && node.ownerDocument === document ? node : null; }";
+    const DOM_CAPTURE_READ_JS: &str = "function() { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed || this.state.mutated) return null; return { snapshot: this.result, nodeCount: this.nodes.length }; }";
+    #[cfg(debug_assertions)]
+    const DOM_BASELINE_RACE_READ_JS: &str = r#"function() {
+      const records = this.observer.takeRecords();
+      const observed = records.length > 0 || this.state.mutated;
+      if (records.length) this.state.changed = true;
+      const firstDenied = this.state.changed || this.state.mutated;
+      // A second read has no queued records. Denial must remain latched.
+      const secondDenied = this.observer.takeRecords().length > 0
+        || this.state.changed || this.state.mutated;
+      return { observed: !!observed, firstDenied: !!firstDenied,
+        secondDenied: !!secondDenied };
+    }"#;
+    const DOM_NODE_RECHECK_JS: &str = "function(slot) { if (this.check(slot)) return null; const node = this.nodes[slot]; return node && node.isConnected && node.ownerDocument === document ? node : null; }";
     // Host-authored exact-node DOM activation. In one renderer invocation,
     // validate the retained Node, consume the observation BEFORE activation,
     // and dispatch at most one HTMLElement.click(). This is a programmatic
     // DOM activation, NOT a trusted hardware pointer event or effect proof.
     // Caller-provided JS, selectors, element strings and retries are absent.
     const DOM_EXACT_CLICK_JS: &str = r#"function(slot, approvedDestination) {
-      if (this.observer.takeRecords().length) this.state.changed = true;
-      if (this.state.changed) return {dispatched:false,targetHref:null};
+      const denied = (reason) => ({dispatched:false,targetHref:null,staleReason:reason});
+      const failed = this.check(slot);
+      if (failed) {
+        const reason = ({'observation-consumed':'snapshot-changed',
+          'detached':'node-detached', 'target-changed':'node-changed',
+          'ancestor-changed':'node-changed', 'href-changed':'destination-changed',
+          'security-context':'mutation-observed', 'mutation-bounds':'mutation-observed',
+          'document-changed':'mutation-observed'})[failed] || 'recheck-rejected';
+        return denied(reason);
+      }
       const node = this.nodes[slot];
       if (!node || !node.isConnected || node.ownerDocument !== document
           || node.tagName !== 'A' || node.disabled === true
-          || !node.getClientRects().length) return {dispatched:false,targetHref:null};
+          || !node.getClientRects().length) return denied('recheck-rejected');
       // Security validation MUST precede click(), not merely validate its
       // returned targetHref after a navigation, ping, popup or download.
       // Inspect this exact retained anchor only, never resolve a replacement
       // by a selector or visit index.
       if (node.hasAttribute('download') || node.hasAttribute('ping')
           || (node.target !== '' && node.target.toLowerCase() !== '_self'))
-        return {dispatched:false,targetHref:null};
+        return denied('recheck-rejected');
       // An implicit <base target="_blank"> can change the target even when
       // this exact anchor has no target attribute. Check the bounded head
       // chain without selecting or replacing the retained action node.
@@ -311,24 +564,24 @@ mod host {
         let headVisits = 0;
         while (headNode && headVisits++ < 128) {
           if (headNode.tagName === 'BASE' && headNode.hasAttribute('target'))
-            return {dispatched:false,targetHref:null};
+            return denied('destination-changed');
           headNode = headNode.nextElementSibling;
         }
-        if (headNode) return {dispatched:false,targetHref:null};
+        if (headNode) return denied('recheck-rejected');
       }
       const targetHref = node.href;
       if (!targetHref || targetHref.length > 2048
           || targetHref.includes('?') || targetHref.includes('#')
           || typeof approvedDestination !== 'string'
           || approvedDestination !== targetHref)
-        return {dispatched:false,targetHref:null};
+        return denied('destination-changed');
       const destination = new URL(targetHref);
       const source = new URL(document.location.href);
       if (source.protocol !== 'https:' || destination.protocol !== 'https:'
           || destination.origin !== source.origin || destination.port !== ''
           || source.port !== '' || destination.username !== ''
           || destination.password !== '' || destination.href === source.href)
-        return {dispatched:false,targetHref:null};
+        return denied('destination-changed');
       this.state.changed = true;
       node.click();
       return {dispatched:true,targetHref};
@@ -338,8 +591,7 @@ mod host {
     // authorization, click, navigation or network request. The later actual
     // activation must independently revalidate this same Node and href.
     const DOM_EXACT_LINK_CAPTURE_JS: &str = r#"function(slot) {
-      if (this.observer.takeRecords().length) this.state.changed = true;
-      if (this.state.changed) return null;
+      if (this.check(slot)) return null;
       const node = this.nodes[slot];
       if (!node || !node.isConnected || node.ownerDocument !== document ||
           node.tagName !== 'A' || node.disabled === true ||
@@ -371,8 +623,9 @@ mod host {
     // Only OpenRequestedPopup may later consume the captured native intent
     // after its own independent central authorization and TF3 re-policy.
     const DOM_EXACT_POPUP_CLICK_JS: &str = r#"function(slot) {
+      const denied = (reason) => ({dispatched:false,targetHref:null,staleReason:reason});
       if (this.observer.takeRecords().length) this.state.changed = true;
-      if (this.state.changed) return {dispatched:false,targetHref:null};
+      if (this.state.changed || this.state.mutated) return denied('mutation-observed');
       const node = this.nodes[slot];
       if (!node || !node.isConnected || node.ownerDocument !== document
           || node.tagName !== 'A' || node.disabled === true
@@ -380,11 +633,11 @@ mod host {
           || !node.hasAttribute('target')
           || node.getAttribute('target').toLowerCase() !== '_blank'
           || node.hasAttribute('download') || node.hasAttribute('ping'))
-        return {dispatched:false,targetHref:null};
+        return denied('recheck-rejected');
       const targetHref = node.href;
       if (!targetHref || targetHref.length > 2048
           || targetHref.includes('?') || targetHref.includes('#'))
-        return {dispatched:false,targetHref:null};
+        return denied('destination-changed');
       const destination = new URL(targetHref);
       const source = new URL(document.location.href);
       if (source.protocol !== 'https:' || destination.protocol !== 'https:'
@@ -392,7 +645,7 @@ mod host {
           || destination.username !== '' || destination.password !== ''
           || destination.pathname !== '/' || destination.search !== ''
           || destination.hash !== '' || destination.href !== targetHref)
-        return {dispatched:false,targetHref:null};
+        return denied('destination-changed');
       this.state.changed = true;
       node.click();
       return {dispatched:true,targetHref};
@@ -407,7 +660,7 @@ mod host {
     // UNKNOWN, never a denial or safe retry.
     const DOM_EXACT_CONTROL_ACTION_JS: &str = r#"function(slot, action, text, optionSlot, deltaY) {
       if (this.observer.takeRecords().length) this.state.changed = true;
-      if (this.state.changed) return {dispatched:false};
+      if (this.state.changed || this.state.mutated) return {dispatched:false};
       const node = this.nodes[slot];
       if (!node || !node.isConnected || node.ownerDocument !== document
           || node.isContentEditable || !node.getClientRects().length
@@ -474,7 +727,7 @@ mod host {
     // approved parameters. It cannot select a replacement or return values.
     // This proves only local DOM postcondition, not any remote business effect.
     const DOM_EXACT_CONTROL_POSTCONDITION_JS: &str = r#"function(slot, action, text, optionSlot, deltaY) {
-      if (!this.state.changed || this.observer.takeRecords().length) return false;
+      if (!this.state.changed || this.state.mutated || this.observer.takeRecords().length) return false;
       const node = this.nodes[slot];
       if (!node || !node.isConnected || node.ownerDocument !== document ||
           node.isContentEditable || node.matches(':disabled')) return false;
@@ -513,7 +766,7 @@ mod host {
     // only deny. Do not activate Submit by modifying a parent transport flag.
     const DOM_EXACT_SUBMIT_JS: &str = r#"function(slot, action, text, formSlot, deltaY) {
       if (this.observer.takeRecords().length) this.state.changed = true;
-      if (this.state.changed || action !== 'submit' || text !== null
+      if (this.state.changed || this.state.mutated || action !== 'submit' || text !== null
           || deltaY !== null || !Number.isInteger(formSlot))
         return {dispatched:false};
       const node = this.nodes[slot];
@@ -563,7 +816,7 @@ mod host {
     // serialization fail closed; neither DOM values nor body enter snapshots.
     const DOM_EXACT_FORM_CAPTURE_JS: &str = r#"function(slot, formSlot) {
       if (this.observer.takeRecords().length) this.state.changed = true;
-      if (this.state.changed) return null;
+      if (this.state.changed || this.state.mutated) return null;
       const node = this.nodes[slot], form = this.nodes[formSlot];
       if (!node || !form || node === form ||
           !node.isConnected || !form.isConnected ||
@@ -667,7 +920,50 @@ mod host {
     // one exact retained H1 with a new H1 in the same parent/position, then
     // latches the old observation stale before returning a closed boolean.
     #[cfg(debug_assertions)]
-    const DOM_DEBUG_REPLACE_HEADING_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed) return false; const node = this.nodes[slot]; if (!node || node.tagName !== 'H1' || !node.isConnected || node.ownerDocument !== document || !node.parentNode) return false; const successor = document.createElement('h1'); node.parentNode.replaceChild(successor, node); this.state.changed = true; return true; }";
+    const DOM_DEBUG_REPLACE_HEADING_JS: &str = "function(slot) { if (this.observer.takeRecords().length) this.state.changed = true; if (this.state.changed || this.state.mutated) return false; const node = this.nodes[slot]; if (!node || node.tagName !== 'H1' || !node.isConnected || node.ownerDocument !== document || !node.parentNode) return false; const successor = document.createElement('h1'); node.parentNode.replaceChild(successor, node); this.state.changed = true; return true; }";
+    // DEBUG-ONLY, fixed owned-loopback mutation scenarios. Production WebView2
+    // explicitly disables page scripts; a page-authored timer cannot exercise
+    // MutationObserver. Each fixed scenario mutates the SAME actual WebView2
+    // document through one host-owned CDP function. No page text, selector,
+    // model-controlled script, replacement element handle or native object is
+    // returned. Release compilation contains neither this JS nor its wire key.
+    #[cfg(debug_assertions)]
+    const DOM_DEBUG_MUTATE_LINK_JS: &str = r#"function(slot, kind) {
+      if (this.check(slot)) return false;
+      const node = this.nodes[slot];
+      if (!node || node.tagName !== 'A' || !node.isConnected
+          || node.ownerDocument !== document || !node.parentNode
+          || node.parentNode.tagName !== 'MAIN'
+          || document.location.href !== 'https://127.0.0.1/'
+          || node.href !== 'https://127.0.0.1/clicked') return false;
+      if (kind === 'unrelated') {
+        const sibling = document.createElement('p');
+        sibling.textContent = 'owned-fixed-inert-sibling';
+        document.body.appendChild(sibling);
+      } else if (kind === 'replace-link') {
+        node.parentNode.replaceChild(node.cloneNode(true), node);
+      } else if (kind === 'href-change') {
+        node.setAttribute('href', '/changed');
+      } else if (kind === 'head-change') {
+        document.head.appendChild(document.createElement('style'));
+      } else if (kind === 'head-attr-value') {
+        const meta = document.head.firstElementChild;
+        if (!meta || meta.tagName !== 'META' || !meta.hasAttribute('charset')) return false;
+        meta.setAttribute('charset', 'iso-8859-1');
+      } else if (kind === 'hide-ancestor') {
+        node.parentElement.hidden = true;
+      } else if (kind === 'form-mutation') {
+        document.body.appendChild(document.createElement('form'));
+      } else if (kind === 'form-attr-value') {
+        const control = node.parentElement.lastElementChild;
+        if (!control || control.tagName !== 'BUTTON' || !control.hasAttribute('type')) return false;
+        control.setAttribute('type', 'submit');
+      } else if (kind === 'link-text') {
+        if (!node.firstChild || node.firstChild.nodeType !== 3) return false;
+        node.firstChild.data = 'owned-fixed-changed-link';
+      } else return false;
+      return true;
+    }"#;
     // Two fixture-only native scripts arm a REAL MutationObserver in the
     // about:blank successor and then read its actual queued mutation records
     // *after* attempting and denying the stale native generation-bound action.
@@ -2167,6 +2463,9 @@ mod host {
         observation_id: u64,
         page_generation: u64,
         source_id: String,
+        #[cfg(debug_assertions)]
+        #[serde(default)]
+        debug_baseline_probe: Option<bool>,
     }
 
     // A separate closed, authenticated v2 control. The original DOM visit
@@ -2190,6 +2489,9 @@ mod host {
         #[cfg(debug_assertions)]
         #[serde(default)]
         debug_replace_heading: Option<bool>,
+        #[cfg(debug_assertions)]
+        #[serde(default)]
+        debug_mutation_kind: Option<String>,
     }
 
     #[derive(Serialize)]
@@ -2390,6 +2692,8 @@ mod host {
         action: &'a str,
         approval_id: &'a str,
         state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stale_reason: Option<&'static str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         target_url_sha256: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -2790,6 +3094,13 @@ mod host {
         if request.source_id != source_id {
             return Err("observation-source-mismatch");
         }
+        #[cfg(debug_assertions)]
+        if request.debug_baseline_probe.is_some()
+            && (request.debug_baseline_probe != Some(true)
+                || initial_url != "https://127.0.0.1/")
+        {
+            return Err("observation-debug-probe-not-owned-fixture");
+        }
         Ok(request)
     }
 
@@ -2837,6 +3148,17 @@ mod host {
             && (request.debug_replace_heading != Some(true) || initial_url != "https://127.0.0.1/")
         {
             return Err("debug-dom-replacement-not-owned-fixture");
+        }
+        #[cfg(debug_assertions)]
+        if let Some(kind) = &request.debug_mutation_kind {
+            if request.debug_replace_heading.is_some()
+                || initial_url != "https://127.0.0.1/"
+                || !matches!(kind.as_str(), "unrelated" | "replace-link" | "href-change"
+                    | "head-change" | "head-attr-value" | "hide-ancestor"
+                    | "form-mutation" | "form-attr-value" | "link-text")
+            {
+                return Err("debug-link-mutation-kind-or-owned-origin-denied");
+            }
         }
         let actual_source_id = production_dom_source_id(initial_url)?;
         let reference = if request.observation_id != latest_observation_id
@@ -3087,17 +3409,35 @@ mod host {
     // The only positive response is a closed boolean emitted *after* the
     // fixed activation function reached its single click call. This does not
     // prove navigation or server writes: it means DISPATCHED, not CONFIRMED.
+    type DomActionResult = (bool, Option<String>, Option<&'static str>);
+
+    // Only eight predetermined native categories survive a failed DOM script.
+    // A renderer can return no text, selector, page value or arbitrary reason.
+    fn closed_dom_stale_reason(raw: &str) -> Option<&'static str> {
+        match raw {
+            "binding-missing" => Some("binding-missing"),
+            "page-changed" => Some("page-changed"),
+            "snapshot-changed" => Some("snapshot-changed"),
+            "node-detached" => Some("node-detached"),
+            "node-changed" => Some("node-changed"),
+            "destination-changed" => Some("destination-changed"),
+            "mutation-observed" => Some("mutation-observed"),
+            "recheck-rejected" => Some("recheck-rejected"),
+            _ => None,
+        }
+    }
+
     fn parse_dom_activation_response(
         raw: &str,
         expected_url: &str,
-    ) -> Result<(bool, Option<String>), &'static str> {
+    ) -> Result<DomActionResult, &'static str> {
         parse_dom_activation_response_mode(raw, expected_url, false)
     }
 
     fn parse_dom_popup_activation_response(
         raw: &str,
         expected_url: &str,
-    ) -> Result<(bool, Option<String>), &'static str> {
+    ) -> Result<DomActionResult, &'static str> {
         parse_dom_activation_response_mode(raw, expected_url, true)
     }
 
@@ -3105,7 +3445,7 @@ mod host {
         raw: &str,
         expected_url: &str,
         popup: bool,
-    ) -> Result<(bool, Option<String>), &'static str> {
+    ) -> Result<DomActionResult, &'static str> {
         if raw.is_empty() || raw.len() > 4096 {
             return Err("action-com-response-unknown");
         }
@@ -3122,7 +3462,7 @@ mod host {
             .pointer("/result/value")
             .and_then(|v| v.as_object())
             .ok_or("action-com-response-unknown")?;
-        if value.len() != 2 {
+        if value.len() != 2 && value.len() != 3 {
             return Err("action-com-response-unknown");
         }
         let dispatched = value
@@ -3130,14 +3470,17 @@ mod host {
             .and_then(|v| v.as_bool())
             .ok_or("action-com-response-unknown")?;
         if !dispatched {
-            return if value
-                .get("targetHref")
-                .is_some_and(serde_json::Value::is_null)
-            {
-                Ok((false, None))
-            } else {
-                Err("action-com-response-unknown")
-            };
+            let reason = value.get("staleReason").and_then(|v| v.as_str())
+                .and_then(closed_dom_stale_reason)
+                .ok_or("action-com-response-unknown")?;
+            if value.len() != 3 || !value.get("targetHref")
+                .is_some_and(serde_json::Value::is_null) {
+                return Err("action-com-response-unknown");
+            }
+            return Ok((false, None, Some(reason)));
+        }
+        if value.len() != 2 || value.contains_key("staleReason") {
+            return Err("action-com-response-unknown");
         }
         let raw_target = value
             .get("targetHref")
@@ -3169,6 +3512,7 @@ mod host {
         Ok((
             true,
             Some(format!("{:x}", Sha256::digest(target.as_str().as_bytes()))),
+            None,
         ))
     }
 
@@ -4030,6 +4374,7 @@ mod host {
             | "observation-identity-invalid"
             | "observation-identity-unavailable"
             | "observation-identity-probe-invalid"
+            | "observation-baseline-race-verified"
             | "observation-timeout"
             | "observation-session-broken" => "observation-failed",
             _ => "unknown",
@@ -4264,6 +4609,7 @@ mod host {
         request_generation: u64,
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
+        baseline_probe: bool,
     ) -> Result<NativeDomObservation, &'static str> {
         if stats.broken.load(Ordering::Acquire)
             || stats.pending.load(Ordering::Acquire) != 0
@@ -4274,7 +4620,7 @@ mod host {
         // All COM use, including the post-CDP source recheck, happens on
         // WebView2's original UI apartment.
         let expected = expected_url.to_owned();
-        let identity_script = production_dom_identity_js()?;
+        let identity_script = production_dom_identity_js_with_baseline_probe(baseline_probe)?;
         let (tx, rx) = mpsc::sync_channel::<Result<NativeDomObservation, &'static str>>(1);
         let app_for_ui = app.clone();
         app.run_on_main_thread(move || {
@@ -4339,9 +4685,17 @@ mod host {
                                     // Read both the closed snapshot and the
                                     // retained node count from that SAME walk.
                                     // The callback refuses any queued mutation.
+                                    #[cfg(debug_assertions)]
+                                    let read_declaration = if baseline_probe {
+                                        DOM_BASELINE_RACE_READ_JS
+                                    } else {
+                                        DOM_CAPTURE_READ_JS
+                                    };
+                                    #[cfg(not(debug_assertions))]
+                                    let read_declaration = DOM_CAPTURE_READ_JS;
                                     let parameters = json!({
                                         "objectId": root_object_id,
-                                        "functionDeclaration": DOM_CAPTURE_READ_JS,
+                                        "functionDeclaration": read_declaration,
                                         "returnByValue": true,
                                         "silent": true,
                                         "awaitPromise": false,
@@ -4378,6 +4732,19 @@ mod host {
                                                     return Err("observation-page-stale");
                                                 }
                                                 let raw = snapshot_result?;
+                                                #[cfg(debug_assertions)]
+                                                if baseline_probe {
+                                                    let parsed: serde_json::Value = serde_json::from_str(&raw)
+                                                        .map_err(|_| "observation-identity-invalid")?;
+                                                    let value = parsed.pointer("/result/value")
+                                                        .ok_or("observation-identity-invalid")?;
+                                                    if ["observed", "firstDenied", "secondDenied"]
+                                                        .iter().all(|key| value.get(*key).and_then(|v| v.as_bool()) == Some(true))
+                                                    {
+                                                        return Err("observation-baseline-race-verified");
+                                                    }
+                                                    return Err("observation-identity-invalid");
+                                                }
                                                 let snapshot = parse_dom_identity_snapshot(&raw)?;
                                                 Ok(NativeDomObservation {
                                                     snapshot,
@@ -4404,6 +4771,7 @@ mod host {
 
     struct DomRecheckMode {
         debug_replace_heading: bool,
+        debug_mutation_kind: Option<String>,
         activate_exact_click: bool,
         activate_popup_click: bool,
         approved_link_destination: Option<String>,
@@ -4417,15 +4785,18 @@ mod host {
         current_generation: Arc<AtomicU64>,
         stats: Arc<BrokerStats>,
         mode: DomRecheckMode,
-    ) -> Result<(bool, Option<String>), &'static str> {
+    ) -> Result<DomActionResult, &'static str> {
         let DomRecheckMode {
             debug_replace_heading,
+            debug_mutation_kind,
             activate_exact_click,
             activate_popup_click,
             approved_link_destination,
         } = mode;
-        if (debug_replace_heading && (activate_exact_click || activate_popup_click))
+        if (debug_replace_heading && (activate_exact_click || activate_popup_click
+            || debug_mutation_kind.is_some()))
             || (activate_exact_click && activate_popup_click)
+            || (debug_mutation_kind.is_some() && (activate_exact_click || activate_popup_click))
         {
             return Err("action-mode-conflict");
         }
@@ -4439,6 +4810,10 @@ mod host {
         if debug_replace_heading {
             return Err("debug-dom-replacement-unavailable");
         }
+        #[cfg(not(debug_assertions))]
+        if debug_mutation_kind.is_some() {
+            return Err("debug-dom-link-mutation-unavailable");
+        }
         if stats.broken.load(Ordering::Acquire)
             || stats.pending.load(Ordering::Acquire) != 0
             || current_generation.load(Ordering::Acquire) != request_generation
@@ -4447,7 +4822,7 @@ mod host {
             return Err("recheck-page-stale");
         }
         let expected = expected_url.to_owned();
-        let (tx, rx) = mpsc::sync_channel::<Result<(bool, Option<String>), &'static str>>(1);
+        let (tx, rx) = mpsc::sync_channel::<Result<DomActionResult, &'static str>>(1);
         let app_for_ui = app.clone();
         app.run_on_main_thread(move || {
             let tx_ui = tx.clone();
@@ -4483,10 +4858,20 @@ mod host {
                             let callback_generation = current_generation.clone();
                             let callback_stats = stats.clone();
                             let callback_expected = expected.clone();
+                            let mutating_link = debug_mutation_kind.is_some();
                             let declaration = if activate_popup_click {
                                 DOM_EXACT_POPUP_CLICK_JS
                             } else if activate_exact_click {
                                 DOM_EXACT_CLICK_JS
+                            } else if mutating_link {
+                                #[cfg(debug_assertions)]
+                                {
+                                    DOM_DEBUG_MUTATE_LINK_JS
+                                }
+                                #[cfg(not(debug_assertions))]
+                                {
+                                    DOM_NODE_RECHECK_JS
+                                }
                             } else if debug_replace_heading {
                                 #[cfg(debug_assertions)]
                                 {
@@ -4504,7 +4889,7 @@ mod host {
                                 "functionDeclaration": declaration,
                                 "arguments": [
                                     { "value": reference.slot },
-                                    { "value": approved_link_destination }
+                                    { "value": debug_mutation_kind.or(approved_link_destination) }
                                 ],
                                 "returnByValue": activate_exact_click || activate_popup_click,
                                 "silent": true,
@@ -4551,11 +4936,12 @@ mod host {
                                             return Err("recheck-page-stale");
                                         }
                                         let raw = remote?;
-                                        if debug_replace_heading {
+                                        if debug_replace_heading || mutating_link {
                                             #[cfg(debug_assertions)]
                                             {
                                                 return Ok((
                                                     parse_dom_debug_replacement_response(&raw),
+                                                    None,
                                                     None,
                                                 ));
                                             }
@@ -4564,7 +4950,7 @@ mod host {
                                                 return Err("debug-dom-replacement-unavailable");
                                             }
                                         }
-                                        Ok((parse_dom_node_recheck_response(&raw), None))
+                                        Ok((parse_dom_node_recheck_response(&raw), None, None))
                                     })();
                                     let _ = sender.send(checked);
                                 }),
@@ -5178,8 +5564,18 @@ mod host {
                 false
             }
         };
+        let debug_mutation_kind = {
+            #[cfg(debug_assertions)]
+            {
+                request.debug_mutation_kind.clone()
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                None
+            }
+        };
         #[cfg(debug_assertions)]
-        if debug_replace_heading {
+        if debug_replace_heading || debug_mutation_kind.is_some() {
             if identities.debug_mutation_used {
                 return Err("debug-dom-replacement-already-consumed");
             }
@@ -5197,6 +5593,7 @@ mod host {
                 stats.clone(),
                 DomRecheckMode {
                     debug_replace_heading,
+                    debug_mutation_kind: debug_mutation_kind.clone(),
                     activate_exact_click: false,
                     activate_popup_click: false,
                     approved_link_destination: None,
@@ -5211,11 +5608,15 @@ mod host {
             && page_generation.load(Ordering::Acquire) == request.page_generation
             && !stats.broken.load(Ordering::Acquire)
             && stats.pending.load(Ordering::Acquire) == 0;
-        let mut closed = dom_recheck_reply(&request, accepted);
+        let closed = dom_recheck_reply(&request, accepted);
         #[cfg(debug_assertions)]
-        if debug_replace_heading && accepted {
-            closed.state = "MUTATED";
-        }
+        let closed = {
+            let mut closed = closed;
+            if (debug_replace_heading || debug_mutation_kind.is_some()) && accepted {
+                closed.state = "MUTATED";
+            }
+            closed
+        };
         let reply = serde_json::to_vec(&closed).map_err(|_| "recheck-reply-invalid")?;
         if reply.is_empty() || reply.len() > 1024 {
             return Err("recheck-reply-bounds");
@@ -5293,8 +5694,8 @@ mod host {
         } else {
             None
         };
-        let (state, target_url_sha256) = match reference {
-            None => ("STALE", None),
+        let (state, target_url_sha256, stale_reason) = match reference {
+            None => ("STALE", None, Some("binding-missing")),
             Some(reference)
                 if !(matches!(request.action.as_str(), "click" | "popup-click")
                     && identities.may_click(&reference)
@@ -5310,7 +5711,7 @@ mod host {
                             option.as_ref(),
                         )) =>
             {
-                ("DENIED_TARGET", None)
+                ("DENIED_TARGET", None, None)
             }
             Some(reference) => {
                 if request.action == "popup-click" {
@@ -5342,6 +5743,7 @@ mod host {
                         stats,
                         DomRecheckMode {
                             debug_replace_heading: false,
+                            debug_mutation_kind: None,
                             activate_exact_click: request.action == "click",
                             activate_popup_click: request.action == "popup-click",
                             approved_link_destination: request.approved_destination.clone(),
@@ -5366,7 +5768,7 @@ mod host {
                         page_generation,
                         stats,
                     )
-                    .map(|dispatched| (dispatched, None))
+                    .map(|dispatched| (dispatched, None, None))
                 };
                 // The single-use native reference is consumed regardless of
                 // a missing COM ACK. A later request must freshly observe;
@@ -5376,16 +5778,18 @@ mod host {
                     // even a forged/malformed positive CDP boolean to promote
                     // it to an effect acknowledgement before POST/GET-write
                     // authority and independent effect proof exist.
-                    Ok((true, _)) if request.action == "submit" => ("UNKNOWN", None),
-                    Ok((true, digest))
+                    Ok((true, _, _)) if request.action == "submit" => ("UNKNOWN", None, None),
+                    Ok((true, digest, _))
                         if !matches!(request.action.as_str(), "click" | "popup-click")
                             || digest.is_some() =>
                     {
-                        ("DISPATCHED", digest)
+                        ("DISPATCHED", digest, None)
                     }
-                    Ok((false, _)) if request.action == "submit" => ("DENIED_TARGET", None),
-                    Ok((false, _)) => ("STALE", None),
-                    _ => ("UNKNOWN", None),
+                    Ok((false, _, _)) if request.action == "submit" =>
+                        ("DENIED_TARGET", None, None),
+                    Ok((false, _, reason)) =>
+                        ("STALE", None, Some(reason.unwrap_or("recheck-rejected"))),
+                    _ => ("UNKNOWN", None, None),
                 }
             }
         };
@@ -5424,6 +5828,7 @@ mod host {
             action: &request.action,
             approval_id: &request.approval_id,
             state,
+            stale_reason,
             target_url_sha256: target_url_sha256.as_deref(),
             payload_sha256: payload_sha256.as_deref(),
         };
@@ -5561,6 +5966,12 @@ mod host {
                 request.page_generation,
                 page_generation.clone(),
                 stats.clone(),
+                {
+                    #[cfg(debug_assertions)]
+                    { request.debug_baseline_probe == Some(true) }
+                    #[cfg(not(debug_assertions))]
+                    { false }
+                },
             )
             .map_err(public_dom_denial)
         };
@@ -9687,6 +10098,7 @@ mod host {
                 action: &request.action,
                 approval_id: &request.approval_id,
                 state: "DENIED_TARGET",
+                stale_reason: None,
                 target_url_sha256: None,
                 payload_sha256: request.payload_sha256.as_deref(),
             })
@@ -9865,9 +10277,9 @@ mod host {
                 "if action == \"submit\" {\n                                DOM_EXACT_SUBMIT_JS"
             ));
             assert!(source
-                .contains("Ok((true, _)) if request.action == \"submit\" => (\"UNKNOWN\", None)"));
+                .contains("Ok((true, _, _)) if request.action == \"submit\" => (\"UNKNOWN\", None, None)"));
             assert!(source.contains(
-                "Ok((false, _)) if request.action == \"submit\" => (\"DENIED_TARGET\", None)"
+                "Ok((false, _, _)) if request.action == \"submit\" =>"
             ));
         }
 
@@ -10065,6 +10477,7 @@ mod host {
                     action: &request.action,
                     approval_id: &request.approval_id,
                     state: "DISPATCHED",
+                    stale_reason: None,
                     target_url_sha256: None,
                     payload_sha256: request.payload_sha256.as_deref(),
                 })
@@ -10193,7 +10606,7 @@ mod host {
             let fixed = DOM_EXACT_CONTROL_ACTION_JS;
             assert!(fixed.starts_with("function(slot, action, text, optionSlot, deltaY)"));
             assert!(fixed.contains("this.observer.takeRecords().length"));
-            assert!(fixed.contains("if (this.state.changed) return {dispatched:false}"));
+            assert!(fixed.contains("if (this.state.changed || this.state.mutated) return {dispatched:false}"));
             assert!(fixed.contains("const node = this.nodes[slot]"));
             assert!(fixed.contains("const option = this.nodes[optionSlot]"));
             assert!(fixed.contains("option.parentElement !== node"));
@@ -10424,16 +10837,26 @@ mod host {
                     Some(format!(
                         "{:x}",
                         Sha256::digest(b"https://example.test/clicked")
-                    ))
+                    )),
+                    None
                 )),
             );
             let stale = serde_json::json!({"result":{"type":"object","value":{
-                "dispatched":false,"targetHref":null
+                "dispatched":false,"targetHref":null,"staleReason":"mutation-observed"
             }}});
             assert_eq!(
                 parse_dom_activation_response(&stale.to_string(), url),
-                Ok((false, None))
+                Ok((false, None, Some("mutation-observed")))
             );
+            for raw in ["SECRET_PAGE_TEXT", "<script>", "selector", ""] {
+                let mut invalid = stale.clone();
+                invalid["result"]["value"]["staleReason"] = json!(raw);
+                assert!(parse_dom_activation_response(&invalid.to_string(), url).is_err());
+            }
+            let mut missing = stale.clone();
+            missing["result"]["value"].as_object_mut().unwrap().remove("staleReason");
+            assert!(parse_dom_activation_response(&missing.to_string(), url).is_err());
+            assert_eq!(closed_dom_stale_reason("node-detached"), Some("node-detached"));
             for bad in [
                 "https://example.test/",
                 "https://other.example/clicked",
@@ -10466,7 +10889,7 @@ mod host {
             let retained = script.find("const node = this.nodes[slot]").unwrap();
             assert!(retained < stale && stale < click);
             for preflight in [
-                "this.observer.takeRecords().length",
+                "this.check(slot)",
                 "node.isConnected",
                 "node.ownerDocument !== document",
                 "node.tagName !== 'A'",
@@ -10495,7 +10918,8 @@ mod host {
                 assert!(at < stale, "{preflight} must precede the mutation latch");
                 assert!(at < click, "{preflight} must precede DOM click");
             }
-            assert!(script.contains("return {dispatched:false,targetHref:null}"));
+            assert!(script.contains("const denied = (reason) => ({dispatched:false,targetHref:null,staleReason:reason})"));
+            assert!(script.contains("return denied('destination-changed')"));
             assert!(script.contains("return {dispatched:true,targetHref};"));
             assert!(!script.contains("querySelector"));
             assert!(!script.contains("getElementById"));
@@ -10545,7 +10969,8 @@ mod host {
                 parse_dom_popup_activation_response(&raw, original),
                 Ok((
                     true,
-                    Some(format!("{:x}", Sha256::digest(target.as_bytes())))
+                    Some(format!("{:x}", Sha256::digest(target.as_bytes()))),
+                    None
                 ))
             );
             assert!(
@@ -10975,7 +11400,7 @@ mod host {
         #[test]
         fn production_original_link_capture_is_read_only_and_denies_forged_destinations() {
             assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("this.nodes[slot]"));
-            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("this.observer.takeRecords()"));
+            assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("this.check(slot)"));
             assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("node.hasAttribute('ping')"));
             assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("node.hasAttribute('download')"));
             assert!(DOM_EXACT_LINK_CAPTURE_JS.contains("headVisits++ < 128"));
@@ -11274,6 +11699,51 @@ mod host {
             ));
         }
 
+        #[cfg(debug_assertions)]
+        #[test]
+        fn debug_owned_exact_link_mutations_are_closed_source_only_and_fail_shut() {
+            let (identity, request) = native_dom_recheck_case();
+            let mut owned = request.clone();
+            owned["sourceId"] = json!(production_dom_source_id("https://127.0.0.1/").unwrap());
+            for kind in ["unrelated", "replace-link", "href-change", "head-change",
+                "head-attr-value", "hide-ancestor", "form-mutation", "form-attr-value",
+                "link-text"] {
+                let mut named = owned.clone();
+                named["debugMutationKind"] = json!(kind);
+                let (parsed, retained) = validate_dom_recheck_request(
+                    named.to_string().as_bytes(), NONCE, 0, 1, 7,
+                    "https://127.0.0.1/", &identity,
+                ).expect("closed debug mutation in owned source");
+                assert_eq!(parsed.debug_mutation_kind.as_deref(), Some(kind));
+                assert!(retained.is_some());
+                assert!(validate_dom_recheck_request(
+                    named.to_string().as_bytes(), NONCE, 0, 1, 7,
+                    "https://example.test/", &identity,
+                ).is_err());
+                let mut combined = named.clone();
+                combined["debugReplaceHeading"] = json!(true);
+                assert!(validate_dom_recheck_request(combined.to_string().as_bytes(),
+                    NONCE, 0, 1, 7, "https://127.0.0.1/", &identity).is_err());
+            }
+            for denied in ["read-cookie", "javascript:alert(1)", "script", "", "Replace-Link"] {
+                let mut forged = owned.clone();
+                forged["debugMutationKind"] = json!(denied);
+                assert!(validate_dom_recheck_request(forged.to_string().as_bytes(),
+                    NONCE, 0, 1, 7, "https://127.0.0.1/", &identity).is_err());
+            }
+            assert!(DOM_DEBUG_MUTATE_LINK_JS.contains("if (this.check(slot)) return false"));
+            assert!(DOM_DEBUG_MUTATE_LINK_JS.contains("const node = this.nodes[slot]"));
+            assert!(DOM_DEBUG_MUTATE_LINK_JS.contains("node.parentNode.replaceChild(node.cloneNode(true), node)"));
+            assert!(DOM_DEBUG_MUTATE_LINK_JS.contains("document.body.appendChild(sibling)"));
+            assert!(DOM_DEBUG_MUTATE_LINK_JS.contains("document.location.href !== 'https://127.0.0.1/'"));
+            assert!(include_str!("clack-browser-host.rs").contains("settings.SetIsScriptEnabled(false)?"));
+            for forbidden in ["querySelector", "getElementById", "fetch(", "eval(",
+                "Function(", "document.cookie", "localStorage", "window.open",
+                "document.write", "XMLHttpRequest"] {
+                assert!(!DOM_DEBUG_MUTATE_LINK_JS.contains(forbidden));
+            }
+        }
+
         #[test]
         fn production_dom_recheck_accepts_only_real_node_remote_object() {
             let actual = json!({"result":{
@@ -11303,9 +11773,7 @@ mod host {
         #[test]
         fn production_dom_recheck_uses_fixed_read_only_mutation_latched_com_probe() {
             assert!(DOM_NODE_RECHECK_JS.starts_with("function(slot)"));
-            assert!(DOM_NODE_RECHECK_JS.contains("this.observer.takeRecords().length"));
-            assert!(DOM_NODE_RECHECK_JS.contains("this.state.changed = true"));
-            assert!(DOM_NODE_RECHECK_JS.contains("if (this.state.changed) return null"));
+            assert!(DOM_NODE_RECHECK_JS.contains("if (this.check(slot)) return null"));
             assert!(DOM_NODE_RECHECK_JS.contains("this.nodes[slot]"));
             assert!(DOM_NODE_RECHECK_JS.contains("node.isConnected"));
             assert!(DOM_NODE_RECHECK_JS.contains("node.ownerDocument === document"));
@@ -11409,6 +11877,8 @@ mod host {
                     observation_id: 1,
                     page_generation: 7,
                     source_id: production_dom_source_id("https://example.test/").unwrap(),
+                    #[cfg(debug_assertions)]
+                    debug_baseline_probe: None,
                 },
                 Some(&verified),
                 None
@@ -11438,6 +11908,7 @@ mod host {
         #[test]
         fn production_native_dom_identity_probe_captures_same_walk_and_guards_mutations() {
             let script = production_dom_identity_js().unwrap();
+            assert!(!script.contains("data-clack-baseline-probe"));
             assert_eq!(script.matches("identityNodes.push(node)").count(), 1);
             assert!(
                 script.find("identityObserver.observe(document").unwrap()
@@ -11448,12 +11919,12 @@ mod host {
             assert!(script.contains("node = walker.nextSibling()"));
             assert!(script.contains("if (node.isContentEditable)"));
             assert!(script.contains("result.elements.push({ index: result.visited"));
-            assert!(script.contains("return { result, nodes: identityNodes, observer: identityObserver, state: identityState };"));
+            assert!(script.contains("return { result, nodes: identityNodes, observer: identityObserver, state: identityState, check };"));
             assert!(!script.contains("return result;"));
             assert!(DOM_CAPTURE_READ_JS.contains("this.observer.takeRecords().length"));
-            assert!(DOM_NODE_RECHECK_JS.contains("this.observer.takeRecords().length"));
+            assert!(script.contains("classify(identityObserver.takeRecords())"));
             assert!(DOM_CAPTURE_READ_JS.contains("this.state.changed = true"));
-            assert!(DOM_NODE_RECHECK_JS.contains("this.state.changed = true"));
+            assert!(DOM_NODE_RECHECK_JS.contains("this.check(slot)"));
             assert!(DOM_NODE_RECHECK_JS.contains("this.nodes[slot]"));
             assert!(DOM_NODE_RECHECK_JS.contains("node.isConnected"));
             assert!(DOM_NODE_RECHECK_JS.contains("node.ownerDocument === document"));
@@ -11472,6 +11943,29 @@ mod host {
                     "unsafe identity probe: {forbidden}"
                 );
                 assert!(!DOM_NODE_RECHECK_JS.contains(forbidden));
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        #[test]
+        fn debug_baseline_capture_race_hook_is_fixed_owned_and_pre_baseline() {
+            let normal = production_dom_identity_js().unwrap();
+            let injected = production_dom_identity_js_with_baseline_probe(true).unwrap();
+            assert!(!normal.contains("data-clack-baseline-probe"));
+            assert_eq!(injected.matches("data-clack-baseline-probe").count(), 2);
+            assert!(injected.find("identityObserver.observe(document").unwrap()
+                < injected.find("baselineProbeHead.setAttribute").unwrap());
+            assert!(injected.find("baselineProbeHead.removeAttribute").unwrap()
+                < injected.find("const headBaseline =").unwrap());
+            assert!(injected.find("baselineProbeHead.removeAttribute").unwrap()
+                < injected.find("const securityBaseline =").unwrap());
+            assert!(injected.find("baselineProbeHead.removeAttribute").unwrap()
+                < injected.find("identityNodes.push(node)").unwrap());
+            assert!(DOM_BASELINE_RACE_READ_JS.contains("secondDenied"));
+            assert!(DOM_BASELINE_RACE_READ_JS.contains("this.observer.takeRecords()"));
+            for forbidden in ["querySelector(", "fetch(", ".innerHTML", ".outerHTML", "localStorage"] {
+                assert!(!injected.contains(forbidden));
+                assert!(!DOM_BASELINE_RACE_READ_JS.contains(forbidden));
             }
         }
 
@@ -11539,6 +12033,8 @@ mod host {
                 observation_id: 1,
                 page_generation: 1,
                 source_id: production_dom_source_id("https://example.test/").unwrap(),
+                #[cfg(debug_assertions)]
+                debug_baseline_probe: None,
             };
             let wire = serde_json::to_string(&dom_reply(&request, Some(&verified), None))
                 .expect("closed control-state frame");
@@ -11712,6 +12208,8 @@ mod host {
                 observation_id: 1,
                 page_generation: 3,
                 source_id: production_dom_source_id("https://example.test/approved").unwrap(),
+                #[cfg(debug_assertions)]
+                debug_baseline_probe: None,
             };
             let serialized =
                 serde_json::to_string(&dom_reply(&request, Some(&verified), None)).unwrap();

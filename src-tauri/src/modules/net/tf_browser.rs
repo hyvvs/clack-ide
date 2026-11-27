@@ -81,7 +81,7 @@ const NATIVE_CLICK_QUEUED: u8 = 0;
 const NATIVE_CLICK_DISPATCH_COMMITTED: u8 = 1;
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 const NATIVE_CLICK_CANCELLED: u8 = 2;
-static APPROVAL_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(4)));
+static APPROVAL_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 
 fn confined_runtime_packaged() -> bool {
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
@@ -1959,6 +1959,7 @@ impl Default for Active {
 }
 #[derive(Default)]
 struct Entries {
+    approvals_shutdown: bool,
     sessions: HashMap<String, BrowserSession>,
     pending: HashMap<String, Pending>,
     active: HashMap<String, Arc<Active>>,
@@ -1966,6 +1967,132 @@ struct Entries {
 #[derive(Default)]
 pub struct TfBrowserState {
     entries: Arc<Mutex<Entries>>,
+}
+
+impl TfBrowserState {
+    pub fn shutdown_approvals(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.approvals_shutdown = true;
+            entries.pending.clear();
+        }
+    }
+}
+
+impl Drop for TfBrowserState {
+    fn drop(&mut self) {
+        self.shutdown_approvals();
+    }
+}
+
+// Every exit from the approval command, including abandonment during native
+// capture, revokes the pending token unless central approval already committed.
+struct ApprovalAbandonGuard {
+    entries: Arc<Mutex<Entries>>,
+    token: String,
+}
+
+impl Drop for ApprovalAbandonGuard {
+    fn drop(&mut self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            if entries.pending.get(&self.token).is_some_and(|p| p.approving && !p.approved) {
+                entries.pending.remove(&self.token);
+            }
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApprovalPresentationState {
+    Live,
+    Expired,
+    Revoked,
+}
+
+#[cfg(any(windows, test))]
+struct ApprovalPresentation {
+    entries: Arc<Mutex<Entries>>,
+    token: String,
+    deadline: Instant,
+    workspace_root: PathBuf,
+}
+
+#[cfg(any(windows, test))]
+impl ApprovalPresentation {
+    fn state_at(&self, now: Instant) -> ApprovalPresentationState {
+        if now >= self.deadline {
+            return ApprovalPresentationState::Expired;
+        }
+        if !self.workspace_root.is_dir() {
+            return ApprovalPresentationState::Revoked;
+        }
+        match self.entries.lock() {
+            Ok(entries) if !entries.approvals_shutdown && entries.pending.get(&self.token)
+                .is_some_and(|p| p.approving && !p.approved && p.expires > now) => ApprovalPresentationState::Live,
+            _ => ApprovalPresentationState::Revoked,
+        }
+    }
+
+    fn decision_at(&self, now: Instant, accepted: bool) -> Result<(), String> {
+        match self.state_at(now) {
+            ApprovalPresentationState::Expired => Err("browser-native-approval-expired".into()),
+            ApprovalPresentationState::Revoked => Err("browser-native-approval-revoked".into()),
+            ApprovalPresentationState::Live if accepted => Ok(()),
+            ApprovalPresentationState::Live => Err("browser-native-approval-denied".into()),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn show_owned_native_approval(
+    presentation: ApprovalPresentation,
+    title: String,
+    summary: String,
+) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows_sys::Win32::UI::Controls::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, IDCANCEL, IDOK};
+
+    // TaskDialogIndirect owns the HWND and this callback's context for its
+    // entire synchronous lifetime. Only the native user can choose OK; the
+    // application can exclusively dismiss its own dialog via Cancel.
+    unsafe extern "system" fn callback(
+        hwnd: HWND, notification: u32, wparam: WPARAM, _: LPARAM, data: isize,
+    ) -> i32 {
+        let presentation = unsafe { &*(data as *const ApprovalPresentation) };
+        if notification == TDN_CREATED as u32 || notification == TDN_TIMER as u32 {
+            if presentation.state_at(Instant::now()) != ApprovalPresentationState::Live {
+                unsafe { SendMessageW(hwnd, TDM_CLICK_BUTTON as u32, IDCANCEL as usize, 0) };
+            }
+        } else if notification == TDN_BUTTON_CLICKED as u32 && wparam == IDOK as usize
+            && presentation.state_at(Instant::now()) != ApprovalPresentationState::Live
+        {
+            // Reject stale OK even in the interval between timer callbacks.
+            return 1;
+        }
+        0
+    }
+
+    presentation.decision_at(Instant::now(), true)?;
+    let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let summary: Vec<u16> = summary.encode_utf16().chain(std::iter::once(0)).collect();
+    let config = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        dwFlags: TDF_CALLBACK_TIMER | TDF_ALLOW_DIALOG_CANCELLATION,
+        dwCommonButtons: TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON,
+        nDefaultButton: IDCANCEL,
+        pszWindowTitle: title.as_ptr(),
+        pszContent: summary.as_ptr(),
+        pfCallback: Some(callback),
+        lpCallbackData: &presentation as *const ApprovalPresentation as isize,
+        ..Default::default()
+    };
+    let mut button = 0;
+    let hr = unsafe { TaskDialogIndirect(&config, &mut button, std::ptr::null_mut(), std::ptr::null_mut()) };
+    if hr < 0 {
+        return Err("browser-native-dialog-unavailable".into());
+    }
+    presentation.decision_at(Instant::now(), button == IDOK)
 }
 
 /// Reuses the existing opener busy/native-reserved-action owner. A cancelled
@@ -2014,29 +2141,6 @@ impl Drop for PopupCaptureReservation {
         }
     }
 }
-/// Abandoning the UI approval future burns its pending popup authority. The
-/// native actor independently retains PopupCaptureReservation until the actual
-/// capture completes; dropping this guard must never free that actor's lease.
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-struct PopupApprovalAbandonGuard {
-    entries: Arc<Mutex<Entries>>,
-    token: String,
-}
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-impl Drop for PopupApprovalAbandonGuard {
-    fn drop(&mut self) {
-        if let Ok(mut entries) = self.entries.lock() {
-            if entries.pending.get(&self.token).is_some_and(|pending| {
-                pending.request.operation == TfBrowserOperation::OpenRequestedPopup
-                    && pending.approving
-                    && !pending.approved
-            }) {
-                entries.pending.remove(&self.token);
-            }
-        }
-    }
-}
-
 fn millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2650,6 +2754,9 @@ pub fn prepare(
         .lock()
         .map_err(|_| "browser-state-unavailable")?;
     reap(&mut entries);
+    if entries.approvals_shutdown {
+        return Err("browser-native-approval-revoked".into());
+    }
     if entries.pending.len() >= MAX_PENDING || entries.active.len() >= MAX_ACTIVE {
         return Err("browser-capacity-exceeded".into());
     }
@@ -5551,7 +5658,6 @@ pub fn tf_browser_prepare(
 }
 #[tauri::command]
 pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
     let permit = APPROVAL_SLOTS
         .clone()
         .try_acquire_owned()
@@ -5563,6 +5669,9 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
             .lock()
             .map_err(|_| "browser-state-unavailable")?;
         reap(&mut entries);
+        if entries.approvals_shutdown {
+            return Err("browser-native-approval-revoked".into());
+        }
         let p = entries
             .pending
             .get_mut(&token)
@@ -5586,12 +5695,10 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         p.approving = true;
         p.clone()
     };
-    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-    let _popup_abandon = (pending.request.operation == TfBrowserOperation::OpenRequestedPopup)
-        .then(|| PopupApprovalAbandonGuard {
-            entries: app.state::<TfBrowserState>().entries.clone(),
-            token: token.clone(),
-        });
+    let _approval_abandon = ApprovalAbandonGuard {
+        entries: app.state::<TfBrowserState>().entries.clone(),
+        token: token.clone(),
+    };
     // SUBMIT is the only native effect requiring sensitive successful-control
     // bytes. Fetch the ORIGINAL retained FORM+submitter over the existing
     // serialized host pipe *before* showing the genuine consent dialog.
@@ -6029,39 +6136,36 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         String::new()
     };
     let summary = format!(
-        "Clack {} — allow once?\n\nRequest: {}\nActor: {}\nSession: {}\nWorkspace: {}\nOperation: {:?}\nTarget host: {}\n{}{}{}{}\n{}",
+        "Clack {} — allow once?\n\nRequest: {}\nActor: {}\nSession: {}\nWorkspace: {}\nOperation: {:?}\nTarget host: {}\nRemaining approval lifetime: at most {} seconds (no renewal)\n{}{}{}{}\n{}",
         if native_confined { "confined native browser scoped operation" } else { "inert-document network navigation" },
         pending.request_id, pending.request.actor, pending.request.session_id,
         pending.root.display(), pending.request.operation, host,
+        pending.expires.saturating_duration_since(Instant::now()).as_secs(),
         native_target_details, tab_details, popup_details, resource_details,
         native_purpose,
     );
-    let dialog_app = app.clone();
-    let consent = tokio::time::timeout(
-        PENDING_TTL,
-        tauri::async_runtime::spawn_blocking(move || {
-            let _permit = permit;
-            dialog_app
-                .dialog()
-                .message(summary)
-                .title(if native_confined {
-                    "Clack Tool Fabric confined browser approval"
-                } else {
-                    "Clack Tool Fabric inert browser approval"
-                })
-                .buttons(MessageDialogButtons::OkCancel)
-                .blocking_show()
-        }),
-    )
-    .await
-    .map_err(|_| "browser-native-approval-expired".to_owned())?
-    .map_err(|_| "browser-native-dialog-unavailable".to_owned())?;
-    if !consent {
-        let web_state = app.state::<TfWebState>();
-        let state = app.state::<TfBrowserState>();
-        let _ = cancel(&token, &state, &web_state);
-        return Err("browser-native-approval-denied".into());
-    }
+    #[cfg(windows)]
+    let presentation = ApprovalPresentation {
+        entries: app.state::<TfBrowserState>().entries.clone(),
+        token: token.clone(),
+        deadline: pending.expires,
+        workspace_root: pending.root.clone(),
+    };
+    let title = if native_confined {
+        "Clack Tool Fabric confined browser approval"
+    } else {
+        "Clack Tool Fabric inert browser approval"
+    }.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        #[cfg(windows)]
+        { show_owned_native_approval(presentation, title, summary) }
+        #[cfg(not(windows))]
+        {
+            let _ = (title, summary);
+            Err("browser-native-dismissable-approval-unavailable-on-platform".into())
+        }
+    }).await.map_err(|_| "browser-native-dialog-unavailable".to_owned())??;
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     if pending.request.operation == TfBrowserOperation::OpenRequestedPopup
         && pending.popup_intent.as_ref().is_none_or(|intent| intent.expires_at <= Instant::now())
@@ -6081,6 +6185,9 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         .lock()
         .map_err(|_| "browser-state-unavailable")?;
     reap(&mut entries);
+    if entries.approvals_shutdown || pending.expires <= Instant::now() {
+        return Err("browser-native-approval-expired-or-revoked".into());
+    }
     if pending.request.operation.opens_child() {
         validate_tab_opener(&entries, &pending.request, &root, pending.revision, false)?;
     }
@@ -6128,6 +6235,17 @@ pub async fn tf_browser_approve(token: String, app: tauri::AppHandle) -> Result<
         })
     {
         return Err("browser-native-approval-scope-changed".into());
+    }
+    commit_live_approval(live, Instant::now())?;
+    Ok(())
+}
+
+fn commit_live_approval(live: &mut Pending, now: Instant) -> Result<(), String> {
+    if live.expires <= now {
+        return Err("browser-native-approval-expired".into());
+    }
+    if !live.approving || live.approved {
+        return Err("browser-native-approval-not-live".into());
     }
     live.approved = true;
     live.approving = false;
@@ -6222,6 +6340,102 @@ pub fn tf_browser_status(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn approval_fixture(state: &TfBrowserState, registry: &WorkspaceRegistry, root: &Path) -> ApprovalPresentation {
+        let mut request = req(root, TfBrowserOperation::Open);
+        request.url = Some("https://example.org/".into());
+        let prepared = prepare(request, registry, state).unwrap();
+        let mut entries = state.entries.lock().unwrap();
+        let pending = entries.pending.get_mut(&prepared.token).unwrap();
+        pending.approving = true;
+        ApprovalPresentation { entries: state.entries.clone(), token: prepared.token, deadline: pending.expires, workspace_root: pending.root.clone() }
+    }
+
+    #[test]
+    fn approval_lifecycle_expiry_and_double_decision() {
+        let (dir, registry, state, _) = setup();
+        let p = approval_fixture(&state, &registry, dir.path());
+        let before = p.deadline - Duration::from_millis(1);
+        assert!(p.decision_at(before, true).is_ok());
+        assert_eq!(p.decision_at(p.deadline, true).unwrap_err(), "browser-native-approval-expired");
+        let mut entries = state.entries.lock().unwrap();
+        let live = entries.pending.get_mut(&p.token).unwrap();
+        assert!(commit_live_approval(live, p.deadline).is_err());
+        assert!(!live.approved);
+        assert!(commit_live_approval(live, before).is_ok());
+        assert!(commit_live_approval(live, before).is_err());
+        drop(entries);
+        assert_eq!(p.state_at(before), ApprovalPresentationState::Revoked);
+        drop(ApprovalAbandonGuard { entries: state.entries.clone(), token: p.token.clone() });
+        assert!(state.entries.lock().unwrap().pending[&p.token].approved);
+    }
+
+    #[test]
+    fn approval_lifecycle_denial_cancel_abandon_and_shutdown() {
+        let (dir, registry, state, web) = setup();
+        let p = approval_fixture(&state, &registry, dir.path());
+        assert_eq!(p.decision_at(Instant::now(), false).unwrap_err(), "browser-native-approval-denied");
+        drop(ApprovalAbandonGuard { entries: state.entries.clone(), token: p.token.clone() });
+        assert!(p.decision_at(Instant::now(), true).is_err());
+        let p = approval_fixture(&state, &registry, dir.path());
+        assert!(cancel(&p.token, &state, &web).unwrap());
+        assert!(!cancel(&p.token, &state, &web).unwrap());
+        assert!(p.decision_at(Instant::now(), true).is_err());
+        let p = approval_fixture(&state, &registry, dir.path());
+        state.shutdown_approvals();
+        assert!(p.decision_at(Instant::now(), true).is_err());
+        assert!(state.entries.lock().unwrap().pending.is_empty());
+        let mut request = req(dir.path(), TfBrowserOperation::Open);
+        request.url = Some("https://example.org/".into());
+        assert!(prepare(request, &registry, &state).is_err());
+    }
+
+    #[test]
+    fn approval_lifecycle_cancel_racing_commit_never_resurrects() {
+        for _ in 0..32 {
+            let (dir, registry, state, web) = setup();
+            let p = approval_fixture(&state, &registry, dir.path());
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let attempt = scope.spawn(|| {
+                    barrier.wait();
+                    let mut entries = state.entries.lock().unwrap();
+                    entries.pending.get_mut(&p.token).is_some_and(|live| commit_live_approval(live, Instant::now()).is_ok())
+                });
+                barrier.wait();
+                assert!(cancel(&p.token, &state, &web).unwrap());
+                let _ = attempt.join().unwrap();
+            });
+            assert!(p.decision_at(Instant::now(), true).is_err());
+            assert!(state.entries.lock().unwrap().pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn approval_lifecycle_native_dialog_capacity_is_one_and_reusable() {
+        let first = APPROVAL_SLOTS.clone().try_acquire_owned()
+            .expect("one native approval presentation");
+        assert!(APPROVAL_SLOTS.clone().try_acquire_owned().is_err(),
+            "second native approval cannot overlap the first HWND");
+        drop(first);
+        let next = APPROVAL_SLOTS.clone().try_acquire_owned()
+            .expect("native reservation released on dialog completion");
+        drop(next);
+    }
+
+    #[test]
+    fn approval_lifecycle_closed_workspace_revokes_pending_without_positive_decision() {
+        let (dir, registry, state, _) = setup();
+        let presentation = approval_fixture(&state, &registry, dir.path());
+        std::fs::remove_dir(dir.path()).unwrap();
+        assert_eq!(presentation.state_at(Instant::now()), ApprovalPresentationState::Revoked);
+        assert_eq!(presentation.decision_at(Instant::now(), true).unwrap_err(),
+            "browser-native-approval-revoked");
+        drop(ApprovalAbandonGuard {
+            entries: state.entries.clone(), token: presentation.token.clone(),
+        });
+        assert!(!state.entries.lock().unwrap().pending.contains_key(&presentation.token));
+    }
 
     fn setup() -> (
         tempfile::TempDir,
@@ -7143,7 +7357,7 @@ mod tests {
             opener_id: opener_id.clone(),
             token: prepared.token.clone(),
         };
-        drop(PopupApprovalAbandonGuard {
+        drop(ApprovalAbandonGuard {
             entries: state.entries.clone(),
             token: prepared.token.clone(),
         });

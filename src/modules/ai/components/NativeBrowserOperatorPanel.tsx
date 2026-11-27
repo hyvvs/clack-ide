@@ -1,11 +1,11 @@
 import { Button } from "@/components/ui/button";
 import type { BrowserSessionSummary } from "@/modules/ai/lib/browserRuntimeStatus";
 import { invoke } from "@tauri-apps/api/core";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Explicit human-operated native acceptance surface. This is NOT a model
  * tool or a second approval system: every request uses the existing TF4
- * prepare -> genuine Tauri OS dialog -> execute authority and single-use token. */
+ * prepare -> genuine application-owned OS dialog -> execute authority and single-use token. */
 type NativeOperation =
   | "open_confined"
   | "open_confined_tab"
@@ -33,6 +33,21 @@ type Prepared = {
   browserSessionId: string | null;
   engine: string;
 };
+type PreparedOwner = { epoch: number; token: string };
+
+/** Remove one outstanding token from this exact owning UI epoch before
+ * attempting a native cancellation. Never synthesize an approval decision. */
+export function revokePreparedNativeOwner(
+  owner: { current: PreparedOwner | null },
+  epoch: number,
+  cancel: (token: string) => void,
+): boolean {
+  const prepared = owner.current;
+  if (!prepared || prepared.epoch !== epoch) return false;
+  owner.current = null;
+  cancel(prepared.token);
+  return true;
+}
 type NativeElement = { elementRef: string; role: string; fieldType?: "submit" };
 export type NativePage = {
   browserSessionId: string;
@@ -704,6 +719,23 @@ export function NativeBrowserOperatorPanel({
   // Disable the same UI transaction synchronously, before React paints busy.
   // The native token is still the one-use effect authority.
   const transactionActive = useRef(false);
+  // Closing a chat, changing the owning WorkspaceRegistry scope, or unmounting
+  // the panel revokes the *outstanding* central prepared token. The backend's
+  // application-owned native dialog observes that revocation and dismisses its
+  // own HWND with Cancel; the renderer never supplies an Allow decision.
+  const scopeEpoch = useRef(0);
+  const preparedOwner = useRef<PreparedOwner | null>(null);
+  useEffect(() => {
+    const epoch = ++scopeEpoch.current;
+    return () => {
+      if (scopeEpoch.current === epoch) scopeEpoch.current++;
+      revokePreparedNativeOwner(preparedOwner, epoch, (token) => {
+        void invoke("tf_browser_cancel", { token }).catch(() => {
+          // Already consumed or native owner shutting down. Never retry.
+        });
+      });
+    };
+  }, [actor, sessionId, workspaceRoot]);
   const [result, setResult] = useState("Native browser has not been launched.");
   const nativeSessions = sessions.filter(
     (item) => item.engine === NATIVE_ENGINE,
@@ -715,6 +747,7 @@ export function NativeBrowserOperatorPanel({
     parameters?: string,
   ): Promise<void> {
     if (busy || transactionActive.current) return;
+    const requestEpoch = scopeEpoch.current;
     if (nativeMutation(operation) &&
         !nativeHumanRetainedObservationFresh(observedAtMs, Date.now())) {
       // IANA's historical positive clicks arrived 34s and 44s after the
@@ -765,13 +798,27 @@ export function NativeBrowserOperatorPanel({
       });
       const isOpen = operation === "open_confined" ||
         operation === "open_confined_tab" || operation === "open_requested_popup";
+      if (exactHandle(prepared.token)) {
+        preparedToken = prepared.token;
+        // A prepare reply may arrive *after* its old panel/scope unmounted.
+        // Do not let it overwrite a newer epoch's prepared-token owner;
+        // the obsolete token is cancelled by the mismatch path below.
+        if (scopeEpoch.current === requestEpoch) {
+          preparedOwner.current = { epoch: requestEpoch, token: prepared.token };
+        }
+      }
       if (!preparedNativeOperatorMatches(prepared, operation, activeBrowserId)) {
         throw Error("native-prepared-scope-mismatch");
       }
-      preparedToken = prepared.token;
+      if (scopeEpoch.current !== requestEpoch) {
+        throw Error("native-owning-chat-or-workspace-closed");
+      }
       if (prepared.requiresApproval) {
-        // Actual user decision occurs only inside the existing Tauri OS dialog.
+        // Actual user decision occurs only inside the application's native OS dialog.
         await invoke<void>("tf_browser_approve", { token: preparedToken });
+      }
+      if (scopeEpoch.current !== requestEpoch) {
+        throw Error("native-owning-chat-or-workspace-closed");
       }
       if (nativeMutation(operation) ||
           ["screenshot", "credential_get", "download", "upload"].includes(operation))
@@ -780,6 +827,7 @@ export function NativeBrowserOperatorPanel({
         token: preparedToken,
       });
       preparedToken = null; // The existing pending token has been burned.
+      if (preparedOwner.current?.epoch === requestEpoch) preparedOwner.current = null;
       if (!nativeOperatorReceiptMatches(receipt, prepared, operation,
         { actor, sessionId, browserId: activeBrowserId })) {
         throw Error("native-effect-receipt-scope-mismatch");
@@ -924,6 +972,7 @@ export function NativeBrowserOperatorPanel({
           /* already consumed */
         }
       }
+      if (preparedOwner.current?.epoch === requestEpoch) preparedOwner.current = null;
       setResult(
         `Native transaction unverified or denied · ${safeReason(error)}`,
       );

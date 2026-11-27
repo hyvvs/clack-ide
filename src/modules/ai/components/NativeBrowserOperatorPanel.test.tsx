@@ -12,6 +12,7 @@ import {
   originalNativeSubmitPair,
   pendingOriginalPopupAttempt,
   preparedNativeOperatorMatches,
+  revokePreparedNativeOwner,
   syntheticNativeUploadName,
   verifiedNativeScreenshotEvidence,
 } from "./NativeBrowserOperatorPanel";
@@ -40,6 +41,24 @@ const formPage = {
 };
 
 describe("manual native TF4 app approval presentation", () => {
+  it("releases only the prepared token owned by the unmounting session epoch, once", () => {
+    const cancelled: string[] = [];
+    const owner = { current: { epoch: 7, token: "a".repeat(48) } as { epoch: number; token: string } | null };
+    const cancel = (token: string) => { cancelled.push(token); };
+    expect(revokePreparedNativeOwner(owner, 6, cancel)).toBe(false);
+    expect(cancelled).toEqual([]);
+    expect(owner.current?.epoch).toBe(7);
+    expect(revokePreparedNativeOwner(owner, 7, cancel)).toBe(true);
+    expect(owner.current).toBeNull();
+    expect(revokePreparedNativeOwner(owner, 7, cancel)).toBe(false);
+    expect(cancelled).toEqual(["a".repeat(48)]);
+    // A newly prepared token for a different owning session must be intact.
+    owner.current = { epoch: 8, token: "b".repeat(48) };
+    expect(revokePreparedNativeOwner(owner, 7, cancel)).toBe(false);
+    expect(owner.current?.token).toBe("b".repeat(48));
+    expect(revokePreparedNativeOwner(owner, 8, cancel)).toBe(true);
+    expect(cancelled).toEqual(["a".repeat(48), "b".repeat(48)]);
+  });
   it("permits only an HTTPS root without URL-path, query, credentials or fragment", () => {
     expect(confinedRootUrl("https://example.org/")).toBe(
       "https://example.org/",

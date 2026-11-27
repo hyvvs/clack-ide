@@ -746,6 +746,9 @@ struct ParentObserve<'a> {
     observation_id: u64,
     page_generation: u64,
     source_id: &'a str,
+    #[cfg(debug_assertions)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_baseline_probe: Option<bool>,
 }
 
 /// Production sealed-pipe action frame shape. No public sender is connected
@@ -1302,6 +1305,8 @@ struct ChildElementAction {
     approval_id: String,
     state: String,
     #[serde(default)]
+    stale_reason: Option<String>,
+    #[serde(default)]
     target_url_sha256: Option<String>,
     #[serde(default)]
     payload_sha256: Option<String>,
@@ -1315,6 +1320,7 @@ fn validate_element_action_reply(
     validate_element_action_reply_with_target(frame, request).map(|(terminal, _)| terminal)
 }
 
+#[cfg(test)]
 fn validate_element_action_reply_with_target(
     frame: &[u8],
     request: &ParentElementAction<'_>,
@@ -1322,6 +1328,51 @@ fn validate_element_action_reply_with_target(
     (
         crate::modules::net::tf_browser_contract::NativeEffectTerminal,
         Option<String>,
+    ),
+    &'static str,
+> {
+    validate_element_action_reply_diagnostic(frame, request)
+        .map(|(terminal, digest, _reason)| (terminal, digest))
+}
+
+// Only a closed constant can reach the native effect ledger. A page-provided
+// string, URL, selector, DOM text, private object ID, or unknown code is never
+// accepted as a diagnostic or a security decision.
+fn closed_stale_reason(raw: &str) -> Option<&'static str> {
+    match raw {
+        "binding-missing" => Some("binding-missing"),
+        "page-changed" => Some("page-changed"),
+        "snapshot-changed" => Some("snapshot-changed"),
+        "node-detached" => Some("node-detached"),
+        "node-changed" => Some("node-changed"),
+        "destination-changed" => Some("destination-changed"),
+        "mutation-observed" => Some("mutation-observed"),
+        "recheck-rejected" => Some("recheck-rejected"),
+        _ => None,
+    }
+}
+
+fn native_stale_reason_receipt_code(reason: &'static str) -> &'static str {
+    match reason {
+        "binding-missing" => "native-exact-stale-binding-missing",
+        "page-changed" => "native-exact-stale-page-changed",
+        "snapshot-changed" => "native-exact-stale-snapshot-changed",
+        "node-detached" => "native-exact-stale-node-detached",
+        "node-changed" => "native-exact-stale-node-changed",
+        "destination-changed" => "native-exact-stale-destination-changed",
+        "mutation-observed" => "native-exact-stale-mutation-observed",
+        _ => "native-exact-stale-recheck-rejected",
+    }
+}
+
+fn validate_element_action_reply_diagnostic(
+    frame: &[u8],
+    request: &ParentElementAction<'_>,
+) -> Result<
+    (
+        crate::modules::net::tf_browser_contract::NativeEffectTerminal,
+        Option<String>,
+        Option<&'static str>,
     ),
     &'static str,
 > {
@@ -1353,6 +1404,18 @@ fn validate_element_action_reply_with_target(
         "UNKNOWN" => T::Unknown,
         _ => return Err("browser-action-reply-state-denied"),
     };
+    let stale_key_present = serde_json::from_slice::<serde_json::Value>(frame)
+        .ok()
+        .and_then(|value| value.as_object().map(|object| object.contains_key("staleReason")))
+        .unwrap_or(false);
+    let stale_reason = match (terminal, stale_key_present, reply.stale_reason.as_deref()) {
+        (T::Stale, true, Some(raw)) => Some(
+            closed_stale_reason(raw).ok_or("browser-action-reply-stale-reason-denied")?
+        ),
+        (T::Stale, _, _) => return Err("browser-action-reply-stale-reason-required"),
+        (_, false, None) => None,
+        _ => return Err("browser-action-reply-stale-reason-unexpected"),
+    };
     if reply.target_url_sha256.as_ref().is_some_and(|digest| {
         digest.len() != 64
             || !digest
@@ -1378,7 +1441,7 @@ fn validate_element_action_reply_with_target(
             return Err("browser-action-reply-original-link-digest-mismatch");
         }
     }
-    Ok((terminal, reply.target_url_sha256))
+    Ok((terminal, reply.target_url_sha256, stale_reason))
 }
 
 /// A test-only, sealed read-only identity recheck. The ordinal and index are
@@ -1399,6 +1462,8 @@ struct ParentElementRecheck<'a> {
     ordinal: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     debug_replace_heading: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug_mutation_kind: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -1441,7 +1506,8 @@ fn validate_element_recheck_reply(
     }
     match reply.state.as_str() {
         "ACCEPTED" if request.debug_replace_heading.is_none() => Ok(true),
-        "MUTATED" if request.debug_replace_heading == Some(true) => Ok(true),
+        "MUTATED" if request.debug_replace_heading == Some(true)
+            || request.debug_mutation_kind.is_some() => Ok(true),
         "STALE" => Ok(false),
         _ => Err("browser-recheck-state-denied"),
     }
@@ -2750,6 +2816,12 @@ mod windows_owner {
             observed
         }
 
+        /// Closed test-only observation identity/authority readback.
+        #[cfg(test)]
+        pub(crate) fn baseline_probe_scope_for_test(&self) -> (u64, bool) {
+            (self.last_observation_id, self.last_recheck_observation.is_some())
+        }
+
         /// First production snapshot backed by real COM observation and the
         /// existing random opaque element-reference state machine. It carries
         /// only closed roles/control-state booleans, with empty names/text and
@@ -3176,17 +3248,21 @@ mod windows_owner {
                 let bytes = tokio::task::spawn_blocking(move || read_pipe_bounded(&mut reader))
                     .await
                     .map_err(|_| "native-click-read-worker-failed")??;
-                validate_element_action_reply_with_target(&bytes, &request).map_err(str::to_owned)
+                validate_element_action_reply_diagnostic(&bytes, &request).map_err(str::to_owned)
             }
             .await;
             match result {
-                Ok((terminal, target_digest)) if terminal != NativeEffectTerminal::Unknown => {
+                Ok((terminal, target_digest, stale_reason)) if terminal != NativeEffectTerminal::Unknown => {
                     if terminal != NativeEffectTerminal::Dispatched {
                         self.successor_scope = None;
                     }
                     self.poisoned = false;
                     flight.committed = true;
-                    Ok((NativeEffectReceipt::classify(terminal), target_digest))
+                    let mut receipt = NativeEffectReceipt::classify(terminal);
+                    if let (NativeEffectTerminal::Stale, Some(reason)) = (terminal, stale_reason) {
+                        receipt.reason_code = native_stale_reason_receipt_code(reason);
+                    }
+                    Ok((receipt, target_digest))
                 }
                 _ => Ok((
                     NativeEffectReceipt::classify(NativeEffectTerminal::Unknown),
@@ -3503,7 +3579,7 @@ mod windows_owner {
             &mut self,
             target: crate::modules::net::tf_browser_contract::ActionTarget,
         ) -> Result<bool, String> {
-            self.recheck_closed_reference_mode_for_test(target, false)
+            self.recheck_closed_reference_mode_for_test(target, false, None)
                 .await
         }
 
@@ -3520,7 +3596,7 @@ mod windows_owner {
                 return Err("debug-dom-replacement-owned-origin-required".into());
             }
             if self
-                .recheck_closed_reference_mode_for_test(target, true)
+                .recheck_closed_reference_mode_for_test(target, true, None)
                 .await?
             {
                 Ok(())
@@ -3529,11 +3605,35 @@ mod windows_owner {
             }
         }
 
+        /// Fixed debug-only real WebView2 DOM mutation in the already-owned
+        /// scratch-loopback document. It does NOT enable page scripts, offer
+        /// arbitrary JavaScript or rebind the original observed link.
+        #[cfg(all(test, debug_assertions))]
+        pub(crate) async fn mutate_owned_link_for_test(
+            &mut self,
+            target: crate::modules::net::tf_browser_contract::ActionTarget,
+            kind: &str,
+        ) -> Result<(), String> {
+            if self.initial_url != "https://127.0.0.1/"
+                || !matches!(kind, "unrelated" | "replace-link" | "href-change"
+                    | "head-change" | "head-attr-value" | "hide-ancestor"
+                    | "form-mutation" | "form-attr-value" | "link-text")
+            {
+                return Err("debug-link-mutation-owned-kind-required".into());
+            }
+            if self.recheck_closed_reference_mode_for_test(target, false, Some(kind)).await? {
+                Ok(())
+            } else {
+                Err("debug-link-mutation-was-not-confirmed".into())
+            }
+        }
+
         #[cfg(test)]
         async fn recheck_closed_reference_mode_for_test(
             &mut self,
             target: crate::modules::net::tf_browser_contract::ActionTarget,
             debug_replace_heading: bool,
+            debug_mutation_kind: Option<&str>,
         ) -> Result<bool, String> {
             use crate::modules::net::tf_browser_contract::BrowserActionKind;
             if !self.ready || self.stopped || self.poisoned || self.last_request_id == 0 {
@@ -3598,6 +3698,7 @@ mod windows_owner {
                 index,
                 ordinal: ordinal as u32,
                 debug_replace_heading: debug_replace_heading.then_some(true),
+                debug_mutation_kind,
             };
             let frame =
                 serde_json::to_vec(&request).map_err(|_| "browser-recheck-serialization-failed")?;
@@ -3800,15 +3901,19 @@ mod windows_owner {
                     .and_then(|value| value.as_object().map(|obj| obj.keys().cloned().collect::<Vec<_>>()));
                 eprintln!("POPUP_PHYSICAL_ACTION_FRAME bytes={} envelope_keys={keys:?}", bytes.len());
             }
-            let terminal =
-                validate_element_action_reply(&bytes, &request).map_err(str::to_owned)?;
+            let (terminal, _digest, stale_reason) =
+                validate_element_action_reply_diagnostic(&bytes, &request).map_err(str::to_owned)?;
             self.page_contract.revoke_snapshot();
             self.last_recheck_observation = None;
             if terminal != NativeEffectTerminal::Unknown {
                 self.poisoned = false;
                 flight.committed = true;
             }
-            Ok(NativeEffectReceipt::classify(terminal))
+            let mut effect = NativeEffectReceipt::classify(terminal);
+            if let (NativeEffectTerminal::Stale, Some(reason)) = (terminal, stale_reason) {
+                effect.reason_code = native_stale_reason_receipt_code(reason);
+            }
+            Ok(effect)
         }
 
         async fn observe_structure_inner(
@@ -3836,6 +3941,15 @@ mod windows_owner {
                 observation_id,
                 page_generation: generation,
                 source_id: source,
+                #[cfg(debug_assertions)]
+                debug_baseline_probe: if self.initial_url == "https://127.0.0.1/"
+                    && observation_id == 1
+                    && std::env::var("CLACK_TF4_OWNED_BASELINE_CAPTURE_RACE").as_deref() == Ok("1")
+                {
+                    Some(true)
+                } else {
+                    None
+                },
             })
             .map_err(|_| "browser-structure-control-serialization")?;
             self.write_parent_frame(frame).await?;
@@ -5571,6 +5685,7 @@ mod tests {
             index: 7,
             ordinal: 4,
             debug_replace_heading: None,
+            debug_mutation_kind: None,
         };
         let good = serde_json::json!({
             "version": 2, "kind": "element-recheck",
@@ -5741,11 +5856,42 @@ mod tests {
         ] {
             let mut reply = raw.clone();
             reply["state"] = serde_json::json!(wire);
+            if wire == "STALE" {
+                reply["staleReason"] = serde_json::json!("recheck-rejected");
+            }
             assert_eq!(
                 validate_element_action_reply(reply.to_string().as_bytes(), &request),
                 Ok(terminal)
             );
         }
+        for reason in ["binding-missing", "page-changed", "snapshot-changed",
+            "node-detached", "node-changed", "destination-changed",
+            "mutation-observed", "recheck-rejected"] {
+            let mut stale = raw.clone();
+            stale["state"] = serde_json::json!("STALE");
+            stale["staleReason"] = serde_json::json!(reason);
+            assert_eq!(
+                validate_element_action_reply_diagnostic(stale.to_string().as_bytes(), &request),
+                Ok((T::Stale, None, Some(reason))),
+            );
+            assert!(native_stale_reason_receipt_code(reason).starts_with("native-exact-stale-"));
+        }
+        for injected in [serde_json::json!("../../private"),
+            serde_json::json!("destination=https://secret.example"),
+            serde_json::json!("NODE-INJECTED"), serde_json::json!(null),
+            serde_json::json!(100)] {
+            let mut stale = raw.clone();
+            stale["state"] = serde_json::json!("STALE");
+            stale["staleReason"] = injected;
+            assert!(validate_element_action_reply_diagnostic(stale.to_string().as_bytes(), &request).is_err());
+        }
+        let mut no_reason = raw.clone();
+        no_reason["state"] = serde_json::json!("STALE");
+        assert!(validate_element_action_reply_diagnostic(no_reason.to_string().as_bytes(), &request).is_err());
+        let mut success_with_stale = raw.clone();
+        success_with_stale["state"] = serde_json::json!("DENIED_TARGET");
+        success_with_stale["staleReason"] = serde_json::json!("recheck-rejected");
+        assert!(validate_element_action_reply_diagnostic(success_with_stale.to_string().as_bytes(), &request).is_err());
     }
     #[test]
     fn native_structure_never_accepts_page_derived_text_or_stale_identity() {
@@ -7891,6 +8037,109 @@ mod tests {
         physical_owned_https_exact_click_successor_case(false).await;
     }
 
+    /// One fixed debug-only native CDP mutation in actual WebView2 per run.
+    /// Production WebView2 keeps page scripts disabled; this is NOT an
+    /// operator-controlled JS command or a central/human authorization.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "opt-in real WebView2 original-link mutation test; one fixed fixture kind; test-only parent grant is NOT human acceptance"]
+    async fn physical_production_owned_https_original_link_mutation_probe() {
+        let kind = std::env::var("CLACK_TF4_OWNED_NATIVE_MUTATION")
+            .expect("explicit fixed mutation fixture kind");
+        assert!(matches!(kind.as_str(), "unrelated" | "replace-link" | "href-change"
+            | "head-change" | "head-attr-value" | "hide-ancestor"
+            | "form-mutation" | "form-attr-value" | "link-text"));
+        physical_owned_https_exact_click_successor_case(true).await;
+    }
+
+    /// Debug-only synchronous mutation *inside* the actual WebView2 identity
+    /// baseline capture. The first read must be denied despite the restored
+    /// DOM; a separate observation ID then receives a fresh, non-actionable
+    /// snapshot. This fixture never requests an exact click or successor GET.
+    #[cfg(all(windows, debug_assertions))]
+    #[tokio::test]
+    #[ignore = "opt-in actual WebView2 baseline-capture MutationObserver race; test-only fixture, no human authorization"]
+    async fn physical_production_owned_https_baseline_capture_race() {
+        use std::time::Duration;
+        assert_eq!(std::env::var("CLACK_TF4_OWNED_BASELINE_CAPTURE_RACE").as_deref(), Ok("1"));
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let evidence = manifest.join("target").join("tf4-owned-https");
+        let cert_path = std::fs::canonicalize(evidence.join("server.cer")).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(std::env::var("CLACK_TF4_OWNED_HTTPS_CERT").unwrap()).unwrap(),
+            cert_path,
+        );
+        let cert = reqwest::Certificate::from_der(&std::fs::read(cert_path).unwrap()).unwrap();
+        let run_id = std::fs::read_to_string(evidence.join("active.run")).unwrap();
+        let run_id = run_id.trim();
+        assert!(run_id.len() == 32 && run_id.bytes().all(|b| b.is_ascii_hexdigit()));
+        let host = PathBuf::from(std::env::var("CLACK_TF4_NATIVE_PROBE_HOST").unwrap());
+        let digest = format!("{:x}", Sha256::digest(std::fs::read(&host).unwrap()));
+        let parent = tempfile::Builder::new()
+            .prefix("tf4-baseline-race-")
+            .tempdir_in(manifest.join("target"))
+            .unwrap();
+        let workspace = manifest.parent().unwrap();
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(workspace).unwrap();
+        let web = TfWebState::default();
+        let mut browser = BrowserRuntimeSession::launch(
+            BrowserRuntimeStart {
+                actor: "tf4-baseline-race-test-only".into(),
+                session_id: format!("tf4-baseline-{}", &run_id[..12]),
+                workspace_root: workspace.to_path_buf(),
+                initial_url: "https://127.0.0.1/".into(),
+                resource_manifest: Vec::new(),
+                private_parent: parent.path().to_path_buf(),
+                host_executable: host,
+                host_sha256: digest,
+            },
+            &registry,
+        ).unwrap();
+        let result = async {
+            tokio::time::timeout(Duration::from_secs(18), browser.verify_ready())
+                .await.map_err(|_| "race-native-ready-deadline")??;
+            let initial = tokio::time::timeout(
+                Duration::from_secs(17),
+                browser.serve_one_owned_https_for_test(&registry, &web, &cert),
+            ).await.map_err(|_| "race-initial-document-deadline")??;
+            if initial.request_id != 1 || initial.terminal != "completed"
+                || !initial.native_com_completed
+            {
+                return Err("race-initial-document-not-attested".into());
+            }
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let denied = tokio::time::timeout(
+                Duration::from_secs(10), browser.observe_closed_snapshot(),
+            ).await.map_err(|_| "race-mutated-capture-timeout")?;
+            if denied.as_ref().err().map(String::as_str) != Some("STALE") {
+                return Err(format!("race-capture-was-actionable: {denied:?}"));
+            }
+            // A failed observation has no authorized retained element.
+            if browser.baseline_probe_scope_for_test() != (1, false) {
+                return Err("race-failed-capture-retained-authority".into());
+            }
+            // Observation ID 2 has its own exact node slots and baseline;
+            // it is NOT a retry of the consumed first identity capture.
+            let fresh = tokio::time::timeout(
+                Duration::from_secs(10), browser.observe_closed_snapshot(),
+            ).await.map_err(|_| "race-fresh-capture-timeout")??;
+            if !fresh.elements.iter().any(|element| element.role == SemanticRole::Link)
+                || browser.baseline_probe_scope_for_test() != (2, true)
+            {
+                return Err("race-fresh-observation-not-separately-scoped".into());
+            }
+            Ok::<_, String>(())
+        }.await;
+        let close = browser.shutdown();
+        assert!(close.is_ok(), "baseline race native shutdown: {close:?}");
+        result.expect("same-WebView2 baseline mutation denied, fresh separately scoped observation");
+        browser.verify_clean_readonly_close_for_test(1)
+            .expect("only initial GET; Job0 and private WebView2 profile cleaned");
+        assert!(parent.path().read_dir().unwrap().next().is_none());
+        eprintln!("TF4_OWNED_BASELINE_CAPTURE_RACE=PASS actual WebView2 mutation after observer installation; initial observation STALE, second read latched, fresh observation ID 2 separately scoped; no click or successor GET; Job0/UDF clean; TEST-ONLY fixture; FIXTURE_RUN_ID={run_id}");
+    }
+
     #[cfg(windows)]
     async fn physical_owned_https_exact_click_successor_case(approved: bool) {
         use crate::modules::net::tf_browser_contract::NativeEffectTerminal;
@@ -7904,6 +8153,15 @@ mod tests {
             !approved,
             "the run-scoped negative flag must match this exact test case",
         );
+        let mutation = std::env::var("CLACK_TF4_OWNED_NATIVE_MUTATION")
+            .unwrap_or_else(|_| "none".into());
+        let negative_mutation = matches!(mutation.as_str(), "replace-link" | "href-change"
+            | "head-change" | "head-attr-value" | "hide-ancestor" | "form-mutation"
+            | "form-attr-value" | "link-text");
+        assert!(matches!(mutation.as_str(), "none" | "unrelated" | "replace-link"
+            | "href-change" | "head-change" | "head-attr-value"
+            | "hide-ancestor" | "form-mutation" | "form-attr-value" | "link-text"));
+        assert!(approved || mutation == "none", "negative successor fixture is separate");
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let evidence = manifest.join("target").join("tf4-owned-https");
         let canonical =
@@ -7989,12 +8247,45 @@ mod tests {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 element_ref: link.element_ref.clone(),
             };
+            if mutation != "none" {
+                // A fixed, host-authored DEBUG function uses only the exact
+                // originally retained Node in the real WebView2 document.
+                // It acknowledges mutation before the original action; there
+                // is NO page-script timer and no replacement-node rematching.
+                #[cfg(not(debug_assertions))]
+                return Err("debug-owned-mutation-unavailable-in-release".into());
+                #[cfg(debug_assertions)]
+                tokio::time::timeout(Duration::from_secs(10),
+                    browser.mutate_owned_link_for_test(target.clone(), mutation.as_str()))
+                    .await.map_err(|_| "debug-owned-link-mutation-com-timeout")??;
+            }
             let native = tokio::time::timeout(
                 Duration::from_secs(10),
                 browser.exact_click_owned_fixture_for_test(target.clone()),
             )
             .await
             .map_err(|_| "click-actual-com-deadline")??;
+            if negative_mutation {
+                let expected_reason = match mutation.as_str() {
+                    "replace-link" => "native-exact-stale-node-detached",
+                    "href-change" => "native-exact-stale-destination-changed",
+                    "head-change" | "head-attr-value" | "form-mutation" | "form-attr-value" =>
+                        "native-exact-stale-mutation-observed",
+                    "link-text" => "native-exact-stale-node-changed",
+                    "hide-ancestor" => "native-exact-stale-node-changed",
+                    _ => unreachable!(),
+                };
+                if native.terminal != NativeEffectTerminal::Stale
+                    || native.effect_state != "NotAttempted"
+                    || native.reason_code != expected_reason
+                    || native.auto_retry || native.retry != "SAFE_REPREPARE" {
+                    return Err(format!("mutation-{mutation}-not-fail-closed: {native:?}"));
+                }
+                if browser.verify_closed_reference_without_execution_for_test(target).is_ok() {
+                    return Err("mutated-original-reference-reusable".into());
+                }
+                return Ok::<_, String>(());
+            }
             if native.terminal != NativeEffectTerminal::Dispatched
                 || native.auto_retry
                 || native.effect_state != "Unknown"
@@ -8042,13 +8333,16 @@ mod tests {
             close.is_ok(),
             "owned native click cleanup failed: {close:?}"
         );
-        result
-            .expect("actual WebView2 native programmatic click then independent TF3 /clicked GET");
+        result.expect("actual WebView2 original-node action and correct native security result");
         browser
-            .verify_clean_readonly_close_for_test(2)
-            .expect("two native GETs, Job0, host terminated, UDF/profile removed");
+            .verify_clean_readonly_close_for_test(if negative_mutation { 1 } else { 2 })
+            .expect("exact bounded native GET count, Job0, host terminated, UDF/profile removed");
         assert!(parent.path().read_dir().unwrap().next().is_none());
-        if approved {
+        if negative_mutation {
+            eprintln!("PRODUCTION_OWNED_ORIGINAL_LINK_MUTATION=PASS kind={mutation} actual WebView2 source link STALE/NotAttempted, exact closed native reason, no successor GET, original reference consumed, Job0/UDF/profile clean; TEST-ONLY fixture; FIXTURE_RUN_ID={run_id}");
+        } else if mutation == "unrelated" {
+            eprintln!("PRODUCTION_OWNED_UNRELATED_MUTATION=PASS actual WebView2 inert sibling changed after retained original link snapshot; SAME original Node DISPATCHED and independently verified TF3 /clicked GET; Job0/UDF/profile clean; TEST-ONLY fixture; FIXTURE_RUN_ID={run_id}");
+        } else if approved {
             eprintln!("PRODUCTION_OWNED_EXACT_CLICK_NAVIGATION_PROBE=PASS real AppContainer/WebView2 COM retained exact link node programmatic DOM click, independent TF3 HTTPS GET /clicked, native Job0/UDF/profile clean; TEST-ONLY parent grant; NOT trusted pointer or central approval or full E2E; FIXTURE_RUN_ID={run_id}");
         } else {
             eprintln!("PRODUCTION_OWNED_UNAPPROVED_SUCCESSOR_DENIAL=PASS real AppContainer/WebView2 original retained link click DISPATCHED UNKNOWN/NEVER_REPLAY, independent native document request2 denied before TF3, no /clicked HTTPS GET, COM403, Job0/UDF/profile clean; no surrogate parent successor grant; NOT human or installed approval; FIXTURE_RUN_ID={run_id}");
