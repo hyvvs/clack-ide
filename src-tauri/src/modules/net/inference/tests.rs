@@ -222,6 +222,16 @@ fn paced_server_with_gap(
     pace: Duration,
     gap: Option<(usize, Duration)>,
 ) -> Server {
+    paced_server_with_feedback(parts, close, heartbeat, pace, gap, None)
+}
+fn paced_server_with_feedback(
+    parts: Vec<Vec<u8>>,
+    close: bool,
+    heartbeat: bool,
+    pace: Duration,
+    gap: Option<(usize, Duration)>,
+    delivery_ack: Option<std::sync::mpsc::Receiver<()>>,
+) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -270,6 +280,17 @@ fn paced_server_with_gap(
         }
         let _ = accepted_tx.send(());
         for (index, part) in parts.into_iter().enumerate() {
+            // For the chunked diagnostic fixture, the application must have
+            // independently observed the previous body before we offer the
+            // next one. TCP and HTTP write boundaries alone cannot promise
+            // distinct reqwest streaming deliveries on every operating system.
+            if index > 1
+                && delivery_ack
+                    .as_ref()
+                    .is_some_and(|ack| ack.recv_timeout(Duration::from_secs(1)).is_err())
+            {
+                break;
+            }
             std::thread::sleep(gap.filter(|(at, _)| *at == index).map_or(pace, |(_, d)| d));
             if socket.write_all(&part).is_err() {
                 break;
@@ -328,19 +349,45 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
             b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()]
     };
     if mode == "idle" {
+        // TCP write boundaries are not HTTP body boundaries: macOS can merge
+        // the five paced writes into one or two reqwest bytes_stream items.
+        // Make each body observation an actual HTTP chunk without completing
+        // the response, so five Body/IPC sequences remain a real assertion.
+        let chunk = |body: &[u8]| {
+            let mut framed = format!("{:X}\r\n", body.len()).into_bytes();
+            framed.extend_from_slice(body);
+            framed.extend_from_slice(b"\r\n");
+            framed
+        };
+        parts[0] = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec();
+        let meaningful = std::mem::take(&mut parts[1]);
+        parts[1] = chunk(&meaningful);
         for _ in 0..4 {
-            parts.push(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n".to_vec());
+            parts.push(chunk(
+                b"{\"message\":{\"content\":\"  \"},\"done\":false}\n",
+            ));
         }
     } else if mode == "done" {
         parts.push(b"{\"done\":true,\"done_reason\":\"stop\"}\n".to_vec());
     } else if mode == "sse-done" {
         parts.push(b"data: [DONE]\n\n".to_vec());
     }
-    let fixture = paced_server(
+    let (delivery_tx, delivery_rx) = std::sync::mpsc::channel();
+    let fixture = paced_server_with_feedback(
         parts,
         mode == "eof" || mode == "done",
         false,
-        Duration::from_millis(15),
+        // The idle case already has five *wire-framed* body chunks. Artificial
+        // per-write sleeps can overshoot the unchanged 100ms idle deadline on
+        // macOS, dropping later chunks before the test can check them. Send
+        // them promptly; the test still proves no whitespace renews progress.
+        if mode == "idle" {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(15)
+        },
+        None,
+        (mode == "idle").then_some(delivery_rx),
     );
     let captured = Arc::new(Mutex::new(None));
     let output = captured.clone();
@@ -373,6 +420,11 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
                 return false;
             }
             *emitted.lock().unwrap() += 1;
+            if mode == "idle" {
+                // One acknowledgment only after the *actual* application
+                // callback receives this chunk, not after a server write.
+                delivery_tx.send(()).unwrap();
+            }
             if mode == "cancel" {
                 state.close_owner("main");
             }
