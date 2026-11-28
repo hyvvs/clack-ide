@@ -514,8 +514,8 @@ fn agent_step_ranges(message: &Value) -> Option<Vec<(usize, usize)>> {
     if parts.is_empty() || parts[0]["type"] != "step-start" { return None; }
     let mut result = vec![];
     let mut start = 0;
-    for index in 1..parts.len() {
-        if parts[index]["type"] == "step-start" {
+    for (index, part) in parts.iter().enumerate().skip(1) {
+        if part["type"] == "step-start" {
             result.push((start,index));
             start = index;
         }
@@ -772,8 +772,7 @@ fn read_revision(root: &Path, session_id: &str, id: &str) -> Result<Revision> {
         || revision.policy_version.is_empty()
         || revision.policy_version.len() > 128
         || !valid_hash(&revision.coverage.digest)
-        || (revision.coverage.unit_mode.as_deref() != None
-            && revision.coverage.unit_mode.as_deref() != Some(AGENT_STEP_UNITS))
+        || revision.coverage.unit_mode.as_deref().is_some_and(|mode| mode != AGENT_STEP_UNITS)
         || !valid_hash(&revision.preparation.source.transcript_hash)
         || !valid_hash(&revision.preparation.source.profile_hash)
         || revision.coverage.start >= revision.coverage.end
