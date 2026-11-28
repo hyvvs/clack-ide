@@ -1,0 +1,25 @@
+# Protected-main portable CI and evidence acceptance contract
+
+Scope: maintenance PR #49 only. No security PR, TF4 incident source, installed executable or protected main was changed.
+
+## Test ownership
+
+The old `vitest run` command imported Node's `node:test` suites, yielding "No test suite found" instead of proper framework-level results. The new `scripts/test-execution-contract.mjs` discovers the direct `scripts/*.test.mjs` runner from its explicit imports, rejects ambiguous files, and runs each with the appropriate runner. Both exit statuses count. The complete `npm test` command runs all suites including evidence-dependent tests and fails when required evidence is absent. `npm run test:portable` is the hosted deterministic CI contract; `npm run test:evidence` runs the separately mandatory evidence checks with real inputs. A portable success must never be reported as full evidence/physical acceptance.
+
+The first independent Node execution of 23 suite files recorded 126 passes, six failed evidence-dependent Muse tests and one LM11 suite-load error due to a missing authentic T15 report. It revealed real coverage previously hidden by framework mismatch. No such failure is waived or replaced by synthetic evidence.
+
+The evidence command preserves the original test bodies and failure behavior. Its explicit inventory is: eight Muse preserved-settings replay tests, two hosted-egress tests requiring the original frozen native reports, one LM11 real-store selector test requiring the independently authenticated BEFORE inventory, three LM11 attributable-policy report tests, three Muse host-source tests and three evidence-dependent Muse crash-only tests. The mixed suites' five in-memory LM11 selector tests, hosted-egress static guard and standalone crash listener remain in portable CI. There is no change to existing physical test assertions or authority. The CI log and summary explicitly identify the twenty unexecuted evidence tests; absent evidence cannot establish release or physical readiness. No production Store, credentials, or historical private evidence is copied to hosted CI.
+
+The fresh-context specification hash failure was reproduced using CRLF checkout bytes (`87596a03...`). The actual JavaScript template-literal runtime value normalizes CRLF to LF, reproducing the unchanged original SHA-256 `f97ec34eefa136ac5be5847187f768b64bf5587d36140d9fcc53b695fa3e4801`. Only the source-to-runtime hash normalization changed; the pinned evidence digest did not.
+
+## Development JavaScript budget
+
+Adopt the previously reviewed policy at `1cb0408ba6ef677ce5bed59e74083c5eeafc7426` for development and Draft PR checks: 540,000 decimal bytes named startup gzip9; 2,000,000 total bytes across every emitted JS file; exact PR-base total and each window's preload/static closure growth greater than 10,000 bytes fails for review. The two measurement/test scripts are copied from that exact commit. The workflow builds the exact PR head and separately fetches/builds the exact base using the same runner, Node version, frozen npm install and build command. Historical 1.5 MB failures remain failures. No further ceiling increase is authorized.
+
+Local retained `e3a90ab` build measured 1,891,483 total, 354,566 named startup, 833,549 main preload/static closure and 470,531 settings preload/static closure gzip9 bytes. Protected main measured 1,891,004, 354,541, 837,819 and 476,309 respectively. Total +479 B, startup +25 B, main -4,270 B, settings -5,778 B. The absolute and review triggers pass on those retained builds. These are not installed runtime measurements.
+
+## Stacked PR CI
+
+The default workflow triggers pull requests targeting main; PR #48 targets the Zod branch. Existing maintenance workflow dispatch from `b35881e` accepted exact source `13cd9053b65ce239dfe2a0d21e704007c0873c77` in run `46094040474`. Each initial job's source verification passed. This is diagnostic exact-source CI, not checks attached to PR #48 or a replacement for required branch checks. Its source still has inherited failures. Retargeting, merge, rebasing and branch protection changes are not authorized.
+
+All previous TF4, Microsoft adjudication, native packaging, lifecycle 10–11, installed seventeen-step E2E, signing/trust and Product-wide UI/UX Polish & Acceptance gates remain unresolved. No source-level test result establishes executable security clearance.
