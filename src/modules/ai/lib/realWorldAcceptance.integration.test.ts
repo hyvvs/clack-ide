@@ -422,16 +422,41 @@ beforeEach(async () => {
                 : { write_file: buildTools(context(id, options?.checkoutRoot)).write_file }),
             }
           : undefined;
-      const result = streamText({
+      const request = {
         model: createOpenAICompatible({ name: "acceptance", baseURL })(modelId),
         system: buildStableSystem(modelId, agent, undefined, null),
-        prompt,
         tools,
         stopWhen: stepCountIs(2),
         maxRetries: 0,
-      });
+      };
       try {
-        const text = await result.text;
+        const result = streamText({ ...request, prompt });
+        let text = await result.text;
+        if (tools && "write_file" in tools) {
+          const approval = (await result.content).filter(part => part.type === "tool-approval-request");
+          expect(approval).toHaveLength(1);
+          const pending = required(approval[0]);
+          expect(pending.toolCall.toolName).toBe("write_file");
+          const checkout = required(options?.checkoutRoot);
+          const expectedPath = liveHandoff && prompt.includes("Create acceptance.txt containing hello.")
+            ? "acceptance.txt" : "README.acceptance.md";
+          const expectedContent = expectedPath === "acceptance.txt" ? "hello" :
+            prompt.includes("Correct the timeout") ? corrected : flawed;
+          expect(pending.toolCall.input).toEqual({ path: expectedPath, content: expectedContent });
+          const destination = owned(path.join(checkout, expectedPath));
+          await expect(fs.stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+          const resumed = streamText({
+            ...request,
+            messages: [
+              { role: "user", content: prompt },
+              ...(await result.response).messages,
+              { role: "tool", content: [{ type: "tool-approval-response", approvalId: pending.approvalId, approved: true }] },
+            ],
+          });
+          text += await resumed.text;
+          expect(await fs.readFile(destination, "utf8")).toBe(expectedContent);
+          expect(git(checkout, "status", "--porcelain").trim()).toBe(`?? ${expectedPath}`);
+        }
         const chat = chats.get(id);
         if (!chat) throw new Error("Fixture chat disappeared");
         chat.messages = [
