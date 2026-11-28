@@ -5,16 +5,53 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Existing repository commit SHA (full 40 lowercase hex characters)'
+        required: true
+        type: string
+
+# A dispatched checkout may run source from a branch other than main.
+# The workflow run's own SHA is not the tested source SHA or a PR check.
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v6
         with:
@@ -54,7 +91,33 @@ jobs:
   rust:
     runs-on: ubuntu-22.04
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Linux build dependencies
         run: |
@@ -106,7 +169,33 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -142,7 +231,33 @@ jobs:
         os: [windows-latest, ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -163,7 +278,33 @@ jobs:
     runs-on: ubuntu-22.04
     needs: rust
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Linux build dependencies
         run: |
