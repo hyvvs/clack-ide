@@ -20,6 +20,7 @@ pub struct Observed<T> {
     pub observed_at: u64,
 }
 
+#[cfg(windows)]
 impl<T> Observed<T> {
     fn new(value: T, source: &'static str, observed_at: u64) -> Self {
         Self {
@@ -45,6 +46,7 @@ pub struct NativeGpuObservation {
     pub cuda_hardware_capable: Option<Observed<bool>>,
 }
 
+#[cfg(windows)]
 impl NativeGpuObservation {
     fn empty() -> Self {
         Self {

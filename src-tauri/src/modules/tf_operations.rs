@@ -66,6 +66,7 @@ impl TfOperation {
                 | Self::BuildCargoBuild
         )
     }
+    #[cfg(windows)]
     fn is_repo(self) -> bool {
         matches!(
             self,
@@ -84,6 +85,7 @@ impl TfOperation {
                 | Self::RepoSwitchBranch
         )
     }
+    #[cfg(windows)]
     fn is_build(self) -> bool {
         matches!(
             self,
@@ -194,6 +196,7 @@ pub struct TfOperationReceipt {
 }
 
 #[derive(Clone)]
+#[cfg(windows)]
 struct Pending {
     request_id: String,
     request: TfOperationRequest,
@@ -203,6 +206,11 @@ struct Pending {
     expires: Instant,
     approved: bool,
 }
+
+// The non-Windows TF2 endpoint is unsupported, but cancellation retains the
+// same pending-token map without inventing a native executable authority.
+#[cfg(not(windows))]
+type Pending = ();
 
 #[derive(Default)]
 pub struct TfOperationState {

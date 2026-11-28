@@ -56,7 +56,9 @@ pub fn run(mut command: Command, mut parent: impl Read + Send + 'static) -> i32 
     }
 }
 
-#[cfg(unix)]
+// Spawn paths call this only outside unit tests. Keep the production Unix
+// guardian wrapper while avoiding a test-only dead function.
+#[cfg(all(unix, not(test)))]
 pub(super) fn command(original: Command) -> Result<Command, String> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(std::env::current_exe().map_err(|_| "ssh-ownership-failed")?);

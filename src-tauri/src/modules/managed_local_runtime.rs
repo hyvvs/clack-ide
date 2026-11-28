@@ -233,7 +233,7 @@ pub fn managed_local_runtime_install_cuda_bundles(
     app: AppHandle, engine_zip_path: String, cuda_dll_zip_path: String,
 ) -> Result<(), String> {
     #[cfg(not(windows))]
-    { let _ = (app, engine_zip_path, cuda_dll_zip_path); return Err("CUDA provisioning is Windows x64 only".into()); }
+    { let _ = (app, engine_zip_path, cuda_dll_zip_path); Err("CUDA provisioning is Windows x64 only".into()) }
     #[cfg(windows)]
     {
         if std::env::consts::ARCH != "x86_64" {
@@ -3478,8 +3478,8 @@ mod tests {
         let request_canonical = format!(
             r#"{{"backend":"cuda","deviceIds":[{}],"gpuLayers":40,"contextLength":2048,"fallback":{{"policy":"disabled"}}}}"#,
             json!(device));
-        let identity = format!("{},{}]", &json!(["clack-this-pc",ENGINE,artifact,
-            format!("managed-gguf:{digest}"),1,"b12248/cuda",config]).to_string()[..]
+        let identity = format!("{},{}]", json!(["clack-this-pc",ENGINE,artifact,
+            format!("managed-gguf:{digest}"),1,"b12248/cuda",config]).to_string()
             .trim_end_matches(']'),request_canonical);
         let binding = validate_binding(&state,&id,&identity).expect("canonical CUDA deployment");
         assert_eq!(binding.requested_backend,"cuda");
