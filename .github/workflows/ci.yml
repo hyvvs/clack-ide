@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_dispatch:
@@ -73,9 +74,11 @@ jobs:
         run: npm run check-types
 
       - name: Test
-        # Dispatch verifies the selected source's own full test command; PR CI
-        # separates portable tests from explicit authentic-evidence acceptance.
-        run: ${{ github.event_name == 'workflow_dispatch' && 'npm test' || 'npm run test:portable' }}
+        # Draft PRs report portable deterministic tests separately from the
+        # documented physical/evidence acceptance gate. Non-draft PRs,
+        # protected-main pushes and dispatches execute the complete test set.
+        # A ready-for-review transition triggers a fresh complete check.
+        run: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'npm run test:portable' || 'npm test' }}
 
       - name: React Compiler healthcheck (advisory)
         run: npm exec -- react-compiler-healthcheck

@@ -15,8 +15,8 @@ const mixedVitest = [
   'src/modules/ai/lib/lm11ProductionSelectorExclusion.offline.test.tsx',
 ];
 const mixedVitestEvidence = [
-  'blocks --offline-dry-run=probe before settings, workspace, Vite and WebView startup',
-  'blocks --offline-dry-run=verify before settings, workspace, Vite and WebView startup',
+  'preserves independently frozen native report hashes during --offline-dry-run=probe',
+  'preserves independently frozen native report hashes during --offline-dry-run=verify',
   'enumerates REAL production and legacy persisted IDs through normal selectors without ever registering synthetic fixture',
 ];
 const nodeEvidenceFiles = [
@@ -32,7 +32,9 @@ const mixedNodeEvidence = [
 
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const suffix = (names) => `(?:${names.map(escape).join('|')})$`;
-const without = (names) => `^(?!.*${suffix(names)}).*$`;
+// Parameterized Vitest titles can contain literal newlines. A dot-only
+// matcher silently filters those unrelated cases, so span all characters.
+const without = (names) => `^(?![\\s\\S]*${suffix(names)})[\\s\\S]*$`;
 
 export function discoverNodeTests(directory = root) {
   const files = readdirSync(join(directory, 'scripts'), { withFileTypes: true })
@@ -58,8 +60,10 @@ export function buildPlan(mode, nodeFiles = discoverNodeTests()) {
   if (mode === 'all') return [viteBase, [...nodeBase, ...nodeFiles]];
   if (mode === 'portable') return [
     [...viteBase, '--exclude', museReplay, '--testNamePattern', without(mixedVitestEvidence)],
-    [...nodeBase, `--test-name-pattern=${without(mixedNodeEvidence)}`,
-      ...nodeFiles.filter((file) => !nodeEvidenceFiles.includes(file))],
+    [...nodeBase, ...nodeFiles.filter((file) => !nodeEvidenceFiles.includes(file) && file !== mixedNode)],
+    // Node treats a matching parent suite as permission to run its children.
+    // Use a separate positive selection rather than a broad negative filter.
+    [...nodeBase, '--test-name-pattern=^standalone crash listener never reports readiness or starts inference$', mixedNode],
   ];
   return [
     [...viteBase, museReplay],
@@ -72,7 +76,7 @@ export function buildPlan(mode, nodeFiles = discoverNodeTests()) {
 export function evidenceRequirements() {
   return [
     `${museReplay}: original November 3 Muse settings/calibration evidence (8 assertions)`,
-    `${mixedVitest[0]}: independent historical native reports (2 assertions; deterministic source guard stays in CI)`,
+    `${mixedVitest[0]}: independent historical native reports (2 assertions; real offline-dry-run and source guards stay in CI)`,
     `${mixedVitest[1]}: authenticated T15 BEFORE inventory and exact production/legacy stores (1 assertion; five deterministic selector tests stay in CI)`,
     `${nodeEvidenceFiles[0]}: immutable T15 policy report and linked cohorts (3 assertions)`,
     `${nodeEvidenceFiles[1]}: frozen mission evidence manifest (3 assertions)`,
