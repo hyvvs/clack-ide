@@ -1,9 +1,13 @@
 name: CI
+run-name: ${{ github.event_name == 'pull_request' && format('CLACK CI PR {0} head {1} base {2}', github.event.pull_request.number, github.event.pull_request.head.sha, github.event.pull_request.base.sha) || format('CLACK CI {0} {1}', github.event_name, github.sha) }}
 
 on:
   pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    # Includes the Zod stack base for PR #48 and the isolated governance
+    # candidate base. These are genuine PR events, NOT diagnostic dispatches.
+    branches: [main, security/zod-4.6.6-ghsa-20261127, maintenance/protected-main-quality-20261128]
+    # edited is essential: a base retarget must produce fresh attached checks.
+    types: [opened, synchronize, reopened, edited, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_dispatch:
@@ -24,6 +28,7 @@ concurrency:
 
 jobs:
   frontend:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'diagnostic / frontend' || 'frontend' }}
     # Keep PowerShell-AST acceptance tests on a stable image while
     # ubuntu-latest transitions to 26.04: the 26.04 hosted runner intermittently
     # crashes `pwsh -File` with an invalid .NET assembly name before it can
@@ -46,6 +51,13 @@ jobs:
           # Preserve explicit dispatch identity and audit the exact PR head.
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify exact CI source checkout
+        shell: bash
+        env:
+          CI_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          [[ "$CI_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$CI_SOURCE_SHA" ]] || exit 1
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -78,12 +90,14 @@ jobs:
       - name: Type-check
         run: npm run check-types
 
-      - name: Test
-        # Draft PRs report portable deterministic tests separately from the
-        # documented physical/evidence acceptance gate. Non-draft PRs,
-        # protected-main pushes and dispatches execute the complete test set.
-        # A ready-for-review transition triggers a fresh complete check.
-        run: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'npm run test:portable' || 'npm test' }}
+      # Separate identities make it IMPOSSIBLE for a verifier to accept the
+      # Draft-only portable test step as a successful original full npm test.
+      - name: Draft portable acceptance
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: npm run test:portable
+      - name: Full original acceptance (npm test)
+        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+        run: npm test
 
       - name: React Compiler healthcheck (advisory)
         run: npm exec -- react-compiler-healthcheck
@@ -139,6 +153,7 @@ jobs:
         continue-on-error: true
 
   rust:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'diagnostic / rust' || 'rust' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Validate dispatched source SHA
@@ -155,6 +170,13 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify exact CI source checkout
+        shell: bash
+        env:
+          CI_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          [[ "$CI_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$CI_SOURCE_SHA" ]] || exit 1
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -212,7 +234,7 @@ jobs:
         run: cargo test --locked --test remote_ssh_guardian -- --test-threads=1
 
   rust-platforms:
-    name: rust-test (${{ matrix.os }})
+    name: ${{ github.event_name == 'workflow_dispatch' && format('diagnostic / rust-test ({0})', matrix.os) || format('rust-test ({0})', matrix.os) }}
     strategy:
       fail-fast: false
       matrix:
@@ -233,6 +255,13 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify exact CI source checkout
+        shell: bash
+        env:
+          CI_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          [[ "$CI_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$CI_SOURCE_SHA" ]] || exit 1
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -274,7 +303,7 @@ jobs:
         run: cargo test --locked --test remote_ssh_guardian -- --test-threads=1
 
   t3a-wasi:
-    name: T3a WASI adversarial (${{ matrix.os }})
+    name: ${{ github.event_name == 'workflow_dispatch' && format('diagnostic / T3a WASI adversarial ({0})', matrix.os) || format('T3a WASI adversarial ({0})', matrix.os) }}
     strategy:
       fail-fast: false
       matrix:
@@ -295,6 +324,13 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify exact CI source checkout
+        shell: bash
+        env:
+          CI_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          [[ "$CI_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$CI_SOURCE_SHA" ]] || exit 1
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -325,6 +361,7 @@ jobs:
         run: cargo test --locked --lib custom_tools
 
   coverage:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'diagnostic / coverage' || 'coverage' }}
     runs-on: ubuntu-22.04
     needs: rust
     steps:
@@ -342,6 +379,13 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify exact CI source checkout
+        shell: bash
+        env:
+          CI_SOURCE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          [[ "$CI_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$(git rev-parse HEAD)" == "$CI_SOURCE_SHA" ]] || exit 1
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
         shell: bash

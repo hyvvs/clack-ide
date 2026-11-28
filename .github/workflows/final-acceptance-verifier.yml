@@ -1,0 +1,63 @@
+name: CLACK trusted final-acceptance verifier
+
+# BOOTSTRAP REQUIRED: workflow_run only runs this workflow once it is reviewed
+# and installed on protected DEFAULT BRANCH main. A PR containing this YAML
+# does not deploy it or authorize any checks:write verifier infrastructure.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [requested, in_progress, completed]
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize, ready_for_review, converted_to_draft, closed]
+  issue_comment:
+    types: [created, edited, deleted]
+  push:
+    branches: [main]
+  # Backup invalidation for missed webhooks and expiring signed receipts; not
+  # a substitute for synchronous, issuer-isolated integration-time approval.
+  schedule:
+    - cron: '*/15 * * * *'
+
+# Privileged verifier MUST NOT check out PR head, run PR-supplied scripts,
+# download/execute PR artifacts, use PR caches, install dependencies from PRs,
+# use pull_request_target to run arbitrary code or access a private signing key.
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: clack-final-verifier-${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  trusted-default-branch-verifier:
+    # IMPORTANT: this is NOT the branch-protection check name; its Actions
+    # job automatically checks DEFAULT-BRANCH SHA, not the target PR HEAD.
+    name: trusted-default-branch-verifier
+    if: ${{ (github.event_name != 'issue_comment' || github.event.issue.pull_request) && (github.event_name != 'pull_request_target' || github.event.pull_request.base.ref == 'main') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout ONLY trusted default-branch verifier code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check and publish independent source-bound PR acceptance
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # PUBLIC verification keys only. The corresponding private signing
+          # keys never enter GitHub Actions/this repo/any PR execution.
+          CLACK_EVIDENCE_RECEIPT_PUBLIC_KEY_PEM: ${{ vars.CLACK_EVIDENCE_RECEIPT_PUBLIC_KEY_PEM }}
+          CLACK_EVIDENCE_SIGNER_KEY_ID: ${{ vars.CLACK_EVIDENCE_SIGNER_KEY_ID }}
+          CLACK_ACCEPTANCE_OWNER_PUBLIC_KEY_PEM: ${{ vars.CLACK_ACCEPTANCE_OWNER_PUBLIC_KEY_PEM }}
+          CLACK_CI_WORKFLOW_ID: '297568453'
+        run: |
+          set -euo pipefail
+          node --version
+          node scripts/final-acceptance-verifier.mjs

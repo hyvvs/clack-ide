@@ -1,0 +1,19 @@
+{
+  "note": "UNAPPLIED SECURITY REVIEW ARTIFACT — NOT AN API REQUEST. Owner must approve bootstrap, issuer separation, and synchronous merge-time validation first.",
+  "target_endpoint_if_later_authorized": "PATCH /repos/hyvvs/clack-ide/branches/main/protection/required_status_checks",
+  "required_status_checks_patch_unapplied": {
+    "strict": true,
+    "contexts": [],
+    "checks": [
+      { "context": "frontend", "app_id": 15368 },
+      { "context": "rust", "app_id": 15368 },
+      { "context": "rust-test (windows-latest)", "app_id": 15368 },
+      { "context": "rust-test (macos-latest)", "app_id": 15368 },
+      { "context": "T3a WASI adversarial (ubuntu-22.04)", "app_id": 15368 },
+      { "context": "T3a WASI adversarial (windows-latest)", "app_id": 15368 },
+      { "context": "T3a WASI adversarial (macos-latest)", "app_id": 15368 },
+      { "context": "coverage", "app_id": 15368 },
+      { "context": "protected-main-final-acceptance", "app_id": "BLOCKED_UNTIL_DEDICATED_TRUSTED_ISSUER_APP_ID_PROVEN" }
+    ]
+  }
+}
