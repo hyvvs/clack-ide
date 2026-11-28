@@ -148,22 +148,26 @@ pub fn run() {
             // The plugin remains installed for OTHER Store-owned files;
             // frontend settings use the existing native IPC read/write.
             modules::self_hosted_profiles::self_hosted_profiles_startup_storage_check(
-                _app.handle()
-            ).map_err(std::io::Error::other)?;
+                _app.handle(),
+            )
+            .map_err(std::io::Error::other)?;
             // Trusted-process opt-in only. No IPC command to enable a recorder,
             // no model, network, or timeout changes. The bounded nonblocking
             // queue prevents slow diagnostic consumers from blocking reqwest.
-            let diagnostic_run = if std::env::var_os(net::inference::delivery::ONE_MUSE_RUN_ENV).is_some() {
-                let run_id = std::env::var(net::inference::delivery::ONE_MUSE_RUN_ENV)
-                    .map_err(|_| std::io::Error::other("Invalid diagnostic run ID"))?;
-                if !net::inference::delivery::valid_run_id(&run_id) {
-                    return Err(std::io::Error::other("Invalid diagnostic run ID").into());
-                }
-                Some(run_id)
-            } else {
-                None
-            };
-            if diagnostic_run.is_some() || std::env::var("CLACK_LOCAL_DELIVERY_DIAGNOSTIC").as_deref() == Ok("1") {
+            let diagnostic_run =
+                if std::env::var_os(net::inference::delivery::ONE_MUSE_RUN_ENV).is_some() {
+                    let run_id = std::env::var(net::inference::delivery::ONE_MUSE_RUN_ENV)
+                        .map_err(|_| std::io::Error::other("Invalid diagnostic run ID"))?;
+                    if !net::inference::delivery::valid_run_id(&run_id) {
+                        return Err(std::io::Error::other("Invalid diagnostic run ID").into());
+                    }
+                    Some(run_id)
+                } else {
+                    None
+                };
+            if diagnostic_run.is_some()
+                || std::env::var("CLACK_LOCAL_DELIVERY_DIAGNOSTIC").as_deref() == Ok("1")
+            {
                 let handle = _app.handle().clone();
                 let (sender, mut receiver) = tokio::sync::mpsc::channel(2048);
                 let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -198,12 +202,16 @@ pub fn run() {
                     }
                 };
                 let capture = match diagnostic_run {
-                    Some(run_id) => net::inference::delivery::DeliveryCapture::for_run(run_id, sink)
-                        .ok_or_else(|| std::io::Error::other("Invalid diagnostic capture"))?,
+                    Some(run_id) => {
+                        net::inference::delivery::DeliveryCapture::for_run(run_id, sink)
+                            .ok_or_else(|| std::io::Error::other("Invalid diagnostic capture"))?
+                    }
                     None => net::inference::delivery::DeliveryCapture::new(sink),
                 };
                 if !_app.manage(capture) {
-                    return Err(std::io::Error::other("Diagnostic capture already registered").into());
+                    return Err(
+                        std::io::Error::other("Diagnostic capture already registered").into(),
+                    );
                 }
             }
             // macOS skips parent() for the settings window, so tie its lifecycle
@@ -456,8 +464,10 @@ pub fn run() {
                 // The one-Muse run may issue only its one native streaming call.
                 // Legacy HTTP and metadata probes use independent transports.
                 if std::env::var_os(net::inference::delivery::ONE_MUSE_RUN_ENV).is_some()
-                    && matches!(invoke.message.command(),
-                        "ai_http_request" | "self_hosted_probe" | "self_hosted_discover")
+                    && matches!(
+                        invoke.message.command(),
+                        "ai_http_request" | "self_hosted_probe" | "self_hosted_discover"
+                    )
                 {
                     invoke.resolver.reject("diagnostic-other-route-denied");
                     return true;

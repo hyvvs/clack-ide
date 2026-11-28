@@ -104,6 +104,11 @@ let writes = Promise.resolve();
 let requests: Record<string, unknown>[];
 let maximum = 0,
   inFlight = 0;
+let twoWorkerRequestGate: {
+  arrived: number;
+  bothArrived: Promise<void>;
+  release: () => void;
+} | null = null;
 let liveHandoff = false;
 let preparationChurn: () => void = () => {};
 let preparationBarrier: (sessionId: string) => Promise<void> = async () => {};
@@ -173,6 +178,7 @@ beforeEach(async () => {
   requests = [];
   maximum = 0;
   inFlight = 0;
+  twoWorkerRequestGate = null;
   writes = Promise.resolve();
   opened.mockClear();
   container = await fs.mkdtemp(
@@ -343,6 +349,14 @@ beforeEach(async () => {
       requests.push(body);
       inFlight++;
       maximum = Math.max(maximum, inFlight);
+      // A test-only rendezvous proves two distinct requests can be in flight
+      // concurrently without relying on a 25ms wall-clock overlap on CI.
+      const gate = twoWorkerRequestGate;
+      if (gate) {
+        gate.arrived++;
+        if (gate.arrived === 2) gate.release();
+        await gate.bothArrived;
+      }
       await new Promise((resolve) => setTimeout(resolve, 25));
       const messages = body.messages as { role: string; content: unknown }[];
       const isWrite =
@@ -422,16 +436,41 @@ beforeEach(async () => {
                 : { write_file: buildTools(context(id, options?.checkoutRoot)).write_file }),
             }
           : undefined;
-      const result = streamText({
+      const request = {
         model: createOpenAICompatible({ name: "acceptance", baseURL })(modelId),
         system: buildStableSystem(modelId, agent, undefined, null),
-        prompt,
         tools,
         stopWhen: stepCountIs(2),
         maxRetries: 0,
-      });
+      };
       try {
-        const text = await result.text;
+        const result = streamText({ ...request, prompt });
+        let text = await result.text;
+        if (tools && "write_file" in tools) {
+          const approval = (await result.content).filter(part => part.type === "tool-approval-request");
+          expect(approval).toHaveLength(1);
+          const pending = required(approval[0]);
+          expect(pending.toolCall.toolName).toBe("write_file");
+          const checkout = required(options?.checkoutRoot);
+          const expectedPath = liveHandoff && prompt.includes("Create acceptance.txt containing hello.")
+            ? "acceptance.txt" : "README.acceptance.md";
+          const expectedContent = expectedPath === "acceptance.txt" ? "hello" :
+            prompt.includes("Correct the timeout") ? corrected : flawed;
+          expect(pending.toolCall.input).toEqual({ path: expectedPath, content: expectedContent });
+          const destination = owned(path.join(checkout, expectedPath));
+          await expect(fs.stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+          const resumed = streamText({
+            ...request,
+            messages: [
+              { role: "user", content: prompt },
+              ...(await result.response).messages,
+              { role: "tool", content: [{ type: "tool-approval-response", approvalId: pending.approvalId, approved: true }] },
+            ],
+          });
+          text += await resumed.text;
+          expect(await fs.readFile(destination, "utf8")).toBe(expectedContent);
+          expect(git(checkout, "status", "--porcelain").trim()).toBe(`?? ${expectedPath}`);
+        }
         const chat = chats.get(id);
         if (!chat) throw new Error("Fixture chat disappeared");
         chat.messages = [
@@ -449,6 +488,9 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  // Avoid retaining a pending HTTP response if a concurrency assertion fails.
+  twoWorkerRequestGate?.release();
+  twoWorkerRequestGate = null;
   await flushPeerTasks();
   await writes;
   server.closeAllConnections();
@@ -710,6 +752,13 @@ it("Architect -> Coder -> Reviewer -> correction returns immutable real file cha
   expect(vi.mocked(sendMessageToSession)).toHaveBeenCalledTimes(calls);
 }, 20000);
 it("same-Agent distinct workers run independently in parallel without copying the parent's private history", async () => {
+  // Both peer requests must reach the actual mock inference HTTP server before
+  // either receives a response. If production serializes dispatch, this test
+  // still fails; a lucky/unlucky 25ms scheduler window cannot decide it.
+  let release!: () => void;
+  const bothArrived = new Promise<void>((resolve) => { release = resolve; });
+  const gate = { arrived: 0, bothArrived, release };
+  twoWorkerRequestGate = gate;
   const responses = await Promise.all(
     ["worker-a", "worker-b"].map((targetSessionId) =>
       requestPeerTask({
@@ -739,6 +788,7 @@ it("same-Agent distinct workers run independently in parallel without copying th
         task.targetSessionId !== task.sourceSessionId,
     ),
   ).toBe(true);
+  expect(gate.arrived).toBe(2);
   expect(maximum).toBe(2);
   expect(JSON.stringify(requests)).not.toContain(canary);
   expect(chats.get("parent")?.messages[0].parts).toEqual([

@@ -683,8 +683,11 @@ pub async fn scoped_evidence_retrieve(
         let started = Instant::now();
         let _collection = CONTENT_COLLECTION.read().map_err(|e| e.to_string())?;
         let profiles = || {
-            crate::modules::self_hosted_profiles::authoritative_settings_value(&app, "agentPermissionProfiles")
-                .map(|s| s.unwrap_or(json!({})))
+            crate::modules::self_hosted_profiles::authoritative_settings_value(
+                &app,
+                "agentPermissionProfiles",
+            )
+            .map(|s| s.unwrap_or(json!({})))
         };
         let (captured, originals) = access(&app, &request.session_id)?;
         let recipient_stamp = recipient(&originals, &request, &profiles()?)?;

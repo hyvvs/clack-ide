@@ -118,7 +118,11 @@ export async function evaluateAcceptanceApproval(subject, expected) {
       const operand = effect.operand;
       const segments = operand.split(/[\\/]/);
       if (!operand || (process.platform !== "win32" && operand.includes("\\")) || /[\x00-\x1f*?[\]~$%]/.test(operand) || /^(?:\\\\|\/\/)/.test(operand) ||
-        (/^[A-Za-z]:/.test(operand) && !/^[A-Za-z]:[\\/]/.test(operand)) ||
+        // On POSIX, path.resolve would misread C:/Windows as a *relative*
+        // workspace child. Only the Windows host may resolve drive paths;
+        // even there, the canonical inside(root, target) guard still applies.
+        (/^[A-Za-z]:/.test(operand) &&
+          (process.platform !== "win32" || !/^[A-Za-z]:[\\/]/.test(operand))) ||
         operand.replace(/^[A-Za-z]:/, "").includes(":") || segments.some(s => s === ".." || /[. ]$/.test(s) ||
           /^(?:\.git|\.ssh|\.aws|\.azure|\.gnupg|\.ollama|\.env.*|credentials|models)$/i.test(s) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s))) throw new Error("Ambiguous, secret or non-project path");
       const target = path.resolve(subject.cwd, operand);

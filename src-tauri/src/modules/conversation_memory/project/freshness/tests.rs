@@ -128,7 +128,10 @@ fn events_invalidate_only_known_dependencies_and_reject_late_checks() {
     state.finish(&entry, generation, "current").unwrap();
     assert!(!state.invalidate(&[to_canon(dir.path().join("other.txt"))]));
     assert_eq!(state.status(&entry).unwrap(), "current");
-    assert!(state.invalidate(&[to_canon(dir.path().join("module.txt"))]));
+    // Match the canonical path recorded by Batch::read_observation; the
+    // temporary directory's lexical path may have a different physical name.
+    let observed = fs::canonicalize(dir.path().join("module.txt")).unwrap();
+    assert!(state.invalidate(&[to_canon(observed)]));
     assert!(state.finish(&entry, generation, "current").is_err());
     assert_eq!(state.status(&entry).unwrap(), "potentially-stale");
     assert_eq!(

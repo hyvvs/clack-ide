@@ -56,6 +56,8 @@ pub fn run(mut command: Command, mut parent: impl Read + Send + 'static) -> i32 
     }
 }
 
+// The POSIX integration suite imports this module with `cfg(test)` and verifies
+// the command wrapper without spawning a real SSH connection.
 #[cfg(unix)]
 pub(super) fn command(original: Command) -> Result<Command, String> {
     use std::os::unix::process::CommandExt;

@@ -682,10 +682,12 @@ fn configured(app: &AppHandle, id: &str) -> Result<Arc<Slot>, String> {
     let _lock = super::self_hosted_profiles::WRITE_LOCK
         .lock()
         .map_err(|_| "settings-unavailable")?;
-    let value = super::self_hosted_profiles::authoritative_settings_value(app,
-        super::self_hosted_profiles::KEY)
-        .map_err(|_| "settings-unavailable")?
-        .ok_or("server-unavailable")?;
+    let value = super::self_hosted_profiles::authoritative_settings_value(
+        app,
+        super::self_hosted_profiles::KEY,
+    )
+    .map_err(|_| "settings-unavailable")?
+    .ok_or("server-unavailable")?;
     let e = value["endpoints"]
         .as_array()
         .and_then(|es| {

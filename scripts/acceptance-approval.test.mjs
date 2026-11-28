@@ -33,16 +33,31 @@ afterEach(async () => {
 
 const nativeParserAvailable = process.platform === "win32" || spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { timeout: 5000, windowsHide: true }).status === 0;
 describe.skipIf(!nativeParserAvailable)("native per-approval literal workspace effect policy", () => {
-  it.each(["north-mini-code", "nemotron35-lightning"])("keeps the same owner and path checks for the %s disposable root", async candidate => {
-    root = path.join(directory, `forgeboard-${candidate}-20261019-01`);
-    await mkdir(path.join(root, ".git"), { recursive: true });
-    Object.assign(expected, { workspaceRoot: root });
-    Object.assign(subject, { workspaceRoot: root, cwd: root });
-    expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(true);
-    expect((await decide("Set-Content ../outside -Value 'no'")).approved).toBe(false);
-    expect((await decide("Set-Content .env -Value 'no'")).approved).toBe(false);
-    subject.runId = "unrelated-run";
-    expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(false);
+  describe.each(["north-mini-code", "nemotron35-lightning"])("keeps the same owner and path checks for the %s disposable root", candidate => {
+    beforeEach(async () => {
+      root = path.join(directory, `forgeboard-${candidate}-20261019-01`);
+      await mkdir(path.join(root, ".git"), { recursive: true });
+      Object.assign(expected, { workspaceRoot: root });
+      Object.assign(subject, { workspaceRoot: root, cwd: root });
+    });
+    // These are independent point-in-time approval decisions, not executed
+    // commands. Preserve every real native-parser assertion with its own
+    // existing 5s clock rather than combining four subprocess startups into
+    // one overloaded clock on a Linux CI runner.
+    it("accepts the ordinary registered workspace write", async () => {
+      expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(true);
+    });
+    it("rejects a parent-directory traversal", async () => {
+      expect((await decide("Set-Content ../outside -Value 'no'")).approved).toBe(false);
+    });
+    it("rejects a workspace secret path", async () => {
+      expect((await decide("Set-Content .env -Value 'no'")).approved).toBe(false);
+    });
+    it("revokes a previously valid proposal for a foreign run", async () => {
+      expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(true);
+      subject.runId = "unrelated-run";
+      expect((await decide("Set-Content probe.txt -Value 'probe'")).approved).toBe(false);
+    });
   });
   it("applies unchanged approval and path protections to the Muse disposable workspace", async () => {
     root = path.join(directory, "forgeboard-muse-glimmer-20261019-01");

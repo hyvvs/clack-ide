@@ -3,18 +3,62 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Existing repository commit SHA (full 40 lowercase hex characters)'
+        required: true
+        type: string
+
+# A dispatched checkout may run source from a branch other than main.
+# The workflow run's own SHA is not the tested source SHA or a PR check.
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    # Keep PowerShell-AST acceptance tests on a stable image while
+    # ubuntu-latest transitions to 26.04: the 26.04 hosted runner intermittently
+    # crashes `pwsh -File` with an invalid .NET assembly name before it can
+    # inspect any command (run 45705101798, 20 genuine frontend test failures).
+    # Do not skip, mock or relax the approval/effect assertions.
+    runs-on: ubuntu-24.04
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          # Preserve explicit dispatch identity and audit the exact PR head.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v6
         with:
@@ -35,17 +79,60 @@ jobs:
         run: npm run check-types
 
       - name: Test
-        run: npm test
+        # Draft PRs report portable deterministic tests separately from the
+        # documented physical/evidence acceptance gate. Non-draft PRs,
+        # protected-main pushes and dispatches execute the complete test set.
+        # A ready-for-review transition triggers a fresh complete check.
+        run: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'npm run test:portable' || 'npm test' }}
 
       - name: React Compiler healthcheck (advisory)
         run: npm exec -- react-compiler-healthcheck
         continue-on-error: true
 
       - name: Build frontend
+        id: build_frontend
+        if: success() || failure()
         run: npm run build
 
       - name: Size budget
+        if: always() && steps.build_frontend.outcome == 'success'
         run: npm run size
+
+      # Development policy adopted from 1cb0408: same absolute gzip9 gates,
+      # plus independently measured total and actual eager-graph growth.
+      - name: Record exact emitted JS and actual eager modulepreload graph
+        if: always() && steps.build_frontend.outcome == 'success' && github.event_name != 'workflow_dispatch'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          [[ "$(git rev-parse HEAD)" == "$PR_HEAD_SHA" ]] || exit 2
+          node scripts/emitted-js-budget.mjs snapshot \
+            --dist dist --source-sha "$PR_HEAD_SHA" \
+            --out "$RUNNER_TEMP/head-emitted-js.json"
+
+      - name: Compare emitted gzip9 growth to exact PR base
+        if: always() && github.event_name == 'pull_request' && steps.build_frontend.outcome == 'success'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          [[ "$PR_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/exact-pr-base" "$PR_BASE_SHA"
+          (
+            set -e
+            cd "$RUNNER_TEMP/exact-pr-base"
+            npm ci
+            npm run build
+          )
+          node scripts/emitted-js-budget.mjs snapshot \
+            --dist "$RUNNER_TEMP/exact-pr-base/dist" \
+            --source-sha "$PR_BASE_SHA" \
+            --out "$RUNNER_TEMP/base-emitted-js.json"
+          node scripts/emitted-js-budget.mjs compare \
+            --base "$RUNNER_TEMP/base-emitted-js.json" \
+            --head "$RUNNER_TEMP/head-emitted-js.json" \
+            --max-growth 10000 \
+            --out "$RUNNER_TEMP/emitted-js-growth.json"
 
       - name: Dead code (advisory)
         run: npm run knip
@@ -54,7 +141,33 @@ jobs:
   rust:
     runs-on: ubuntu-22.04
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Linux build dependencies
         run: |
@@ -106,7 +219,33 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -142,7 +281,33 @@ jobs:
         os: [windows-latest, ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -163,7 +328,33 @@ jobs:
     runs-on: ubuntu-22.04
     needs: rust
     steps:
+      - name: Validate dispatched source SHA
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be a full lowercase 40-character commit SHA"
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
+      - name: Verify dispatched source checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$SOURCE_SHA" ]]; then
+            echo "::error::Checked-out HEAD does not match source_sha"
+            exit 1
+          fi
+          echo "Verified source checkout: $actual"
+          echo "Verified source checkout: $actual (workflow ref: $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Linux build dependencies
         run: |

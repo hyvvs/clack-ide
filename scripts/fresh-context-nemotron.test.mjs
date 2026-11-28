@@ -113,6 +113,8 @@ describe("protected-stop evidence parser", () => {
   });
   it("pins the authoritative specification hash independently of the generated output", () => {
     const text = readFileSync("src/test/realLocalProductAcceptance.tsx", "utf8").match(/const mission = `([\s\S]*?)`;/)[1];
-    expect(createHash("sha256").update(text).digest("hex")).toBe(result.userMessages[0].sha256);
+    // JavaScript template literal evaluation normalizes CRLF (and CR) to LF.
+    // Hash the actual runtime string, not platform checkout line endings.
+    expect(createHash("sha256").update(text.replace(/\r\n?/g, "\n")).digest("hex")).toBe(result.userMessages[0].sha256);
   });
 });

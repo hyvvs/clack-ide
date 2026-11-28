@@ -57,9 +57,7 @@ fn acceptance_wire_controls_match(
         "omitted" => body.get("think").is_none(),
         _ => false,
     };
-    if body["stream"] != true
-        || (body.get("tools").is_some() && !body["tools"].is_array())
-    {
+    if body["stream"] != true || (body.get("tools").is_some() && !body["tools"].is_array()) {
         return false;
     }
     let Some(output) = body["options"]["num_predict"].as_u64() else {
@@ -73,7 +71,9 @@ fn acceptance_wire_controls_match(
         .map(Vec::as_slice)
         .unwrap_or_default();
     if output == contract.calibration.output {
-        return think_matches && tools.is_empty() && contract.calibration.candidates.contains(&context);
+        return think_matches
+            && tools.is_empty()
+            && contract.calibration.candidates.contains(&context);
     }
     let valid_tools = tools.iter().all(|t| {
         t["type"] == "function"
@@ -104,8 +104,8 @@ fn acceptance_wire_controls_match(
         // production may probe a separately verified boolean alternative.
         // Accept the exact native *verification* wire shape only; this does
         // not authorize a different reasoning control for Agent or calibration.
-        let probe_think_matches = think_matches
-            || (expected_think == "omitted" && body["think"].is_boolean());
+        let probe_think_matches =
+            think_matches || (expected_think == "omitted" && body["think"].is_boolean());
         return probe_think_matches
             && tools.len() == 1
             // A model's verified runtime target may be below the previously
@@ -140,16 +140,22 @@ fn acceptance_confirmed_agent_variant_match(
     contract: &AcceptanceWireContract,
     observed_variant: Option<bool>,
 ) -> bool {
-    if expected_think != "omitted" || observed_variant.is_none()
+    if expected_think != "omitted"
+        || observed_variant.is_none()
         || body.get("think").and_then(serde_json::Value::as_bool) != observed_variant
         || body["options"]["num_predict"] != contract.agent.output
         || body["options"]["num_ctx"] != contract.agent.context
-        || !body["tools"].as_array().is_some_and(|tools| !tools.is_empty())
+        || body["tools"]
+            .as_array()
+            .is_none_or(|tools| tools.is_empty())
     {
         return false;
     }
     let mut without_variant = body.clone();
-    without_variant.as_object_mut().expect("serialized object").remove("think");
+    without_variant
+        .as_object_mut()
+        .expect("serialized object")
+        .remove("think");
     acceptance_wire_controls_match(&without_variant, expected_think, contract)
 }
 
@@ -161,8 +167,9 @@ fn acceptance_host_wire_match(
 ) -> bool {
     if acceptance_wire_controls_match(body, expected_think, contract) {
         if body["options"]["num_ctx"] == contract.agent.context
-            && body["tools"].as_array().is_some_and(|tools| tools.len() == 1
-                && tools[0]["function"]["name"] == contract.verification.name)
+            && body["tools"].as_array().is_some_and(|tools| {
+                tools.len() == 1 && tools[0]["function"]["name"] == contract.verification.name
+            })
         {
             if let Some(variant) = body.get("think").and_then(serde_json::Value::as_bool) {
                 let count = seen_probes.entry(variant).or_insert(0);
@@ -171,14 +178,19 @@ fn acceptance_host_wire_match(
         }
         return true;
     }
-    let observed = body.get("think").and_then(serde_json::Value::as_bool)
+    let observed = body
+        .get("think")
+        .and_then(serde_json::Value::as_bool)
         .filter(|variant| seen_probes.get(variant).copied().unwrap_or(0) >= 2);
     acceptance_confirmed_agent_variant_match(body, expected_think, contract, observed)
 }
 
 #[cfg(test)]
 mod acceptance_wire_tests {
-    use super::{acceptance_confirmed_agent_variant_match, acceptance_host_wire_match, acceptance_model_matches, acceptance_wire_controls_match, AcceptanceWireContract};
+    use super::{
+        acceptance_confirmed_agent_variant_match, acceptance_host_wire_match,
+        acceptance_model_matches, acceptance_wire_controls_match, AcceptanceWireContract,
+    };
     use serde_json::json;
 
     fn contract() -> AcceptanceWireContract {
@@ -203,41 +215,120 @@ mod acceptance_wire_tests {
     fn automatic_verified_boolean_agent_variant_does_not_fail_host_guard() {
         let mut request = agent();
         request["think"] = json!(false);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), None));
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(true)));
-        assert!(acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(false)));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            None
+        ));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(true)
+        ));
+        assert!(acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(false)
+        ));
         request["options"]["num_ctx"] = json!(8192);
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(false)));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(false)
+        ));
         request = agent();
         request["think"] = json!(false);
         request["tools"][0]["function"]["name"] = json!("not_a_builtin");
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(false)));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(false)
+        ));
         request = agent();
         request["think"] = json!(false);
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "false", &contract(), Some(false)));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "false",
+            &contract(),
+            Some(false)
+        ));
     }
     #[test]
     fn host_requires_two_matching_qualified_probe_requests_before_variant_agent() {
         let mut seen = std::collections::HashMap::new();
         let mut agent_request = agent();
         agent_request["think"] = json!(false);
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         let mut probe_request = probe(512);
         probe_request["think"] = json!(false);
-        assert!(acceptance_host_wire_match(&probe_request, "omitted", &contract(), &mut seen));
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &probe_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         // Another boolean but a different wire value cannot confirm the first.
         probe_request["think"] = json!(true);
-        assert!(acceptance_host_wire_match(&probe_request, "omitted", &contract(), &mut seen));
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &probe_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         probe_request["think"] = json!(false);
-        assert!(acceptance_host_wire_match(&probe_request, "omitted", &contract(), &mut seen));
-        assert!(acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &probe_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         agent_request["think"] = json!("low");
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         let default_agent = agent();
-        assert!(acceptance_host_wire_match(&default_agent, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &default_agent,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
     }
     #[test]
     fn accepts_all_production_calibration_and_verification_stages_and_agent() {
@@ -271,32 +362,64 @@ mod acceptance_wire_tests {
             for output in contract().verification.outputs {
                 let mut request = probe(output);
                 request["think"] = json!(think);
-                assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+                assert!(acceptance_wire_controls_match(
+                    &request,
+                    "omitted",
+                    &contract()
+                ));
             }
         }
 
         let mut request = agent();
         request["think"] = json!(true);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         let mut request = json!({"stream":true,"options":{"num_ctx":4096,"num_predict":32}});
         request["think"] = json!(false);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
 
         let mut request = probe(512);
         request["think"] = json!("medium");
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request["think"] = json!(true);
         request["tools"][0]["function"]["name"] = json!("different_tool");
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request = probe(512);
         request["think"] = json!(true);
         request["options"]["num_ctx"] = json!(8192);
-        assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request["options"]["num_ctx"] = json!(1234);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request = probe(512);
         request["think"] = json!(true);
-        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
     }
     #[test]
     fn rejects_wrong_context_reasoning_and_unauthorized_tool_shapes() {
@@ -381,10 +504,22 @@ mod acceptance_wire_tests {
         let mut request = agent();
         request["think"] = json!("low");
         assert!(acceptance_wire_controls_match(&request, "low", &contract()));
-        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
         request["think"] = json!(false);
-        assert!(acceptance_wire_controls_match(&request, "false", &contract()));
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
     }
 }
 
@@ -623,8 +758,6 @@ fn main() {
                             let model = std::env::var("CLACK_ACCEPTANCE_MODEL")
                                 .unwrap_or_else(|_| "qwen38-uncensored:latest".into());
                             assert!(matches!(model.as_str(), "qwen38-uncensored:latest" | "qwen3-coder:30b" | "qwen38-iq4xs:latest" | "muse-glimmer:30b") || matches!(model.as_str(),
-                                "muse-glimmer:30b" |
-                                "muse-glimmer:30b" |
                                 "nemotron-3.5-lightning:30b-a3b-q4_K_M" |
                                 "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M"
                                 | "hf.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP:Q4_K_M"

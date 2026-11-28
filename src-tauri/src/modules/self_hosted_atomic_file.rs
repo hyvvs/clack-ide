@@ -12,8 +12,10 @@ const TEMP_SUFFIX: &str = ".pending";
 // the staged replacement. A fixed same-directory recovery name preserves the
 // OLD complete settings file in that documented failure window. It is never
 // an authority and is never replayed as a new qualifying effect.
+#[cfg(windows)]
 const REPLACED_BACKUP: &str = ".terax-settings.json.replaced-backup";
 
+#[cfg(windows)]
 fn old_backup_path(path: &Path) -> std::path::PathBuf {
     path.with_file_name(REPLACED_BACKUP)
 }
@@ -26,9 +28,13 @@ fn old_backup_path(path: &Path) -> std::path::PathBuf {
 pub(super) fn recover_missing_replaced_file(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        if path.exists() { return Ok(()); }
+        if path.exists() {
+            return Ok(());
+        }
         let backup = old_backup_path(path);
-        if !backup.exists() { return Ok(()); }
+        if !backup.exists() {
+            return Ok(());
+        }
         if !fs::symlink_metadata(&backup)?.file_type().is_file() {
             return Err(io::Error::other("Unsafe Windows settings backup type"));
         }
@@ -38,7 +44,9 @@ pub(super) fn recover_missing_replaced_file(path: &Path) -> io::Result<()> {
         fs::rename(&backup, path)?;
     }
     #[cfg(not(windows))]
-    { let _ = path; }
+    {
+        let _ = path;
+    }
     Ok(())
 }
 
@@ -59,7 +67,9 @@ fn make_room_for_next_backup(path: &Path) -> io::Result<()> {
         }
     }
     #[cfg(not(windows))]
-    { let _ = path; }
+    {
+        let _ = path;
+    }
     Ok(())
 }
 
@@ -76,12 +86,16 @@ fn acceptance_inject_disk_full(path: &Path) -> bool {
 
 #[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
 fn acceptance_injection_path_owned(path: &Path) -> bool {
-    let Ok(root) = std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT") else {return false};
-    let Ok(root) = Path::new(&root).canonicalize() else {return false};
-    super::managed_local_runtime::acceptance_is_owned_scenario_root(&root) &&
-        path.file_name().is_some_and(|n| n == "terax-settings.json") &&
-        path.parent().and_then(|p| p.canonicalize().ok()) ==
-            root.join("data").canonicalize().ok()
+    let Ok(root) = std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT") else {
+        return false;
+    };
+    let Ok(root) = Path::new(&root).canonicalize() else {
+        return false;
+    };
+    super::managed_local_runtime::acceptance_is_owned_scenario_root(&root)
+        && path.file_name().is_some_and(|n| n == "terax-settings.json")
+        && path.parent().and_then(|p| p.canonicalize().ok())
+            == root.join("data").canonicalize().ok()
 }
 
 /// Acceptance-only barrier after the actual staged temp is synced but before
@@ -89,14 +103,22 @@ fn acceptance_injection_path_owned(path: &Path) -> bool {
 /// expire or kill the host while the native boundary is genuinely in flight.
 #[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
 fn acceptance_pause_before_fence(path: &Path) {
-    if std::env::var("CLACK_LM11_B03_ACCEPTANCE_PRE_FENCE").as_deref() != Ok("1") ||
-        !acceptance_injection_path_owned(path) { return; }
+    if std::env::var("CLACK_LM11_B03_ACCEPTANCE_PRE_FENCE").as_deref() != Ok("1")
+        || !acceptance_injection_path_owned(path)
+    {
+        return;
+    }
     let root = std::path::PathBuf::from(
-        std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned root"));
+        std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned root"),
+    );
     let marker = File::create(root.join("real-pre-fence.json")).expect("pre-fence marker");
-    serde_json::to_writer(&marker, &serde_json::json!({
-        "stage":"staged-and-synced-before-fence", "pid":std::process::id(), "target":path
-    })).expect("pre-fence marker serialization");
+    serde_json::to_writer(
+        &marker,
+        &serde_json::json!({
+            "stage":"staged-and-synced-before-fence", "pid":std::process::id(), "target":path
+        }),
+    )
+    .expect("pre-fence marker serialization");
     marker.sync_all().expect("pre-fence marker sync");
     std::thread::sleep(std::time::Duration::from_millis(1800));
 }
@@ -115,8 +137,15 @@ pub(super) enum PhysicalOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Step {
-    Created, PartialWrite, Written, BeforeSync, Synced, BeforeFence, BeforeReplace,
-    AfterReplace, DirectorySynced,
+    Created,
+    PartialWrite,
+    Written,
+    BeforeSync,
+    Synced,
+    BeforeFence,
+    BeforeReplace,
+    AfterReplace,
+    DirectorySynced,
 }
 
 /// On Unix this is atomic namespace replacement on a local filesystem.
@@ -128,20 +157,38 @@ pub(super) fn replace_file(temp: &Path, target: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH,
     };
-    let wide = |path: &Path| path.as_os_str().encode_wide()
-        .chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let temp_name = wide(temp);
     let target_name = wide(target);
     let backup_name = wide(&old_backup_path(target));
     let success = unsafe {
         if target.exists() {
-            ReplaceFileW(target_name.as_ptr(), temp_name.as_ptr(),
-                backup_name.as_ptr(), 0, std::ptr::null(), std::ptr::null())
+            ReplaceFileW(
+                target_name.as_ptr(),
+                temp_name.as_ptr(),
+                backup_name.as_ptr(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
         } else {
-            MoveFileExW(temp_name.as_ptr(), target_name.as_ptr(), MOVEFILE_WRITE_THROUGH)
+            MoveFileExW(
+                temp_name.as_ptr(),
+                target_name.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
         }
     };
-    if success == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    if success == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -151,7 +198,10 @@ pub(super) fn replace_file(temp: &Path, target: &Path) -> io::Result<()> {
 
 #[cfg(not(any(unix, windows)))]
 pub(super) fn replace_file(_temp: &Path, _target: &Path) -> io::Result<()> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "No atomic settings replacement primitive"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "No atomic settings replacement primitive",
+    ))
 }
 
 fn sync_payload(file: &File) -> io::Result<()> {
@@ -169,7 +219,9 @@ fn sync_payload(file: &File) -> io::Result<()> {
 
 fn sync_parent(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    { File::open(path)?.sync_all() }
+    {
+        File::open(path)?.sync_all()
+    }
     #[cfg(windows)]
     {
         // Windows has no portable documented user-mode fsync(directory).
@@ -179,11 +231,16 @@ fn sync_parent(path: &Path) -> io::Result<()> {
         Ok(())
     }
     #[cfg(not(any(unix, windows)))]
-    { let _ = path; Err(io::Error::other("Unsupported settings directory sync")) }
+    {
+        let _ = path;
+        Err(io::Error::other("Unsupported settings directory sync"))
+    }
 }
 
 pub(super) fn replace_settings_file(
-    path: &Path, bytes: &[u8], fence: impl FnOnce() -> bool,
+    path: &Path,
+    bytes: &[u8],
+    fence: impl FnOnce() -> bool,
 ) -> PhysicalOutcome {
     replace_settings_file_with(path, bytes, fence, |_| Ok(()))
 }
@@ -192,7 +249,8 @@ pub(super) fn replace_settings_file(
 /// For qualification, this guard nests the existing ticket/cancellation mutex
 /// and the managed RuntimeOwner lock. Do not release either in a bool callback.
 pub(super) fn replace_settings_file_with_guard(
-    path: &Path, bytes: &[u8],
+    path: &Path,
+    bytes: &[u8],
     guarded_commit: impl FnOnce(&Path, &Path) -> PhysicalOutcome,
 ) -> PhysicalOutcome {
     replace_settings_file_with_guard_and_steps(path, bytes, guarded_commit, |_| Ok(()))
@@ -202,32 +260,51 @@ pub(super) fn replace_settings_file_with_guard(
 /// A fault after replacement can only mean recovery-required, never a rollback
 /// of an already-crossed commit. The caller must read the authoritative file.
 pub(super) fn replace_settings_file_with(
-    path: &Path, bytes: &[u8], fence: impl FnOnce() -> bool,
+    path: &Path,
+    bytes: &[u8],
+    fence: impl FnOnce() -> bool,
     step: impl FnMut(Step) -> io::Result<()>,
 ) -> PhysicalOutcome {
-    replace_settings_file_with_guard_and_steps(path, bytes, |staged, target| {
-        if !fence() { return PhysicalOutcome::Fenced; }
-        if replace_file(staged, target).is_ok() {
-            PhysicalOutcome::Crossed
-        } else {
-            PhysicalOutcome::RecoveryRequired
-        }
-    }, step)
+    replace_settings_file_with_guard_and_steps(
+        path,
+        bytes,
+        |staged, target| {
+            if !fence() {
+                return PhysicalOutcome::Fenced;
+            }
+            if replace_file(staged, target).is_ok() {
+                PhysicalOutcome::Crossed
+            } else {
+                PhysicalOutcome::RecoveryRequired
+            }
+        },
+        step,
+    )
 }
 
 fn replace_settings_file_with_guard_and_steps(
-    path: &Path, bytes: &[u8],
+    path: &Path,
+    bytes: &[u8],
     guarded_commit: impl FnOnce(&Path, &Path) -> PhysicalOutcome,
     mut step: impl FnMut(Step) -> io::Result<()>,
 ) -> PhysicalOutcome {
-    let Some(parent) = path.parent() else { return PhysicalOutcome::FailedBeforeCommit };
-    if fs::create_dir_all(parent).is_err() { return PhysicalOutcome::FailedBeforeCommit; }
-    let mut file = match Builder::new().prefix(TEMP_PREFIX).suffix(TEMP_SUFFIX)
-        .tempfile_in(parent) {
+    let Some(parent) = path.parent() else {
+        return PhysicalOutcome::FailedBeforeCommit;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return PhysicalOutcome::FailedBeforeCommit;
+    }
+    let mut file = match Builder::new()
+        .prefix(TEMP_PREFIX)
+        .suffix(TEMP_SUFFIX)
+        .tempfile_in(parent)
+    {
         Ok(file) => file,
         Err(_) => return PhysicalOutcome::FailedBeforeCommit,
     };
-    if step(Step::Created).is_err() { return PhysicalOutcome::FailedBeforeCommit; }
+    if step(Step::Created).is_err() {
+        return PhysicalOutcome::FailedBeforeCommit;
+    }
     let split = bytes.len() / 2;
     if file.write_all(&bytes[..split]).is_err() {
         return PhysicalOutcome::FailedBeforeCommit;
@@ -236,13 +313,12 @@ fn replace_settings_file_with_guard_and_steps(
     if acceptance_inject_disk_full(path) {
         return PhysicalOutcome::FailedBeforeCommit;
     }
-    if
-        step(Step::PartialWrite).is_err() ||
-        file.write_all(&bytes[split..]).is_err() ||
-        step(Step::Written).is_err() ||
-        step(Step::BeforeSync).is_err() ||
-        sync_payload(file.as_file()).is_err() ||
-        step(Step::Synced).is_err()
+    if step(Step::PartialWrite).is_err()
+        || file.write_all(&bytes[split..]).is_err()
+        || step(Step::Written).is_err()
+        || step(Step::BeforeSync).is_err()
+        || sync_payload(file.as_file()).is_err()
+        || step(Step::Synced).is_err()
     {
         return PhysicalOutcome::FailedBeforeCommit;
     }
@@ -269,9 +345,9 @@ fn replace_settings_file_with_guard_and_steps(
     if result != PhysicalOutcome::Crossed {
         return result;
     }
-    if step(Step::AfterReplace).is_err() ||
-        sync_parent(parent).is_err() ||
-        step(Step::DirectorySynced).is_err()
+    if step(Step::AfterReplace).is_err()
+        || sync_parent(parent).is_err()
+        || step(Step::DirectorySynced).is_err()
     {
         return PhysicalOutcome::RecoveryRequired;
     }
@@ -282,23 +358,33 @@ fn replace_settings_file_with_guard_and_steps(
 /// a remaining source name proves it was not adopted by the single replacement
 /// boundary. Remove bounded abandoned artifacts; never touch any other file.
 pub(super) fn discard_abandoned_temps(path: &Path) -> io::Result<usize> {
-    let Some(parent) = path.parent() else { return Ok(0) };
-    if !parent.exists() { return Ok(0); }
+    let Some(parent) = path.parent() else {
+        return Ok(0);
+    };
+    if !parent.exists() {
+        return Ok(0);
+    }
     let mut abandoned = Vec::new();
     for item in fs::read_dir(parent)? {
         let item = item?;
         let name = item.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with(TEMP_PREFIX) && name.ends_with(TEMP_SUFFIX) &&
-            item.file_type()?.is_file() {
+        if name.starts_with(TEMP_PREFIX)
+            && name.ends_with(TEMP_SUFFIX)
+            && item.file_type()?.is_file()
+        {
             if abandoned.len() == 64 {
-                return Err(io::Error::other("Too many interrupted settings transactions"));
+                return Err(io::Error::other(
+                    "Too many interrupted settings transactions",
+                ));
             }
             abandoned.push(item.path());
         }
     }
     let count = abandoned.len();
-    for temp in abandoned { fs::remove_file(temp)?; }
+    for temp in abandoned {
+        fs::remove_file(temp)?;
+    }
     Ok(count)
 }
 
@@ -310,29 +396,57 @@ mod tests {
 
     #[test]
     fn b03_atomic_fence_and_failpoints_never_publish_partial_authority() {
-        for fault in [Step::Created, Step::PartialWrite, Step::Written,
-                      Step::BeforeSync, Step::Synced, Step::BeforeFence, Step::BeforeReplace] {
+        for fault in [
+            Step::Created,
+            Step::PartialWrite,
+            Step::Written,
+            Step::BeforeSync,
+            Step::Synced,
+            Step::BeforeFence,
+            Step::BeforeReplace,
+        ] {
             let dir = tempdir().unwrap();
             let target = dir.path().join("terax-settings.json");
             fs::write(&target, b"{\"revision\":1}").unwrap();
             let result = replace_settings_file_with(
-                &target, b"{\"revision\":2,\"qualificationCas\":\"acknowledged\"}",
-                || true, |phase| if phase == fault {
-                    Err(io::Error::other("deterministic interrupted phase"))
-                } else { Ok(()) });
-            assert!(matches!(result, PhysicalOutcome::Fenced |
-                PhysicalOutcome::FailedBeforeCommit), "{fault:?} {result:?}");
+                &target,
+                b"{\"revision\":2,\"qualificationCas\":\"acknowledged\"}",
+                || true,
+                |phase| {
+                    if phase == fault {
+                        Err(io::Error::other("deterministic interrupted phase"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(
+                matches!(
+                    result,
+                    PhysicalOutcome::Fenced | PhysicalOutcome::FailedBeforeCommit
+                ),
+                "{fault:?} {result:?}"
+            );
             assert_eq!(fs::read(&target).unwrap(), b"{\"revision\":1}");
         }
         let dir = tempdir().unwrap();
         let target = dir.path().join("terax-settings.json");
         fs::write(&target, b"original").unwrap();
         let revoked = AtomicBool::new(false);
-        assert_eq!(replace_settings_file_with(&target, b"new",
-            || !revoked.load(Ordering::Acquire), |phase| {
-                if phase == Step::BeforeFence { revoked.store(true, Ordering::Release); }
-                Ok(())
-            }), PhysicalOutcome::Fenced);
+        assert_eq!(
+            replace_settings_file_with(
+                &target,
+                b"new",
+                || !revoked.load(Ordering::Acquire),
+                |phase| {
+                    if phase == Step::BeforeFence {
+                        revoked.store(true, Ordering::Release);
+                    }
+                    Ok(())
+                }
+            ),
+            PhysicalOutcome::Fenced
+        );
         assert_eq!(fs::read(target).unwrap(), b"original");
     }
 
@@ -342,10 +456,19 @@ mod tests {
         let target = dir.path().join("terax-settings.json");
         fs::write(&target, b"{\"revision\":1}").unwrap();
         let expected = b"{\"revision\":2,\"qualificationCas\":\"acknowledged\"}";
-        assert_eq!(replace_settings_file_with(&target, expected, || true,
-            |phase| if phase == Step::AfterReplace {
-                Err(io::Error::other("lost native acknowledgement"))
-            } else { Ok(()) }), PhysicalOutcome::RecoveryRequired);
+        assert_eq!(
+            replace_settings_file_with(
+                &target,
+                expected,
+                || true,
+                |phase| if phase == Step::AfterReplace {
+                    Err(io::Error::other("lost native acknowledgement"))
+                } else {
+                    Ok(())
+                }
+            ),
+            PhysicalOutcome::RecoveryRequired
+        );
         // Read-only recovery determines the physical state; the old caller
         // remains failed/Unknown and no second write is attempted.
         assert_eq!(fs::read(&target).unwrap(), expected);
@@ -357,11 +480,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let target = dir.path().join("terax-settings.json");
         fs::write(&target, b"{\"revision\":1}").unwrap();
-        fs::write(dir.path().join(format!("{TEMP_PREFIX}corrupt{TEMP_SUFFIX}")), b"{").unwrap();
+        fs::write(
+            dir.path()
+                .join(format!("{TEMP_PREFIX}corrupt{TEMP_SUFFIX}")),
+            b"{",
+        )
+        .unwrap();
         fs::write(dir.path().join("other-evidence"), b"keep").unwrap();
         assert_eq!(discard_abandoned_temps(&target).unwrap(), 1);
         assert_eq!(fs::read(&target).unwrap(), b"{\"revision\":1}");
-        assert_eq!(fs::read(dir.path().join("other-evidence")).unwrap(), b"keep");
+        assert_eq!(
+            fs::read(dir.path().join("other-evidence")).unwrap(),
+            b"keep"
+        );
     }
 
     #[cfg(windows)]
@@ -374,7 +505,9 @@ mod tests {
         // Documented ReplaceFileW error 1176/1177: old name disappears
         // while the replacement remains under its staged name.
         fs::write(old_backup_path(&target), old).unwrap();
-        let abandoned = dir.path().join(format!("{TEMP_PREFIX}interrupted{TEMP_SUFFIX}"));
+        let abandoned = dir
+            .path()
+            .join(format!("{TEMP_PREFIX}interrupted{TEMP_SUFFIX}"));
         fs::write(&abandoned, candidate).unwrap();
         recover_missing_replaced_file(&target).unwrap();
         assert_eq!(fs::read(&target).unwrap(), old);
@@ -394,7 +527,10 @@ mod tests {
         let old = b"{\"revision\":1}";
         let new = b"{\"revision\":2,\"qualificationCas\":\"acknowledged\"}";
         fs::write(&target, old).unwrap();
-        assert_eq!(replace_settings_file(&target, new, || true), PhysicalOutcome::Crossed);
+        assert_eq!(
+            replace_settings_file(&target, new, || true),
+            PhysicalOutcome::Crossed
+        );
         assert_eq!(fs::read(&target).unwrap(), new);
         assert_eq!(fs::read(old_backup_path(&target)).unwrap(), old);
         recover_missing_replaced_file(&target).unwrap();
@@ -403,7 +539,10 @@ mod tests {
         // recovery if Windows cannot durably sync the directory entry.
         assert_eq!(fs::read(old_backup_path(&target)).unwrap(), old);
         let next = b"{\"revision\":3}";
-        assert_eq!(replace_settings_file(&target, next, || true), PhysicalOutcome::Crossed);
+        assert_eq!(
+            replace_settings_file(&target, next, || true),
+            PhysicalOutcome::Crossed
+        );
         assert_eq!(fs::read(&target).unwrap(), next);
         assert_eq!(fs::read(old_backup_path(&target)).unwrap(), new);
         make_room_for_next_backup(&target).unwrap();
@@ -413,7 +552,10 @@ mod tests {
         fs::write(old_backup_path(&target), b"{corrupt-recovery}").unwrap();
         assert!(recover_missing_replaced_file(&target).is_err());
         assert!(!target.exists());
-        assert_eq!(fs::read(old_backup_path(&target)).unwrap(), b"{corrupt-recovery}");
+        assert_eq!(
+            fs::read(old_backup_path(&target)).unwrap(),
+            b"{corrupt-recovery}"
+        );
     }
 
     #[test]
@@ -435,13 +577,17 @@ mod tests {
             let target = dir.path().join("terax-settings.json");
             fs::write(&target, b"{\"revision\":1}").unwrap();
             let valid = AtomicBool::new(true);
-            let outcome = replace_settings_file_with(&target, b"{\"revision\":2}",
-                || valid.load(Ordering::Acquire), |phase| {
+            let outcome = replace_settings_file_with(
+                &target,
+                b"{\"revision\":2}",
+                || valid.load(Ordering::Acquire),
+                |phase| {
                     if phase == Step::BeforeFence {
                         valid.store(false, Ordering::Release);
                     }
                     Ok(())
-                });
+                },
+            );
             assert_eq!(outcome, PhysicalOutcome::Fenced, "{reason}");
             assert_eq!(fs::read(&target).unwrap(), b"{\"revision\":1}", "{reason}");
         }
@@ -453,16 +599,25 @@ mod tests {
         // A parent that is a regular file cannot hold a transaction temp.
         let blocker = dir.path().join("no-directory");
         fs::write(&blocker, b"not-a-directory").unwrap();
-        assert_eq!(replace_settings_file(&blocker.join("terax-settings.json"),
-            b"candidate", || true), PhysicalOutcome::FailedBeforeCommit);
+        assert_eq!(
+            replace_settings_file(&blocker.join("terax-settings.json"), b"candidate", || true),
+            PhysicalOutcome::FailedBeforeCommit
+        );
 
         let path = dir.path().join("terax-settings.json");
         fs::write(&path, b"original").unwrap();
-        let disk_full = replace_settings_file_with(&path, b"candidate", || true, |phase| {
-            if phase == Step::PartialWrite {
-                Err(io::Error::from_raw_os_error(28)) // ENOSPC fault injected
-            } else { Ok(()) }
-        });
+        let disk_full = replace_settings_file_with(
+            &path,
+            b"candidate",
+            || true,
+            |phase| {
+                if phase == Step::PartialWrite {
+                    Err(io::Error::from_raw_os_error(28)) // ENOSPC fault injected
+                } else {
+                    Ok(())
+                }
+            },
+        );
         assert_eq!(disk_full, PhysicalOutcome::FailedBeforeCommit);
         assert_eq!(fs::read(&path).unwrap(), b"original");
 
@@ -470,8 +625,10 @@ mod tests {
         // primitive must fail without ever publishing partial JSON.
         let directory_target = dir.path().join("directory-target");
         fs::create_dir(&directory_target).unwrap();
-        assert_eq!(replace_settings_file(&directory_target,
-            b"candidate", || true), PhysicalOutcome::RecoveryRequired);
+        assert_eq!(
+            replace_settings_file(&directory_target, b"candidate", || true),
+            PhysicalOutcome::RecoveryRequired
+        );
         assert!(directory_target.is_dir());
     }
 
@@ -481,18 +638,24 @@ mod tests {
         let target = dir.path().join("terax-settings.json");
         fs::write(&target, b"{\"revision\":1}").unwrap();
         let valid = AtomicBool::new(true);
-        let outcome = replace_settings_file_with(&target,
+        let outcome = replace_settings_file_with(
+            &target,
             b"{\"revision\":2,\"effect\":\"committed\"}",
-            || valid.load(Ordering::Acquire), |phase| {
+            || valid.load(Ordering::Acquire),
+            |phase| {
                 if phase == Step::AfterReplace {
                     valid.store(false, Ordering::Release);
                 }
                 Ok(())
-            });
+            },
+        );
         assert_eq!(outcome, PhysicalOutcome::Crossed);
         assert!(!valid.load(Ordering::Acquire)); // caller must fail closed
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(
-            &fs::read(target).unwrap()).unwrap()["revision"], 2);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(target).unwrap()).unwrap()
+                ["revision"],
+            2
+        );
     }
 
     #[test]
@@ -501,12 +664,22 @@ mod tests {
         let target = dir.path().join("terax-settings.json");
         fs::write(&target, b"{\"revision\":1}").unwrap();
         for fail in [Step::AfterReplace, Step::DirectorySynced] {
-            let expected = format!("{{\"revision\":{},\"qualified\":true}}", 
-                if fail == Step::AfterReplace { 2 } else { 3 });
-            let outcome = replace_settings_file_with(&target, expected.as_bytes(),
-                || true, |step| if step == fail {
-                    Err(io::Error::other("post-replace durability/ack interrupted"))
-                } else { Ok(()) });
+            let expected = format!(
+                "{{\"revision\":{},\"qualified\":true}}",
+                if fail == Step::AfterReplace { 2 } else { 3 }
+            );
+            let outcome = replace_settings_file_with(
+                &target,
+                expected.as_bytes(),
+                || true,
+                |step| {
+                    if step == fail {
+                        Err(io::Error::other("post-replace durability/ack interrupted"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
             assert_eq!(outcome, PhysicalOutcome::RecoveryRequired);
             assert_eq!(fs::read(&target).unwrap(), expected.as_bytes());
         }
@@ -519,36 +692,44 @@ mod tests {
         if let (Some(phase), Some(path)) = (child_phase, child_path) {
             let target = std::path::PathBuf::from(path);
             let payload = b"{\"revision\":2,\"qualificationCas\":\"acknowledged\"}";
-            let _ = replace_settings_file_with(&target, payload, || true, |at| {
-                if phase == "before" && at == Step::BeforeReplace {
-                    std::process::exit(71); // real child termination before syscall
-                }
-                if phase == "after" && at == Step::AfterReplace {
-                    std::process::exit(72); // real child termination after syscall
-                }
-                Ok(())
-            });
+            let _ = replace_settings_file_with(
+                &target,
+                payload,
+                || true,
+                |at| {
+                    if phase == "before" && at == Step::BeforeReplace {
+                        std::process::exit(71); // real child termination before syscall
+                    }
+                    if phase == "after" && at == Step::AfterReplace {
+                        std::process::exit(72); // real child termination after syscall
+                    }
+                    Ok(())
+                },
+            );
             panic!("child crash injection failed to reach its expected phase");
         }
         let full_name = "modules::self_hosted_atomic_file::tests::b03_native_process_crash_before_and_after_replace_has_one_recovery_answer";
-        for (phase, expected_exit, changed) in [
-            ("before", 71, false), ("after", 72, true),
-        ] {
+        for (phase, expected_exit, changed) in [("before", 71, false), ("after", 72, true)] {
             let dir = tempdir().unwrap();
             let target = dir.path().join("terax-settings.json");
             let original = b"{\"revision\":1}";
             fs::write(&target, original).unwrap();
             let child = std::process::Command::new(std::env::current_exe().unwrap())
-                .arg("--exact").arg(full_name).arg("--nocapture")
+                .arg("--exact")
+                .arg(full_name)
+                .arg("--nocapture")
                 .env("CLACK_B03_OFFLINE_CHILD_CRASH", phase)
                 .env("CLACK_B03_OFFLINE_CHILD_TARGET", &target)
-                .status().unwrap();
+                .status()
+                .unwrap();
             assert_eq!(child.code(), Some(expected_exit), "{phase}");
             let recovered: serde_json::Value =
                 serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
             assert_eq!(recovered["revision"], if changed { 2 } else { 1 });
-            assert_eq!(discard_abandoned_temps(&target).unwrap(),
-                if changed { 0 } else { 1 });
+            assert_eq!(
+                discard_abandoned_temps(&target).unwrap(),
+                if changed { 0 } else { 1 }
+            );
         }
     }
 }

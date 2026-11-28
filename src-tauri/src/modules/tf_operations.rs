@@ -6,9 +6,11 @@
 use crate::modules::workspace::WorkspaceRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -66,6 +68,7 @@ impl TfOperation {
                 | Self::BuildCargoBuild
         )
     }
+    #[cfg(windows)]
     fn is_repo(self) -> bool {
         matches!(
             self,
@@ -84,6 +87,7 @@ impl TfOperation {
                 | Self::RepoSwitchBranch
         )
     }
+    #[cfg(windows)]
     fn is_build(self) -> bool {
         matches!(
             self,
@@ -194,6 +198,7 @@ pub struct TfOperationReceipt {
 }
 
 #[derive(Clone)]
+#[cfg(windows)]
 struct Pending {
     request_id: String,
     request: TfOperationRequest,
@@ -203,6 +208,11 @@ struct Pending {
     expires: Instant,
     approved: bool,
 }
+
+// The non-Windows TF2 endpoint is unsupported, but cancellation retains the
+// same pending-token map without inventing a native executable authority.
+#[cfg(not(windows))]
+type Pending = ();
 
 #[derive(Default)]
 pub struct TfOperationState {
@@ -1112,8 +1122,8 @@ mod windows {
             for path in &p.canonical_paths {
                 inspect_components(path)?;
                 let current = fs::canonicalize(path);
-                if !(op == TfOperation::FileDelete && path == &p.canonical_paths[0])
-                    && !(op == TfOperation::FileMove && path == &p.canonical_paths[0])
+                if (path != &p.canonical_paths[0]
+                    || !matches!(op, TfOperation::FileDelete | TfOperation::FileMove))
                     && current.map_err(failure)? != *path
                 {
                     return Err("Post-effect path identity changed".into());
@@ -1209,32 +1219,40 @@ mod windows {
         result.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Ok((result, false))
     }
+    struct WalkConfig<'a> {
+        root: &'a Path,
+        max_depth: u64,
+        req: &'a TfOperationRequest,
+        cancelled: &'a AtomicBool,
+        deadline: Instant,
+    }
+
+    struct WalkState {
+        visited: usize,
+        bytes: u64,
+        matches: Vec<serde_json::Value>,
+        truncated: bool,
+    }
+
     fn walk(
         path: &Path,
-        root: &Path,
         depth: u64,
-        max_depth: u64,
-        visited: &mut usize,
-        bytes: &mut u64,
-        req: &TfOperationRequest,
-        matches: &mut Vec<serde_json::Value>,
-        cancelled: &AtomicBool,
-        deadline: Instant,
-        truncated: &mut bool,
+        config: &WalkConfig<'_>,
+        state: &mut WalkState,
     ) -> Result<(), String> {
-        if depth > max_depth || matches.len() >= 200 {
-            *truncated = true;
+        if depth > config.max_depth || state.matches.len() >= 200 {
+            state.truncated = true;
             return Ok(());
         }
         for item in fs::read_dir(path).map_err(failure)? {
-            if Instant::now() >= deadline {
+            if Instant::now() >= config.deadline {
                 return Err("Directory search wall-time budget exhausted".into());
             }
-            if cancelled.load(Ordering::Acquire) {
+            if config.cancelled.load(Ordering::Acquire) {
                 return Err("Search cancelled".into());
             }
-            *visited += 1;
-            if *visited > SEARCH_ENTRY_CAP {
+            state.visited += 1;
+            if state.visited > SEARCH_ENTRY_CAP {
                 return Err("Directory search entry budget exhausted".into());
             }
             let item = item.map_err(failure)?;
@@ -1248,22 +1266,10 @@ mod windows {
                 continue;
             }
             if meta.is_dir() {
-                if depth < max_depth {
-                    walk(
-                        &p,
-                        root,
-                        depth + 1,
-                        max_depth,
-                        visited,
-                        bytes,
-                        req,
-                        matches,
-                        cancelled,
-                        deadline,
-                        truncated,
-                    )?;
+                if depth < config.max_depth {
+                    walk(&p, depth + 1, config, state)?;
                 } else {
-                    *truncated = true;
+                    state.truncated = true;
                 }
                 continue;
             }
@@ -1271,53 +1277,55 @@ mod windows {
                 continue;
             }
             let relative = p
-                .strip_prefix(root)
+                .strip_prefix(config.root)
                 .map_err(failure)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if req.operation == TfOperation::FileFind {
-                let glob_match = match req.pattern.as_deref() {
+            if config.req.operation == TfOperation::FileFind {
+                let glob_match = match config.req.pattern.as_deref() {
                     Some(pattern) => globset::Glob::new(pattern)
                         .map_err(failure)?
                         .compile_matcher()
                         .is_match(&relative),
                     None => true,
                 };
-                let query_match = req.query.as_deref().is_none_or(|q| {
+                let query_match = config.req.query.as_deref().is_none_or(|q| {
                     relative
                         .to_ascii_lowercase()
                         .contains(&q.to_ascii_lowercase())
                 });
                 if glob_match && query_match {
-                    matches.push(serde_json::json!({"path": relative, "bytes": meta.len()}));
+                    state
+                        .matches
+                        .push(serde_json::json!({"path": relative, "bytes": meta.len()}));
                 }
             } else {
                 if meta.len() > FILE_CAP {
                     continue;
                 }
-                *bytes += meta.len();
-                if *bytes > SEARCH_BYTES_CAP {
+                state.bytes += meta.len();
+                if state.bytes > SEARCH_BYTES_CAP {
                     return Err("Search scanned byte budget exhausted".into());
                 }
                 let content = read_small(&p)?;
                 if let Ok(content) = std::str::from_utf8(&content) {
-                    let needle = req.query.as_deref().ok_or("Search query missing")?;
+                    let needle = config.req.query.as_deref().ok_or("Search query missing")?;
                     for (line, content) in content.lines().enumerate() {
                         if content.contains(needle) {
-                            matches.push(serde_json::json!({
+                            state.matches.push(serde_json::json!({
                                 "path": relative, "line": line + 1,
                                 "text": content.chars().take(256).collect::<String>()
                             }));
-                            if matches.len() >= 200 {
-                                *truncated = true;
+                            if state.matches.len() >= 200 {
+                                state.truncated = true;
                                 break;
                             }
                         }
                     }
                 }
             }
-            if matches.len() >= 200 {
-                *truncated = true;
+            if state.matches.len() >= 200 {
+                state.truncated = true;
                 break;
             }
         }
@@ -1364,25 +1372,24 @@ mod windows {
                 Ok(out)
             }
             TfOperation::FileFind | TfOperation::TextSearch => {
-                let mut visited = 0;
-                let mut bytes = 0;
-                let mut results = Vec::new();
-                let mut truncated = false;
-                walk(
-                    path,
-                    path,
-                    0,
-                    p.request.depth.unwrap_or(4),
-                    &mut visited,
-                    &mut bytes,
-                    &p.request,
-                    &mut results,
+                let config = WalkConfig {
+                    root: path,
+                    max_depth: p.request.depth.unwrap_or(4),
+                    req: &p.request,
                     cancelled,
-                    Instant::now() + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
-                    &mut truncated,
-                )?;
-                let mut out = Outcome::no_effect(serde_json::to_string(&results).map_err(failure)?);
-                out.stdout_truncated = truncated;
+                    deadline: Instant::now()
+                        + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
+                };
+                let mut state = WalkState {
+                    visited: 0,
+                    bytes: 0,
+                    matches: Vec::new(),
+                    truncated: false,
+                };
+                walk(path, 0, &config, &mut state)?;
+                let mut out =
+                    Outcome::no_effect(serde_json::to_string(&state.matches).map_err(failure)?);
+                out.stdout_truncated = state.truncated;
                 Ok(out)
             }
             _ => Err("Unsupported filesystem read".into()),

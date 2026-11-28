@@ -47,7 +47,7 @@ describe('opt-in, offline phase evidence durability', () => {
       call: async () => {
         calls++;
         return { text: calls === 1 ? '{"claims":[]}' : JSON.stringify({ claims: [{
-          source: source.evidence.id, section: 'unresolved-issues',
+          sourceIndex: 0, section: 'unresolved-issues',
           text: 'A reported issue is unresolved.', quote: source.passages[0],
           status: 'unresolved', contradicts: [],
         }] }), usage: { inputTokens: 100, outputTokens: 30, cachedInputTokens: 0 } };
@@ -142,7 +142,7 @@ describe('opt-in, offline phase evidence durability', () => {
       model: {} as LanguageModel, scope,
       limits: async () => ({ deployed: 32768 }), remainingCalls: 3,
       call: async () => ({
-        text: JSON.stringify({ claims: [{ source: source.evidence.id,
+        text: JSON.stringify({ claims: [{ sourceIndex: 0,
           section: 'unresolved-issues', text: 'An unresolved issue was reported.',
           quote: source.passages[0], status: 'unresolved', contradicts: [] }] }),
         usage: { inputTokens: 90, outputTokens: 40, cachedInputTokens: 0 },

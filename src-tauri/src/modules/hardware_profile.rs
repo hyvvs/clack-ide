@@ -20,6 +20,7 @@ pub struct Observed<T> {
     pub observed_at: u64,
 }
 
+#[cfg(windows)]
 impl<T> Observed<T> {
     fn new(value: T, source: &'static str, observed_at: u64) -> Self {
         Self {
@@ -45,6 +46,7 @@ pub struct NativeGpuObservation {
     pub cuda_hardware_capable: Option<Observed<bool>>,
 }
 
+#[cfg(windows)]
 impl NativeGpuObservation {
     fn empty() -> Self {
         Self {
@@ -126,7 +128,7 @@ mod windows_telemetry {
             )
         } != 0
             || !(2..=2048).contains(&size)
-            || size % 2 != 0
+            || !size.is_multiple_of(2)
         {
             return None;
         }
@@ -165,7 +167,7 @@ mod windows_telemetry {
                 &mut bytes,
             );
         }
-        if bytes < 8 || bytes > 4 * 1024 * 1024 {
+        if !(8..=4 * 1024 * 1024).contains(&bytes) {
             return None;
         }
         // Aligned storage: Windows requires native structure alignment.
@@ -203,13 +205,15 @@ mod windows_telemetry {
         (count > 0 && count <= 65_536).then_some(count)
     }
 
-    pub(super) fn cpu() -> (
+    pub(super) type CpuObservation = (
         Option<Observed<String>>,
         Option<Observed<String>>,
         Option<Observed<usize>>,
         Option<usize>,
         &'static str,
-    ) {
+    );
+
+    pub(super) fn cpu() -> CpuObservation {
         let now = millis();
         let logical = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize;
         let logical = (logical > 0 && logical <= 65_536).then_some(logical);
@@ -354,16 +358,24 @@ mod windows_telemetry {
 
     pub(super) fn process_vram_bytes(pid: u32) -> Option<u64> {
         let system = system_directory()?;
-        let response = bounded_system_command(system.join("nvidia-smi.exe"), &[
-            "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits",
-        ])?;
+        let response = bounded_system_command(
+            system.join("nvidia-smi.exe"),
+            &[
+                "--query-compute-apps=pid,used_gpu_memory",
+                "--format=csv,noheader,nounits",
+            ],
+        )?;
         let mut exact = response.lines().filter_map(|line| {
             let (process, mib) = line.split_once(',')?;
-            (process.trim().parse::<u32>().ok()? == pid).then(|| {
-                mib.trim().parse::<u64>().ok()
-                    .filter(|bytes| *bytes <= 4 * 1024 * 1024)
-                    .and_then(|mib| mib.checked_mul(1024 * 1024))
-            }).flatten()
+            (process.trim().parse::<u32>().ok()? == pid)
+                .then(|| {
+                    mib.trim()
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|bytes| *bytes <= 4 * 1024 * 1024)
+                        .and_then(|mib| mib.checked_mul(1024 * 1024))
+                })
+                .flatten()
         });
         let first = exact.next()?;
         (exact.next().is_none()).then_some(first)
@@ -550,10 +562,7 @@ mod windows_telemetry {
                     merged[0].total_vram_bytes.as_ref().unwrap().source,
                     NVIDIA_SMI
                 );
-                assert_eq!(
-                    merged[0].cuda_hardware_capable.as_ref().unwrap().value,
-                    true
-                );
+                assert!(merged[0].cuda_hardware_capable.as_ref().unwrap().value);
             }
             let missing_total =
                 parse_nvidia_csv("0, GPU-123456, NVIDIA GPU, N/A, 5000, 616.92, 12.0");
@@ -700,21 +709,31 @@ pub fn local_hardware_observation() -> LocalHardwareObservation {
 /// display adapter alone is never CUDA execution support. The source UUID is
 /// stable across enumeration order and is the only selectable GPU identity.
 pub fn cuda_device_for_request(device_id: &str) -> Result<NativeGpuObservation, String> {
-    let uuid = device_id.strip_prefix("clack-this-pc:accelerator:")
+    let uuid = device_id
+        .strip_prefix("clack-this-pc:accelerator:")
         .ok_or("CUDA request must name a canonical host-scoped GPU device")?;
     if !uuid.starts_with("GPU-") || uuid.len() > 96 {
         return Err("CUDA GPU UUID is invalid".into());
     }
-    let found: Vec<_> = local_hardware_observation().gpus.into_iter().filter(|gpu| {
-        gpu.device_id.as_ref().is_some_and(|id| id.value == uuid)
-    }).collect();
+    let found: Vec<_> = local_hardware_observation()
+        .gpus
+        .into_iter()
+        .filter(|gpu| gpu.device_id.as_ref().is_some_and(|id| id.value == uuid))
+        .collect();
     if found.len() != 1 {
         return Err("Requested NVIDIA CUDA device is absent or ambiguous".into());
     }
     let gpu = found.into_iter().next().unwrap();
-    if gpu.vendor.as_ref().is_none_or(|vendor| vendor.value != "NVIDIA") ||
-       gpu.cuda_hardware_capable.as_ref().is_none_or(|cap| !cap.value) ||
-       gpu.compute_architecture.is_none() {
+    if gpu
+        .vendor
+        .as_ref()
+        .is_none_or(|vendor| vendor.value != "NVIDIA")
+        || gpu
+            .cuda_hardware_capable
+            .as_ref()
+            .is_none_or(|cap| !cap.value)
+        || gpu.compute_architecture.is_none()
+    {
         return Err("Requested NVIDIA device has no verified CUDA compute capability".into());
     }
     Ok(gpu)
@@ -727,7 +746,9 @@ pub fn cuda_process_vram_bytes(pid: u32) -> Option<u64> {
     windows_telemetry::process_vram_bytes(pid)
 }
 #[cfg(not(windows))]
-pub fn cuda_process_vram_bytes(_pid: u32) -> Option<u64> { None }
+pub fn cuda_process_vram_bytes(_pid: u32) -> Option<u64> {
+    None
+}
 
 #[cfg(test)]
 mod tests {

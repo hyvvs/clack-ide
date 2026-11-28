@@ -15,7 +15,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev:linux:nvidia": "__NV_DISABLE_EXPLICIT_SYNC=1 tauri dev",
-    "test": "vitest run",
+    "test": "node scripts/test-execution-contract.mjs all",
+    "test:portable": "node scripts/test-execution-contract.mjs portable",
+    "test:evidence": "node scripts/test-execution-contract.mjs evidence",
     "test:quality": "node scripts/q1-quality.mjs",
     "test:watch": "vitest",
     "check-types": "tsc --noEmit",
@@ -26,6 +28,7 @@
     "analyze:bundle": "ANALYZE=true vite build",
     "analyze:eager": "node scripts/eager-graph.mjs src/main.tsx && node scripts/eager-graph.mjs src/settings/main.tsx",
     "size": "size-limit",
+    "size:report": "node scripts/emitted-js-budget.mjs snapshot --dist dist",
     "knip": "knip"
   },
   "dependencies": {

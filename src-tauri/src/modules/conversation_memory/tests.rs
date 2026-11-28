@@ -28,9 +28,14 @@ fn step_candidate(f: &Fixture, end: usize) -> Candidate {
     candidate.end = end;
     // A user requirement is retained as evidence; each independently cited
     // Agent step resolves to its original durable message and part range.
-    candidate.sources.extend((0..end.saturating_sub(1)).map(|step_index| {
-        SourceLocator::AgentStep { message_id: "a1".into(), step_index }
-    }));
+    candidate
+        .sources
+        .extend(
+            (0..end.saturating_sub(1)).map(|step_index| SourceLocator::AgentStep {
+                message_id: "a1".into(),
+                step_index,
+            }),
+        );
     candidate
 }
 
@@ -46,16 +51,31 @@ fn agent_step_coverage_commits_reloads_and_survives_immutable_step_append() {
     assert_eq!(units[3]["parts"][1]["toolCallId"], "repair-3");
     let mut collision = step_fixture();
     collision.originals.messages[0]["id"] = json!("agent-step:a1:0");
-    assert_eq!(coverage_units(&collision.originals.messages, Some(AGENT_STEP_UNITS)).unwrap_err(),
-        "memory_duplicate_message_identity");
+    assert_eq!(
+        coverage_units(&collision.originals.messages, Some(AGENT_STEP_UNITS)).unwrap_err(),
+        "memory_duplicate_message_identity"
+    );
     let preparation = f.view().unwrap().preparation;
-    let locator = SourceLocator::AgentStep { message_id: "a1".into(), step_index: 1 };
-    let (evidence, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator.clone()).unwrap();
+    let locator = SourceLocator::AgentStep {
+        message_id: "a1".into(),
+        step_index: 1,
+    };
+    let (evidence, _) =
+        evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator.clone()).unwrap();
     let (again, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator).unwrap();
     assert_eq!(evidence.id, again.id);
     assert_eq!(evidence.digest, again.digest);
-    let sources = extraction_sources(&f.root, &f.content, &f.originals, &preparation,
-        vec![SourceLocator::AgentStep { message_id: "a1".into(), step_index: 1 }]).unwrap();
+    let sources = extraction_sources(
+        &f.root,
+        &f.content,
+        &f.originals,
+        &preparation,
+        vec![SourceLocator::AgentStep {
+            message_id: "a1".into(),
+            step_index: 1,
+        }],
+    )
+    .unwrap();
     assert_eq!(sources[0].value, units[2]);
     assert_eq!(sources[0].evidence.digest, hash(&units[2]).unwrap());
 
@@ -70,12 +90,23 @@ fn agent_step_coverage_commits_reloads_and_survives_immutable_step_append() {
     assert_eq!(saved.coverage.digest, hash(&units[..3]).unwrap());
     assert_eq!(saved.coverage.latest_message_id, "agent-step:a1:1");
     assert_eq!(hash(&f.originals.messages).unwrap(), original);
-    assert_eq!(saved.evidence.iter().filter(|e| matches!(e.locator, SourceLocator::AgentStep { .. })).count(), 2);
+    assert_eq!(
+        saved
+            .evidence
+            .iter()
+            .filter(|e| matches!(e.locator, SourceLocator::AgentStep { .. }))
+            .count(),
+        2
+    );
 
     // A new continuation step does not change the covered virtual prefix.
-    f.originals.messages[1]["parts"].as_array_mut().unwrap().extend([
-        json!({"type":"step-start"}), json!({"type":"text","text":"New continuation step"})
-    ]);
+    f.originals.messages[1]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .extend([
+            json!({"type":"step-start"}),
+            json!({"type":"text","text":"New continuation step"}),
+        ]);
     let continued = f.view().unwrap();
     assert!(!continued.source_changed);
     assert_eq!(continued.revision.unwrap().coverage.end, 3);
@@ -89,22 +120,36 @@ fn agent_step_coverage_commits_reloads_and_survives_immutable_step_append() {
 fn agent_step_mode_rejects_cross_mode_migration_forged_sources_and_mutable_prefix() {
     let mut f = step_fixture();
     let prep = f.view().unwrap().preparation;
-    assert!(extraction_sources(&f.root, &f.content, &f.originals, &prep, vec![
-        SourceLocator::AgentStep { message_id: "a1".into(), step_index: 500 }
-    ]).is_err());
+    assert!(extraction_sources(
+        &f.root,
+        &f.content,
+        &f.originals,
+        &prep,
+        vec![SourceLocator::AgentStep {
+            message_id: "a1".into(),
+            step_index: 500
+        }]
+    )
+    .is_err());
     let mut foreign = step_candidate(&f, 3);
     foreign.unit_mode = Some("foreign-v1".into());
     assert!(f.commit(foreign).is_err());
     let mut mismatch = step_candidate(&f, 3);
     mismatch.policy_version = "c1b-extraction-v1".into();
-    assert_eq!(f.commit(mismatch).unwrap_err(), "memory_coverage_policy_mismatch");
+    assert_eq!(
+        f.commit(mismatch).unwrap_err(),
+        "memory_coverage_policy_mismatch"
+    );
 
     let old = Fixture::new();
     old.commit(old.candidate()).unwrap();
     let mut switched = old.candidate();
     switched.unit_mode = Some(AGENT_STEP_UNITS.into());
     switched.policy_version = "c1b-extraction-agent-steps-v1".into();
-    assert_eq!(old.commit(switched).unwrap_err(), "memory_coverage_mode_migration_required");
+    assert_eq!(
+        old.commit(switched).unwrap_err(),
+        "memory_coverage_mode_migration_required"
+    );
     assert!(old.view().unwrap().revision.is_some());
 
     f.commit(step_candidate(&f, 3)).unwrap();
@@ -127,7 +172,9 @@ fn archived_58_step_forgeboard_native_commit_and_continuation_preserve_identity(
     assert_eq!(originals.len(), 2);
     let full_assistant = originals[1].clone();
     let all_parts = full_assistant["parts"].as_array().unwrap();
-    let starts = all_parts.iter().enumerate()
+    let starts = all_parts
+        .iter()
+        .enumerate()
         .filter_map(|(index, part)| (part["type"] == "step-start").then_some(index))
         .collect::<Vec<_>>();
     assert_eq!(starts.len(), 58);
@@ -142,9 +189,15 @@ fn archived_58_step_forgeboard_native_commit_and_continuation_preserve_identity(
     let mut sources = Vec::new();
     let mut claims = Vec::new();
     for index in 0..30 {
-        if index == 27 { continue; } // failed tool step 28 retained verbatim
-        let locator = SourceLocator::AgentStep { message_id: assistant_id.clone(), step_index: index };
-        let (evidence, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator.clone()).unwrap();
+        if index == 27 {
+            continue;
+        } // failed tool step 28 retained verbatim
+        let locator = SourceLocator::AgentStep {
+            message_id: assistant_id.clone(),
+            step_index: index,
+        };
+        let (evidence, _) =
+            evidence_for(&f.root, &f.content, &f.originals, &f.owner, locator.clone()).unwrap();
         sources.push(locator);
         claims.push(Claim {
             id: format!("step-{}", index+1), section: Section::AgentFindings,
@@ -157,8 +210,11 @@ fn archived_58_step_forgeboard_native_commit_and_continuation_preserve_identity(
     let candidate = Candidate {
         preparation: prep,
         policy_version: "c1b-extraction-agent-steps-v1".into(),
-        start: 0, end: 31, unit_mode: Some(AGENT_STEP_UNITS.into()),
-        sources, claims,
+        start: 0,
+        end: 31,
+        unit_mode: Some(AGENT_STEP_UNITS.into()),
+        sources,
+        claims,
     };
     let revision_id = f.commit(candidate).unwrap();
     let staged = f.view().unwrap();
@@ -167,7 +223,10 @@ fn archived_58_step_forgeboard_native_commit_and_continuation_preserve_identity(
     assert_eq!(revision.evidence.len(), 29);
     assert_eq!(revision.claims.len(), 29);
     assert_eq!(revision.coverage.end, 31);
-    assert_eq!(revision.coverage.latest_message_id, format!("agent-step:{assistant_id}:29"));
+    assert_eq!(
+        revision.coverage.latest_message_id,
+        format!("agent-step:{assistant_id}:29")
+    );
     assert_eq!(staged.uncovered_messages, 12);
     let evidence = revision.evidence[0].clone();
 
@@ -179,8 +238,12 @@ fn archived_58_step_forgeboard_native_commit_and_continuation_preserve_identity(
     assert!(!continued.source_changed);
     assert_eq!(continued.uncovered_messages, 28);
     assert_eq!(continued.revision.unwrap().coverage.end, 31);
-    let source = SourceLocator::AgentStep { message_id: assistant_id.clone(), step_index: 0 };
-    let (persisted_evidence, _) = evidence_for(&f.root, &f.content, &f.originals, &f.owner, source).unwrap();
+    let source = SourceLocator::AgentStep {
+        message_id: assistant_id.clone(),
+        step_index: 0,
+    };
+    let (persisted_evidence, _) =
+        evidence_for(&f.root, &f.content, &f.originals, &f.owner, source).unwrap();
     assert_eq!(persisted_evidence.id, evidence.id);
     assert_eq!(persisted_evidence.digest, evidence.digest);
     // No stale covered-prefix byte can silently keep a revision valid.

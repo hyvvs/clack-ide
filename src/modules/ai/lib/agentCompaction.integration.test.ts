@@ -5,6 +5,9 @@ import { runAgentStream } from "@/modules/ai/lib/agent";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useChatStore, seedMessages } from "@/modules/ai/store/chatStore";
 import { prepareModelSwitch } from "@/modules/ai/store/modelSwitch";
+// Warm the intentionally lazy model-switch graph while Vitest loads the suite,
+// not inside a timed test or a separately timed beforeAll hook.
+import "@/modules/ai/store/targetPreparation";
 import { contextDigest } from "@/modules/ai/lib/targetContext";
 import { BUILTIN_AGENTS } from "@/modules/ai/lib/agents";
 import { resolveModelInputCapabilities } from "@/modules/ai/lib/modelCapabilities";

@@ -61,9 +61,9 @@ pub fn self_hosted_context_lease(
     if !release {
         let _guard = WRITE_LOCK.lock().map_err(|_| "Settings unavailable")?;
         let state = crate::modules::self_hosted_profiles::authoritative_settings_value(&app, KEY)
-            .map_err(|_| "Settings unavailable")?.unwrap_or(Value::Null);
-        configured(&state, &endpoint_id)
-            .map_err(|_| "Server unavailable")?;
+            .map_err(|_| "Settings unavailable")?
+            .unwrap_or(Value::Null);
+        configured(&state, &endpoint_id).map_err(|_| "Server unavailable")?;
     }
     let mut guard = leases().lock().map_err(|_| "Verification unavailable")?;
     lease(&mut guard, &endpoint_id, &owner, release, Instant::now())?;
@@ -81,7 +81,8 @@ pub async fn self_hosted_context_runtime(
     let endpoint = {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
         let state = crate::modules::self_hosted_profiles::authoritative_settings_value(&app, KEY)
-            .map_err(|_| internal())?.unwrap_or(Value::Null);
+            .map_err(|_| internal())?
+            .unwrap_or(Value::Null);
         configured(&state, &endpoint_id)?
     };
     if endpoint.backend() != Some(Backend::Ollama) {
@@ -107,7 +108,8 @@ pub async fn self_hosted_context_runtime(
     {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
         let state = crate::modules::self_hosted_profiles::authoritative_settings_value(&app, KEY)
-            .map_err(|_| internal())?.unwrap_or(Value::Null);
+            .map_err(|_| internal())?
+            .unwrap_or(Value::Null);
         if configured(&state, &endpoint_id)? != endpoint {
             return Err(ProbeError::new(ErrorCode::InvalidConfiguration));
         }

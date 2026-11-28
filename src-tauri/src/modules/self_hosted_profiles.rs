@@ -1,14 +1,17 @@
+use super::self_hosted_atomic_file::{self, PhysicalOutcome};
+use getrandom::fill;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use getrandom::fill;
 use tauri::AppHandle;
 use tauri_plugin_store::resolve_store_path;
-use super::self_hosted_atomic_file::{self, PhysicalOutcome};
 
 pub(super) const KEY: &str = "selfHostedInference";
 pub(super) static WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -19,33 +22,33 @@ pub(super) static WRITE_LOCK: Mutex<()> = Mutex::new(());
 // replacement. Every app writer to this file uses these same physical helpers.
 const SETTINGS_PATH: &str = "terax-settings.json";
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    resolve_store_path(app, SETTINGS_PATH)
-        .map_err(|_| "Native settings path unavailable".into())
+    resolve_store_path(app, SETTINGS_PATH).map_err(|_| "Native settings path unavailable".into())
 }
 // A zero-content OS lock file is only process coordination, not a settings
 // store, receipt ledger or commit marker. OS file locks are released on crash.
 // All Clack writers to this existing JSON pathname hold it from snapshot/CAS
 // comparison THROUGH the single replacement syscall.
-fn lock_settings_file(
-    app: &AppHandle, live: impl Fn() -> bool,
-) -> Result<File, String> {
+fn lock_settings_file(app: &AppHandle, live: impl Fn() -> bool) -> Result<File, String> {
     let path = settings_path(app)?;
     lock_settings_path(&path, live)
 }
-fn lock_settings_path(
-    path: &Path, live: impl Fn() -> bool,
-) -> Result<File, String> {
+fn lock_settings_path(path: &Path, live: impl Fn() -> bool) -> Result<File, String> {
     let parent = path.parent().ok_or("Invalid settings parent directory")?;
     fs::create_dir_all(parent).map_err(|_| "Settings lock directory unavailable")?;
-    let file = OpenOptions::new().read(true).write(true).create(true)
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
         .open(parent.join(".terax-settings.json.lock"))
         .map_err(|_| "Native settings interprocess lock unavailable")?;
     loop {
-        if !live() { return Err("Native settings lock admission expired".into()); }
+        if !live() {
+            return Err("Native settings lock admission expired".into());
+        }
         match file.try_lock() {
             Ok(()) => return Ok(file),
-            Err(std::fs::TryLockError::WouldBlock) =>
-                std::thread::sleep(Duration::from_millis(2)),
+            Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(2)),
             Err(_) => return Err("Native settings interprocess lock failed".into()),
         }
     }
@@ -55,8 +58,9 @@ fn read_settings_file(path: &Path) -> Result<Map<String, Value>, String> {
         .map_err(|_| "Native settings replacement recovery requires attention")?;
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
-            return Err("Missing authoritative settings; recovery required".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("Missing authoritative settings; recovery required".into())
+        }
         Err(_) => return Err("Authoritative settings file is unreadable".into()),
     };
     let map: Map<String, Value> = serde_json::from_slice(&bytes)
@@ -73,12 +77,18 @@ fn read_settings_file(path: &Path) -> Result<Map<String, Value>, String> {
 /// valid JSON document can still contain an unresolved or contradictory
 /// qualification marker. Never serialize it through ordinary preferences.
 fn validate_on_disk_qualifying_markers(map: &Map<String, Value>) -> Result<(), String> {
-    let Some(self_hosted) = map.get(KEY) else {return Ok(());};
+    let Some(self_hosted) = map.get(KEY) else {
+        return Ok(());
+    };
     let mut groups = std::collections::HashMap::<(String, String, String), String>::new();
     for (field, committed_version) in [("qualificationReceipts", 2), ("measurementRuns", 1)] {
-        let Some(rows) = self_hosted["fabric"][field].as_array() else {continue};
+        let Some(rows) = self_hosted["fabric"][field].as_array() else {
+            continue;
+        };
         for row in rows {
-            let Some(marker) = row.get(QUAL_MARKER) else {continue};
+            let Some(marker) = row.get(QUAL_MARKER) else {
+                continue;
+            };
             let operation_id = marker["operationId"].as_str().filter(|s| !s.is_empty());
             let native_epoch = marker["nativeEpoch"].as_str().filter(|s| !s.is_empty());
             let phase = marker["phase"].as_str();
@@ -88,12 +98,20 @@ fn validate_on_disk_qualifying_markers(map: &Map<String, Value>) -> Result<(), S
                 _ => false,
             };
             if !version_valid || operation_id.is_none() || native_epoch.is_none() {
-                return Err("Inconsistent authoritative qualification marker; recovery required".into());
+                return Err(
+                    "Inconsistent authoritative qualification marker; recovery required".into(),
+                );
             }
-            let key=(field.to_string(),operation_id.unwrap().to_string(),native_epoch.unwrap().to_string());
-            if let Some(previous) = groups.insert(key,phase.unwrap().to_string()) {
+            let key = (
+                field.to_string(),
+                operation_id.unwrap().to_string(),
+                native_epoch.unwrap().to_string(),
+            );
+            if let Some(previous) = groups.insert(key, phase.unwrap().to_string()) {
                 if previous != phase.unwrap() {
-                    return Err("Mixed authoritative qualification phases; recovery required".into());
+                    return Err(
+                        "Mixed authoritative qualification phases; recovery required".into(),
+                    );
                 }
             }
         }
@@ -108,24 +126,31 @@ fn settings_from_disk(app: &AppHandle) -> Result<Map<String, Value>, String> {
 /// Validate/recover the one native authority before the renderer loads prefs.
 /// A malformed file must never become an empty plugin Store at shutdown.
 pub fn self_hosted_profiles_startup_storage_check(app: &AppHandle) -> Result<(), String> {
-    let _lock = WRITE_LOCK.lock().map_err(|_| "Settings startup lock unavailable")?;
+    let _lock = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Settings startup lock unavailable")?;
     let path = settings_path(app)?;
-    let parent=path.parent().ok_or("Invalid settings startup directory")?;
+    let parent = path.parent().ok_or("Invalid settings startup directory")?;
     // An absent main in an existing directory with ANY previous artifact is
     // ambiguous even if its old lock/backup have disappeared. Initialize a
     // genuinely EMPTY first-install directory only; never silently convert
     // lost persisted state into '{}'.
-    let first_install = !path.exists() && if parent.is_dir() {
-        fs::read_dir(parent)
-            .map_err(|_| "Settings startup directory unreadable")?
-            .next().is_none()
-    } else {true};
+    let first_install = !path.exists()
+        && if parent.is_dir() {
+            fs::read_dir(parent)
+                .map_err(|_| "Settings startup directory unreadable")?
+                .next()
+                .is_none()
+        } else {
+            true
+        };
     let _file_lock = lock_settings_file(app, || true)?;
-    if first_install && !path.exists() {
-        if self_hosted_atomic_file::replace_settings_file(&path,b"{}",||true)
-            != PhysicalOutcome::Crossed {
-            return Err("Fresh authoritative settings initialization failed".into());
-        }
+    if first_install
+        && !path.exists()
+        && self_hosted_atomic_file::replace_settings_file(&path, b"{}", || true)
+            != PhysicalOutcome::Crossed
+    {
+        return Err("Fresh authoritative settings initialization failed".into());
     }
     settings_from_disk(app).map(|_| ())
 }
@@ -135,12 +160,15 @@ pub fn self_hosted_profiles_startup_storage_check(app: &AppHandle) -> Result<(),
 /// Store saves every cached store at app Exit, including when auto-save was
 /// disabled, and could replace an intervening corrupt/unknown B03 authority.
 /// This is a read from the existing settings authority, not another store.
-pub(crate) fn authoritative_settings_snapshot(app: &AppHandle) -> Result<Map<String, Value>, String> {
+pub(crate) fn authoritative_settings_snapshot(
+    app: &AppHandle,
+) -> Result<Map<String, Value>, String> {
     let _file_lock = lock_settings_file(app, || true)?;
     settings_from_disk(app)
 }
 pub(crate) fn authoritative_settings_value(
-    app: &AppHandle, key: &str,
+    app: &AppHandle,
+    key: &str,
 ) -> Result<Option<Value>, String> {
     Ok(authoritative_settings_snapshot(app)?.remove(key))
 }
@@ -160,13 +188,13 @@ fn persist_complete_settings(
     commit: impl FnOnce(&Path, &Path) -> PhysicalOutcome,
 ) -> Result<PersistResolution, String> {
     let target = settings_path(app)?;
-    let bytes = serde_json::to_vec(next)
-        .map_err(|_| "Could not serialize authoritative settings")?;
-    let physical = self_hosted_atomic_file::replace_settings_file_with_guard(&target, &bytes, commit);
+    let bytes =
+        serde_json::to_vec(next).map_err(|_| "Could not serialize authoritative settings")?;
+    let physical =
+        self_hosted_atomic_file::replace_settings_file_with_guard(&target, &bytes, commit);
     match physical {
         PhysicalOutcome::Fenced => return Ok(PersistResolution::Fenced),
-        PhysicalOutcome::FailedBeforeCommit =>
-            return Ok(PersistResolution::FailedBeforeCommit),
+        PhysicalOutcome::FailedBeforeCommit => return Ok(PersistResolution::FailedBeforeCommit),
         PhysicalOutcome::Crossed | PhysicalOutcome::RecoveryRequired => {}
     }
     // A failed OS API may have already crossed the replacement boundary.
@@ -210,23 +238,29 @@ fn acceptance_record_win32_denial(target: &Path, result: &std::io::Result<()>) {
     if std::env::var("CLACK_LM11_B03_ACCEPTANCE_DENIAL").as_deref() != Ok("read-only") {
         return;
     }
-    let root = PathBuf::from(
-        std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned root"))
-        .canonicalize().expect("canonical root");
+    let root = PathBuf::from(std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned root"))
+        .canonicalize()
+        .expect("canonical root");
     assert!(super::managed_local_runtime::acceptance_is_owned_scenario_root(&root));
-    assert_eq!(target.parent().unwrap().canonicalize().unwrap(),
-        root.join("data").canonicalize().unwrap());
+    assert_eq!(
+        target.parent().unwrap().canonicalize().unwrap(),
+        root.join("data").canonicalize().unwrap()
+    );
     assert_eq!(target.file_name().unwrap(), "terax-settings.json");
-    let marker = File::create(root.join("real-permission-denial.json"))
-        .expect("permission-denial marker");
-    serde_json::to_writer(&marker, &json!({
-        "stage":"real-ReplaceFileW-after-readonly-authoritative",
-        "pid":std::process::id(),
-        "replacementSucceeded":result.is_ok(),
-        "win32Error":result.as_ref().err().and_then(|e|e.raw_os_error()),
-        "errorText":result.as_ref().err().map(|e|e.to_string()),
-        "target":target
-    })).expect("permission marker serialization");
+    let marker =
+        File::create(root.join("real-permission-denial.json")).expect("permission-denial marker");
+    serde_json::to_writer(
+        &marker,
+        &json!({
+            "stage":"real-ReplaceFileW-after-readonly-authoritative",
+            "pid":std::process::id(),
+            "replacementSucceeded":result.is_ok(),
+            "win32Error":result.as_ref().err().and_then(|e|e.raw_os_error()),
+            "errorText":result.as_ref().err().map(|e|e.to_string()),
+            "target":target
+        }),
+    )
+    .expect("permission marker serialization");
     marker.sync_all().expect("permission marker sync");
 }
 
@@ -235,18 +269,24 @@ fn acceptance_pause_after_real_replace(target: &Path) {
     if std::env::var("CLACK_LM11_B03_ACCEPTANCE_POST_FENCE").as_deref() != Ok("1") {
         return;
     }
-    let root = PathBuf::from(
-        std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned root"))
-        .canonicalize().expect("canonical root");
+    let root = PathBuf::from(std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned root"))
+        .canonicalize()
+        .expect("canonical root");
     assert!(super::managed_local_runtime::acceptance_is_owned_scenario_root(&root));
-    assert_eq!(target.parent().unwrap().canonicalize().unwrap(),
-        root.join("data").canonicalize().unwrap());
+    assert_eq!(
+        target.parent().unwrap().canonicalize().unwrap(),
+        root.join("data").canonicalize().unwrap()
+    );
     assert_eq!(target.file_name().unwrap(), "terax-settings.json");
     let marker = File::create(root.join("real-post-fence.json")).expect("post-fence marker");
-    serde_json::to_writer(&marker, &json!({
-        "stage":"ReplaceFileW-returned-success-before-native-response",
-        "pid":std::process::id(), "target":target
-    })).expect("post-fence marker serialization");
+    serde_json::to_writer(
+        &marker,
+        &json!({
+            "stage":"ReplaceFileW-returned-success-before-native-response",
+            "pid":std::process::id(), "target":target
+        }),
+    )
+    .expect("post-fence marker serialization");
     marker.sync_all().expect("post-fence marker sync");
     std::thread::sleep(Duration::from_millis(1800));
 }
@@ -260,29 +300,43 @@ fn acceptance_crash_at_real_boundary(point: &str, target: &Path) {
         return;
     }
     let root = std::path::PathBuf::from(
-        std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned acceptance root"));
-    let root = root.canonicalize().expect("existing isolated acceptance root");
-    assert!(super::managed_local_runtime::acceptance_is_owned_scenario_root(&root),
-        "Reject crash injection outside the one approved native acceptance owner");
-    assert_eq!(target.parent().unwrap().canonicalize().unwrap(),
+        std::env::var("CLACK_LM11_B03_ACCEPTANCE_ROOT").expect("owned acceptance root"),
+    );
+    let root = root
+        .canonicalize()
+        .expect("existing isolated acceptance root");
+    assert!(
+        super::managed_local_runtime::acceptance_is_owned_scenario_root(&root),
+        "Reject crash injection outside the one approved native acceptance owner"
+    );
+    assert_eq!(
+        target.parent().unwrap().canonicalize().unwrap(),
         root.join("data").canonicalize().unwrap(),
-        "Never crash/trace a production or unrelated settings pathname");
+        "Never crash/trace a production or unrelated settings pathname"
+    );
     assert_eq!(target.file_name().unwrap(), "terax-settings.json");
     let marker = root.join(format!("real-{point}.json"));
     let file = File::create(&marker).expect("isolated boundary marker");
-    serde_json::to_writer(&file, &serde_json::json!({
-        "stage":point,"pid":std::process::id(),"target":target
-    })).expect("boundary marker serialization");
+    serde_json::to_writer(
+        &file,
+        &serde_json::json!({
+            "stage":point,"pid":std::process::id(),"target":target
+        }),
+    )
+    .expect("boundary marker serialization");
     file.sync_all().expect("boundary marker synchronization");
     std::process::exit(if point == "before-replace" { 173 } else { 174 });
 }
 fn save_ordinary_settings(
-    app: &AppHandle, previous: &Map<String, Value>, next: &Map<String, Value>,
+    app: &AppHandle,
+    previous: &Map<String, Value>,
+    next: &Map<String, Value>,
 ) -> Result<(), String> {
     match persist_complete_settings(app, previous, next, physical_replace)? {
         PersistResolution::Committed | PersistResolution::ReconciledCommitted => Ok(()),
-        PersistResolution::NotCommitted | PersistResolution::FailedBeforeCommit =>
-            Err("Settings replacement failed before commit".into()),
+        PersistResolution::NotCommitted | PersistResolution::FailedBeforeCommit => {
+            Err("Settings replacement failed before commit".into())
+        }
         _ => Err("Settings replacement recovery required".into()),
     }
 }
@@ -292,42 +346,54 @@ fn save_ordinary_settings(
 /// key remains writable ONLY through its existing dedicated CAS commands.
 #[tauri::command]
 pub fn self_hosted_settings_entries(app: AppHandle) -> Result<Vec<(String, Value)>, String> {
-    let _lock = WRITE_LOCK.lock().map_err(|_| "Native settings lock unavailable")?;
+    let _lock = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Native settings lock unavailable")?;
     let _process_lock = lock_settings_file(&app, || true)?;
     Ok(settings_from_disk(&app)?.into_iter().collect())
 }
 #[tauri::command]
-pub fn self_hosted_settings_set(
-    app: AppHandle, key: String, value: Value,
-) -> Result<(), String> {
+pub fn self_hosted_settings_set(app: AppHandle, key: String, value: Value) -> Result<(), String> {
     save_other_settings_batch(&app, vec![(key, value)])
 }
 #[tauri::command]
 pub fn self_hosted_settings_set_many(
-    app: AppHandle, changes: Vec<(String, Value)>,
+    app: AppHandle,
+    changes: Vec<(String, Value)>,
 ) -> Result<(), String> {
     save_other_settings_batch(&app, changes)
 }
-fn save_other_settings_batch(
-    app: &AppHandle, changes: Vec<(String, Value)>,
-) -> Result<(), String> {
-    if changes.len() > 64 || changes.iter().any(|(key, _)|
-        key == KEY || key.is_empty() || key.len() > 2048) {
+fn save_other_settings_batch(app: &AppHandle, changes: Vec<(String, Value)>) -> Result<(), String> {
+    if changes.len() > 64
+        || changes
+            .iter()
+            .any(|(key, _)| key == KEY || key.is_empty() || key.len() > 2048)
+    {
         return Err("Ordinary settings writer cannot mutate native qualification authority".into());
     }
-    if changes.is_empty() { return Ok(()); }
-    let _lock = WRITE_LOCK.lock().map_err(|_| "Native settings lock unavailable")?;
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let _lock = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Native settings lock unavailable")?;
     let _process_lock = lock_settings_file(app, || true)?;
     let old = settings_from_disk(app)?;
     let mut next = old.clone();
-    for (key, value) in changes { next.insert(key, value); }
-    if next != old { save_ordinary_settings(app, &old, &next)?; }
+    for (key, value) in changes {
+        next.insert(key, value);
+    }
+    if next != old {
+        save_ordinary_settings(app, &old, &next)?;
+    }
     Ok(())
 }
 /// Native probe and other selfHostedInference writers already own WRITE_LOCK.
 /// This does NOT retry or synthesize qualification receipts.
 pub(super) fn save_other_self_hosted_under_lock(
-    app: &AppHandle, expected: &Value, next: Value,
+    app: &AppHandle,
+    expected: &Value,
+    next: Value,
 ) -> Result<(), String> {
     let _process_lock = lock_settings_file(app, || true)?;
     validate(&next)?;
@@ -380,8 +446,12 @@ fn qualifier_epoch() -> Result<String, String> {
     fill(&mut bytes).map_err(|_| "Native qualification entropy unavailable")?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
-fn eligible(gate: &QualificationCasGate, ticket: &QualificationCasTicket,
-            now: Instant, runtime_current: impl FnOnce(&QualificationCasGate) -> bool) -> bool {
+fn eligible(
+    gate: &QualificationCasGate,
+    ticket: &QualificationCasTicket,
+    now: Instant,
+    runtime_current: impl FnOnce(&QualificationCasGate) -> bool,
+) -> bool {
     gate.ticket.operation_id == ticket.operation_id
         && gate.ticket.native_epoch == ticket.native_epoch
         && !gate.revoked.load(Ordering::Acquire)
@@ -391,7 +461,10 @@ fn eligible(gate: &QualificationCasGate, ticket: &QualificationCasTicket,
 fn native_eligible(gate: &QualificationCasGate, ticket: &QualificationCasTicket) -> bool {
     eligible(gate, ticket, Instant::now(), |g| match g.process_id {
         Some(pid) => super::managed_local_runtime::qualification_runtime_is_current(
-            &g.deployment_id, &g.runtime_epoch, pid),
+            &g.deployment_id,
+            &g.runtime_epoch,
+            pid,
+        ),
         // A renderer-supplied remote epoch has no native process owner to
         // fence. Do not issue an authoritative CAS ticket for it.
         None => false,
@@ -400,54 +473,76 @@ fn native_eligible(gate: &QualificationCasGate, ticket: &QualificationCasTicket)
 /// The native code checks the same monotonic operation gate immediately
 /// before and after the synchronous OS store.save boundary. A save may have
 /// reached the filesystem even if the subsequent acknowledgement is lost.
+#[cfg(test)]
 fn guarded_native_save_checked(
-    live: impl Fn() -> bool, save: impl FnOnce() -> Result<(), String>,
+    live: impl Fn() -> bool,
+    save: impl FnOnce() -> Result<(), String>,
 ) -> &'static str {
-    if !live() { return "rejected"; }
-    if save().is_err() { return "ambiguous"; }
-    if !live() { return "ambiguous"; }
+    if !live() {
+        return "rejected";
+    }
+    if save().is_err() {
+        return "ambiguous";
+    }
+    if !live() {
+        return "ambiguous";
+    }
     "acknowledged"
 }
 fn receipt_rows<'a>(value: &'a Value, kind: &str) -> Option<&'a Vec<Value>> {
-    let field = if kind == "lm2f" { "qualificationReceipts" } else { "measurementRuns" };
+    let field = if kind == "lm2f" {
+        "qualificationReceipts"
+    } else {
+        "measurementRuns"
+    };
     value["fabric"][field].as_array()
 }
 fn receipt_rows_mut<'a>(value: &'a mut Value, kind: &str) -> Option<&'a mut Vec<Value>> {
-    let field = if kind == "lm2f" { "qualificationReceipts" } else { "measurementRuns" };
+    let field = if kind == "lm2f" {
+        "qualificationReceipts"
+    } else {
+        "measurementRuns"
+    };
     value["fabric"][field].as_array_mut()
 }
 fn matching_qualifier(row: &Value, ticket: &QualificationCasTicket) -> bool {
     row[QUAL_MARKER]["operationId"] == ticket.operation_id
         && row[QUAL_MARKER]["nativeEpoch"] == ticket.native_epoch
 }
-fn examine_qualifying_rows(current: &Value, ticket: &QualificationCasTicket)
-    -> &'static str
-{
-    let rows = ["qualificationReceipts", "measurementRuns"].iter().flat_map(|field|
-        current["fabric"][*field].as_array().into_iter().flatten());
+fn examine_qualifying_rows(current: &Value, ticket: &QualificationCasTicket) -> &'static str {
+    let rows = ["qualificationReceipts", "measurementRuns"]
+        .iter()
+        .flat_map(|field| current["fabric"][*field].as_array().into_iter().flatten());
     let matched: Vec<&Value> = rows.filter(|row| matching_qualifier(row, ticket)).collect();
     if matched.is_empty() {
         // A clean authoritative absence proves this ticket did not cross the
         // activation commit. A malformed marker does NOT prove absence.
         for (field, version) in [("qualificationReceipts", 2), ("measurementRuns", 1)] {
             for row in current["fabric"][field].as_array().into_iter().flatten() {
-                let Some(marker) = row.get(QUAL_MARKER) else { continue };
-                if !marker["operationId"].as_str().is_some_and(|s| !s.is_empty()) ||
-                    !marker["nativeEpoch"].as_str().is_some_and(|s| !s.is_empty()) ||
-                    !((marker["phase"] == "pending" && row["version"] == 0) ||
-                       (marker["phase"] == "acknowledged" && row["version"] == version)) {
+                let Some(marker) = row.get(QUAL_MARKER) else {
+                    continue;
+                };
+                if marker["operationId"].as_str().is_none_or(str::is_empty)
+                    || marker["nativeEpoch"].as_str().is_none_or(str::is_empty)
+                    || !((marker["phase"] == "pending" && row["version"] == 0)
+                        || (marker["phase"] == "acknowledged" && row["version"] == version))
+                {
                     return "unknown";
                 }
             }
         }
         return "absent";
     }
-    if matched.iter().all(|row| row[QUAL_MARKER]["phase"] == "acknowledged"
-        && matches!(row["version"].as_u64(), Some(1 | 2))) {
+    if matched.iter().all(|row| {
+        row[QUAL_MARKER]["phase"] == "acknowledged"
+            && matches!(row["version"].as_u64(), Some(1 | 2))
+    }) {
         return "committed";
     }
-    if matched.iter().all(|row| row[QUAL_MARKER]["phase"] == "pending" &&
-        row["version"] == 0) {
+    if matched
+        .iter()
+        .all(|row| row[QUAL_MARKER]["phase"] == "pending" && row["version"] == 0)
+    {
         return "pending";
     }
     "unknown"
@@ -457,14 +552,18 @@ fn examine_qualifying_rows(current: &Value, ticket: &QualificationCasTicket)
 // This scans the EXISTING CAS envelope (not a second registry): a renderer
 // restart cannot mint a fresh ticket and replay a previously ambiguous CAS.
 fn prior_qualifier_for_scope(current: &Value, gate: &QualificationCasGate) -> bool {
-    receipt_rows(current, &gate.kind).into_iter().flatten().any(|row| {
-        row.get(QUAL_MARKER).is_some() &&
-        row["scope"]["deploymentId"] == gate.deployment_id &&
-        row["scope"]["runtimeEpoch"] == gate.runtime_epoch
-    })
+    receipt_rows(current, &gate.kind)
+        .into_iter()
+        .flatten()
+        .any(|row| {
+            row.get(QUAL_MARKER).is_some()
+                && row["scope"]["deploymentId"] == gate.deployment_id
+                && row["scope"]["runtimeEpoch"] == gate.runtime_epoch
+        })
 }
 fn replace_stale_qualifier_slot(
-    slot: &mut Option<QualificationCasGate>, new_gate: QualificationCasGate,
+    slot: &mut Option<QualificationCasGate>,
+    new_gate: QualificationCasGate,
     old_is_still_authorized: impl FnOnce(&QualificationCasGate) -> bool,
 ) -> Result<(), String> {
     if slot.as_ref().is_some_and(old_is_still_authorized) {
@@ -500,30 +599,44 @@ fn insert_deployment_qualifier_gate(
 #[tauri::command]
 pub fn self_hosted_profiles_qualification_begin(
     app: AppHandle,
-    kind: String, deployment_id: String, runtime_epoch: String,
-    process_id: Option<u32>, remaining_ms: u64, deadline_unix_ms: u64,
+    kind: String,
+    deployment_id: String,
+    runtime_epoch: String,
+    process_id: Option<u32>,
+    remaining_ms: u64,
+    deadline_unix_ms: u64,
 ) -> Result<QualificationCasTicket, String> {
     // IPC admission latency must not silently extend the renderer's aggregate
     // deadline. The wall-clock absolute cap complements the native monotonic
     // interval: clock anomalies shorten or reject admission where detectable.
-    let now_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map_err(|_| "Native qualification clock unavailable")?.as_millis() as u64;
+    let now_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "Native qualification clock unavailable")?
+        .as_millis() as u64;
     let bounded_ms = remaining_ms.min(deadline_unix_ms.saturating_sub(now_unix_ms));
     if !matches!(kind.as_str(), "lm2f" | "lm6")
         || !(1..=MAX_QUALIFICATION_NATIVE_MS).contains(&bounded_ms)
-        || deployment_id.is_empty() || deployment_id.len() > 40 * 1024
-        || runtime_epoch.is_empty() || runtime_epoch.len() > 2048
+        || deployment_id.is_empty()
+        || deployment_id.len() > 40 * 1024
+        || runtime_epoch.is_empty()
+        || runtime_epoch.len() > 2048
         || process_id.is_none()
     {
         return Err("Invalid native qualification admission".into());
     }
     let ticket = QualificationCasTicket {
-        operation_id: qualifier_epoch()?, native_epoch: qualifier_epoch()?,
+        operation_id: qualifier_epoch()?,
+        native_epoch: qualifier_epoch()?,
     };
     let gate = QualificationCasGate {
-        ticket: ticket.clone(), expiry: Instant::now() + Duration::from_millis(bounded_ms),
-        deployment_id, runtime_epoch, process_id, kind,
-        revoked: Arc::new(AtomicBool::new(false)), prepared: false,
+        ticket: ticket.clone(),
+        expiry: Instant::now() + Duration::from_millis(bounded_ms),
+        deployment_id,
+        runtime_epoch,
+        process_id,
+        kind,
+        revoked: Arc::new(AtomicBool::new(false)),
+        prepared: false,
         prepared_revision: None,
     };
     if !native_eligible(&gate, &ticket) {
@@ -534,20 +647,24 @@ pub fn self_hosted_profiles_qualification_begin(
     let _file_lock = lock_settings_file(&app, || native_eligible(&gate, &ticket))?;
     let current_settings = settings_from_disk(&app)?;
     if prior_qualifier_for_scope(current_settings.get(KEY).unwrap_or(&Value::Null), &gate) {
-        return Err("Prior qualifying effect or unknown commit exists for this runtime epoch".into());
+        return Err(
+            "Prior qualifying effect or unknown commit exists for this runtime epoch".into(),
+        );
     }
-    let mut slots = qualifier_gate().lock().map_err(|_| "Native qualification admission lock unavailable")?;
-    insert_deployment_qualifier_gate(&mut slots, gate,
-        |old| native_eligible(old, &old.ticket))?;
+    let mut slots = qualifier_gate()
+        .lock()
+        .map_err(|_| "Native qualification admission lock unavailable")?;
+    insert_deployment_qualifier_gate(&mut slots, gate, |old| native_eligible(old, &old.ticket))?;
     Ok(ticket)
 }
 
 #[tauri::command]
 pub fn self_hosted_profiles_qualification_cancel(ticket: QualificationCasTicket) {
     if let Ok(slots) = qualifier_gate().lock() {
-        if let Some(owner) = slots.values().find(|g|
-            g.ticket.operation_id == ticket.operation_id &&
-            g.ticket.native_epoch == ticket.native_epoch) {
+        if let Some(owner) = slots.values().find(|g| {
+            g.ticket.operation_id == ticket.operation_id
+                && g.ticket.native_epoch == ticket.native_epoch
+        }) {
             owner.revoked.store(true, Ordering::Release);
         }
     }
@@ -557,34 +674,46 @@ pub fn self_hosted_profiles_qualification_cancel(ticket: QualificationCasTicket)
 // receipts to the existing CAS payload. New rows are durable but *INERT*
 // version-zero until a separate live-epoch acknowledgement commits them.
 fn prepare_qualifying_value(
-    expected: &Value, mut value: Value, gate: &QualificationCasGate,
+    expected: &Value,
+    mut value: Value,
+    gate: &QualificationCasGate,
 ) -> Result<Value, String> {
     validate(&value)?;
     if value["revision"].as_u64() != expected["revision"].as_u64().and_then(|n| n.checked_add(1)) {
         return Err("Qualification CAS revision mismatch".into());
     }
-    let original = receipt_rows(expected, &gate.kind).cloned().unwrap_or_default();
-    let next = receipt_rows_mut(&mut value, &gate.kind)
-        .ok_or("Qualifying effect collection absent")?;
+    let original = receipt_rows(expected, &gate.kind)
+        .cloned()
+        .unwrap_or_default();
+    let next =
+        receipt_rows_mut(&mut value, &gate.kind).ok_or("Qualifying effect collection absent")?;
     let max_added = if gate.kind == "lm2f" { 8 } else { 1 };
     let history_limit = if gate.kind == "lm2f" { 128 } else { 48 };
     // Permit the existing bounded history's oldest unmarked rows to roll off.
     // Never allow a pending/acknowledged operation marker to be evicted: it is
     // the only durable restart reconciliation proof, not a separate ledger.
-    let old_retained = (0..=original.len()).find(|&dropped| {
-        let old_len = original.len() - dropped;
-        let added = next.len().saturating_sub(old_len);
-        added > 0 && added <= max_added && next.len() <= history_limit &&
-            next.len() >= old_len && next[..old_len] == original[dropped..] &&
-            original[..dropped].iter().all(|row| row.get(QUAL_MARKER).is_none())
-    }).map(|dropped| original.len() - dropped)
-      .ok_or("Qualifying CAS may only append bounded, unique effects")?;
+    let old_retained = (0..=original.len())
+        .find(|&dropped| {
+            let old_len = original.len() - dropped;
+            let added = next.len().saturating_sub(old_len);
+            added > 0
+                && added <= max_added
+                && next.len() <= history_limit
+                && next.len() >= old_len
+                && next[..old_len] == original[dropped..]
+                && original[..dropped]
+                    .iter()
+                    .all(|row| row.get(QUAL_MARKER).is_none())
+        })
+        .map(|dropped| original.len() - dropped)
+        .ok_or("Qualifying CAS may only append bounded, unique effects")?;
     let mut new_capabilities = std::collections::HashSet::new();
     for row in next.iter_mut().skip(old_retained) {
         if row["scope"]["deploymentId"] != gate.deployment_id
             || row["scope"]["runtimeEpoch"] != gate.runtime_epoch
             || row["version"].as_u64() != Some(if gate.kind == "lm2f" { 2 } else { 1 })
-            || !row.is_object() || row.get(QUAL_MARKER).is_some()
+            || !row.is_object()
+            || row.get(QUAL_MARKER).is_some()
         {
             return Err("Qualifying effect is not bound to the native runtime epoch".into());
         }
@@ -611,15 +740,21 @@ fn prepare_qualifying_value(
 }
 
 fn acknowledge_qualifying_value(
-    mut current: Value, gate: &QualificationCasGate,
+    mut current: Value,
+    gate: &QualificationCasGate,
 ) -> Result<Value, String> {
     let next = receipt_rows_mut(&mut current, &gate.kind)
         .ok_or("Pending qualification evidence absent")?;
-    let owned: Vec<usize> = next.iter().enumerate().filter_map(|(i, row)|
-        matching_qualifier(row, &gate.ticket).then_some(i)).collect();
-    if owned.is_empty() || owned.len() > if gate.kind == "lm2f" { 8 } else { 1 }
-        || owned.iter().any(|&i| next[i]["version"] != 0 ||
-            next[i][QUAL_MARKER]["phase"] != "pending")
+    let owned: Vec<usize> = next
+        .iter()
+        .enumerate()
+        .filter_map(|(i, row)| matching_qualifier(row, &gate.ticket).then_some(i))
+        .collect();
+    if owned.is_empty()
+        || owned.len() > if gate.kind == "lm2f" { 8 } else { 1 }
+        || owned
+            .iter()
+            .any(|&i| next[i]["version"] != 0 || next[i][QUAL_MARKER]["phase"] != "pending")
     {
         return Err("No uniquely prepared native qualification CAS".into());
     }
@@ -632,15 +767,26 @@ fn acknowledge_qualifying_value(
 }
 
 fn existing_qualifying_rows_preserved(current: &Value, proposed: &Value) -> bool {
-    ["qualificationReceipts", "measurementRuns"].iter().all(|field| {
-        // Ordinary CAS can retain history or trim an oldest unmarked legacy
-        // prefix, but cannot add an unmarked success, replace any evidence,
-        // or evict an acknowledged/pending native operation marker.
-        let old = current["fabric"][*field].as_array().cloned().unwrap_or_default();
-        let next = proposed["fabric"][*field].as_array().cloned().unwrap_or_default();
-        next.len() <= old.len() && old[old.len() - next.len()..] == next &&
-            old[..old.len() - next.len()].iter().all(|row| row.get(QUAL_MARKER).is_none())
-    })
+    ["qualificationReceipts", "measurementRuns"]
+        .iter()
+        .all(|field| {
+            // Ordinary CAS can retain history or trim an oldest unmarked legacy
+            // prefix, but cannot add an unmarked success, replace any evidence,
+            // or evict an acknowledged/pending native operation marker.
+            let old = current["fabric"][*field]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let next = proposed["fabric"][*field]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            next.len() <= old.len()
+                && old[old.len() - next.len()..] == next
+                && old[..old.len() - next.len()]
+                    .iter()
+                    .all(|row| row.get(QUAL_MARKER).is_none())
+        })
 }
 
 fn lock_with_qualifier_deadline_checked(
@@ -652,10 +798,12 @@ fn lock_with_qualifier_deadline_checked(
         }
         match WRITE_LOCK.try_lock() {
             Ok(guard) => return Ok(guard),
-            Err(std::sync::TryLockError::Poisoned(_)) =>
-                return Err("Native qualification storage lock unavailable".into()),
-            Err(std::sync::TryLockError::WouldBlock) =>
-                std::thread::sleep(Duration::from_millis(2)),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("Native qualification storage lock unavailable".into())
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
         }
     }
 }
@@ -666,15 +814,24 @@ fn lock_with_qualifier_deadline(
 }
 
 fn qualification_owner(ticket: &QualificationCasTicket) -> Result<QualificationCasGate, String> {
-    let slots = qualifier_gate().lock().map_err(|_| "Qualification gate unavailable")?;
-    slots.values().find(|g| g.ticket.operation_id == ticket.operation_id &&
-        g.ticket.native_epoch == ticket.native_epoch)
-        .cloned().ok_or_else(|| "Qualification native epoch/owner unavailable".into())
+    let slots = qualifier_gate()
+        .lock()
+        .map_err(|_| "Qualification gate unavailable")?;
+    slots
+        .values()
+        .find(|g| {
+            g.ticket.operation_id == ticket.operation_id
+                && g.ticket.native_epoch == ticket.native_epoch
+        })
+        .cloned()
+        .ok_or_else(|| "Qualification native epoch/owner unavailable".into())
 }
 
 fn persist_qualified_settings(
-    app: &AppHandle, gate: &QualificationCasGate,
-    previous: &Map<String, Value>, next: &Map<String, Value>,
+    app: &AppHandle,
+    gate: &QualificationCasGate,
+    previous: &Map<String, Value>,
+    next: &Map<String, Value>,
 ) -> Result<PersistResolution, String> {
     persist_complete_settings(app, previous, next, |staged, target| {
         // Hold the exact cancellation gate THROUGH replacement. The existing
@@ -683,15 +840,16 @@ fn persist_qualified_settings(
         let Ok(slots) = qualifier_gate().lock() else {
             return PhysicalOutcome::Fenced;
         };
-        let Some(current) = slots.get(&gate.deployment_id).filter(|g|
-            g.ticket.operation_id == gate.ticket.operation_id &&
-            g.ticket.native_epoch == gate.ticket.native_epoch &&
-            g.kind == gate.kind &&
-            g.deployment_id == gate.deployment_id &&
-            g.runtime_epoch == gate.runtime_epoch &&
-            g.process_id == gate.process_id &&
-            g.prepared &&
-            g.prepared_revision == next.get(KEY).and_then(|v| v["revision"].as_u64())) else {
+        let Some(current) = slots.get(&gate.deployment_id).filter(|g| {
+            g.ticket.operation_id == gate.ticket.operation_id
+                && g.ticket.native_epoch == gate.ticket.native_epoch
+                && g.kind == gate.kind
+                && g.deployment_id == gate.deployment_id
+                && g.runtime_epoch == gate.runtime_epoch
+                && g.process_id == gate.process_id
+                && g.prepared
+                && g.prepared_revision == next.get(KEY).and_then(|v| v["revision"].as_u64())
+        }) else {
             return PhysicalOutcome::Fenced;
         };
         if !eligible(current, &gate.ticket, Instant::now(), |_| true) {
@@ -701,22 +859,32 @@ fn persist_qualified_settings(
             return PhysicalOutcome::Fenced;
         };
         super::managed_local_runtime::with_current_qualification_runtime(
-            &current.deployment_id, &current.runtime_epoch, pid,
-            || if eligible(current, &gate.ticket, Instant::now(), |_| true) {
-                physical_replace(staged, target)
-            } else {
-                PhysicalOutcome::Fenced
-            }
-        ).unwrap_or(PhysicalOutcome::Fenced)
+            &current.deployment_id,
+            &current.runtime_epoch,
+            pid,
+            || {
+                if eligible(current, &gate.ticket, Instant::now(), |_| true) {
+                    physical_replace(staged, target)
+                } else {
+                    PhysicalOutcome::Fenced
+                }
+            },
+        )
+        .unwrap_or(PhysicalOutcome::Fenced)
     })
 }
 
 #[tauri::command]
 pub fn self_hosted_profiles_qualification_prepare(
-    app: AppHandle, ticket: QualificationCasTicket, expected: Value, value: Value,
+    app: AppHandle,
+    ticket: QualificationCasTicket,
+    expected: Value,
+    value: Value,
 ) -> Result<&'static str, String> {
     let gate = qualification_owner(&ticket)?;
-    if !native_eligible(&gate, &ticket) { return Ok("rejected"); }
+    if !native_eligible(&gate, &ticket) {
+        return Ok("rejected");
+    }
     let _lock = match lock_with_qualifier_deadline(&gate) {
         Ok(lock) => lock,
         Err(_) => return Ok("rejected"),
@@ -727,36 +895,53 @@ pub fn self_hosted_profiles_qualification_prepare(
     };
     let previous = settings_from_disk(&app)?;
     let old = previous.get(KEY).cloned().unwrap_or(Value::Null);
-    if old != expected { return Ok("conflict"); }
+    if old != expected {
+        return Ok("conflict");
+    }
     let prepared = match prepare_qualifying_value(&old, value, &gate) {
         Ok(prepared) => prepared,
         Err(_) => return Ok("failed-before-commit"),
     };
-    if !native_eligible(&gate, &ticket) { return Ok("rejected"); }
+    if !native_eligible(&gate, &ticket) {
+        return Ok("rejected");
+    }
     {
-        let mut slots = qualifier_gate().lock().map_err(|_| "Qualification gate unavailable")?;
-        let current = slots.get_mut(&gate.deployment_id).filter(|g| g.ticket.operation_id == ticket.operation_id &&
-            g.ticket.native_epoch == ticket.native_epoch)
+        let mut slots = qualifier_gate()
+            .lock()
+            .map_err(|_| "Qualification gate unavailable")?;
+        let current = slots
+            .get_mut(&gate.deployment_id)
+            .filter(|g| {
+                g.ticket.operation_id == ticket.operation_id
+                    && g.ticket.native_epoch == ticket.native_epoch
+            })
             .ok_or("Native qualification ownership changed")?;
-        if current.prepared { return Ok("rejected"); }
+        if current.prepared {
+            return Ok("rejected");
+        }
         current.prepared = true;
         current.prepared_revision = prepared["revision"].as_u64();
     }
     let mut candidate = previous.clone();
     candidate.insert(KEY.into(), prepared);
-    Ok(match persist_qualified_settings(&app, &gate, &previous, &candidate)? {
-        PersistResolution::Committed => "prepared",
-        PersistResolution::Fenced => "rejected",
-        PersistResolution::FailedBeforeCommit | PersistResolution::NotCommitted =>
-            "failed-before-commit",
-        PersistResolution::ReconciledCommitted | PersistResolution::RecoveryRequired =>
-            "recovery-required",
-    })
+    Ok(
+        match persist_qualified_settings(&app, &gate, &previous, &candidate)? {
+            PersistResolution::Committed => "prepared",
+            PersistResolution::Fenced => "rejected",
+            PersistResolution::FailedBeforeCommit | PersistResolution::NotCommitted => {
+                "failed-before-commit"
+            }
+            PersistResolution::ReconciledCommitted | PersistResolution::RecoveryRequired => {
+                "recovery-required"
+            }
+        },
+    )
 }
 
 #[tauri::command]
 pub fn self_hosted_profiles_qualification_acknowledge(
-    app: AppHandle, ticket: QualificationCasTicket,
+    app: AppHandle,
+    ticket: QualificationCasTicket,
 ) -> Result<&'static str, String> {
     let gate = qualification_owner(&ticket)?;
     if !gate.prepared || !native_eligible(&gate, &ticket) {
@@ -771,7 +956,9 @@ pub fn self_hosted_profiles_qualification_acknowledge(
         Err(_) => return Ok("rejected"),
     };
     let previous = settings_from_disk(&app)?;
-    let old = previous.get(KEY).cloned()
+    let old = previous
+        .get(KEY)
+        .cloned()
         .ok_or("Stored qualification receipt unavailable")?;
     if old["revision"].as_u64() != gate.prepared_revision {
         return Ok("conflict");
@@ -783,15 +970,21 @@ pub fn self_hosted_profiles_qualification_acknowledge(
         Ok(next) => next,
         Err(_) => return Ok("failed-before-commit"),
     };
-    if !native_eligible(&gate, &ticket) { return Ok("rejected"); }
+    if !native_eligible(&gate, &ticket) {
+        return Ok("rejected");
+    }
     let mut candidate = previous.clone();
     candidate.insert(KEY.into(), next.clone());
     let result = persist_qualified_settings(&app, &gate, &previous, &candidate)?;
-    if matches!(result, PersistResolution::Committed |
-        PersistResolution::ReconciledCommitted) {
+    if matches!(
+        result,
+        PersistResolution::Committed | PersistResolution::ReconciledCommitted
+    ) {
         if let Ok(mut slots) = qualifier_gate().lock() {
-            if slots.get(&gate.deployment_id).is_some_and(|g| g.ticket.operation_id == ticket.operation_id &&
-                g.ticket.native_epoch == ticket.native_epoch) {
+            if slots.get(&gate.deployment_id).is_some_and(|g| {
+                g.ticket.operation_id == ticket.operation_id
+                    && g.ticket.native_epoch == ticket.native_epoch
+            }) {
                 gate.revoked.store(true, Ordering::Release);
                 slots.remove(&gate.deployment_id);
             }
@@ -806,8 +999,9 @@ pub fn self_hosted_profiles_qualification_acknowledge(
         PersistResolution::Committed => "acknowledged",
         PersistResolution::ReconciledCommitted => "committed-unacknowledged",
         PersistResolution::Fenced => "rejected",
-        PersistResolution::FailedBeforeCommit | PersistResolution::NotCommitted =>
-            "failed-before-commit",
+        PersistResolution::FailedBeforeCommit | PersistResolution::NotCommitted => {
+            "failed-before-commit"
+        }
         PersistResolution::RecoveryRequired => "recovery-required",
     })
 }
@@ -817,9 +1011,12 @@ pub fn self_hosted_profiles_qualification_acknowledge(
 /// never grants a new qualifying capability or retries a failed commit.
 #[tauri::command]
 pub fn self_hosted_profiles_qualification_reconcile(
-    app: AppHandle, ticket: QualificationCasTicket,
+    app: AppHandle,
+    ticket: QualificationCasTicket,
 ) -> Result<&'static str, String> {
-    let _lock = WRITE_LOCK.lock().map_err(|_| "Qualification storage lock unavailable")?;
+    let _lock = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Qualification storage lock unavailable")?;
     let _file_lock = lock_settings_file(&app, || true)?;
     let value = match settings_from_disk(&app) {
         Ok(settings) => settings.get(KEY).cloned().unwrap_or(Value::Null),
@@ -1249,10 +1446,10 @@ pub fn self_hosted_profiles_compare_and_swap(
     let _file_lock = lock_settings_file(&app, || true)?;
     let current_settings = settings_from_disk(&app)?;
     let previous = current_settings.get(KEY).cloned();
-    if !existing_qualifying_rows_preserved(
-        &previous.clone().unwrap_or(Value::Null), &value,
-    ) {
-        return Err("Qualified native CAS effects cannot be overwritten by ordinary settings".into());
+    if !existing_qualifying_rows_preserved(&previous.clone().unwrap_or(Value::Null), &value) {
+        return Err(
+            "Qualified native CAS effects cannot be overwritten by ordinary settings".into(),
+        );
     }
     compare_and_save(
         previous.clone().unwrap_or(Value::Null),
@@ -1503,13 +1700,22 @@ mod tests {
             assert!(validate(&future).is_err(), "{scope} future proof admitted");
             let mut missing = reenabled.clone();
             missing["profiles"][0][scope]["scope"]["configurationRevision"] = json!(0);
-            assert!(validate(&missing).is_err(), "{scope} zero revision admitted");
+            assert!(
+                validate(&missing).is_err(),
+                "{scope} zero revision admitted"
+            );
             let mut foreign = reenabled.clone();
             foreign["profiles"][0][scope]["scope"]["endpointId"] = json!("foreign");
-            assert!(validate(&foreign).is_err(), "{scope} foreign endpoint admitted");
+            assert!(
+                validate(&foreign).is_err(),
+                "{scope} foreign endpoint admitted"
+            );
             let mut digest = reenabled.clone();
             digest["profiles"][0][scope]["scope"]["digest"] = json!("wrong");
-            assert!(validate(&digest).is_err(), "{scope} foreign digest admitted");
+            assert!(
+                validate(&digest).is_err(),
+                "{scope} foreign digest admitted"
+            );
             let mut model = reenabled.clone();
             model["profiles"][0][scope]["scope"]["model"] = json!("wrong");
             assert!(validate(&model).is_err(), "{scope} foreign model admitted");
@@ -1680,7 +1886,11 @@ mod tests {
                 "qualificationReceipts":[],"measurementRuns":[]}});
         let mut next = old.clone();
         next["revision"] = json!(8);
-        let field = if kind == "lm2f" { "qualificationReceipts" } else { "measurementRuns" };
+        let field = if kind == "lm2f" {
+            "qualificationReceipts"
+        } else {
+            "measurementRuns"
+        };
         next["fabric"][field] = json!([{
             "version": if kind == "lm2f" {2} else {1},
             "scope":{"deploymentId":"deployment-a","runtimeEpoch":"runtime-a"},
@@ -1712,28 +1922,75 @@ mod tests {
             insert_deployment_qualifier_gate(&mut slots, gate.clone(), |_| true).unwrap();
         }
         assert_eq!(slots.len(), 3);
-        assert!(slots.values().any(|g| eligible(g, &b.ticket, Instant::now(), |_| true)));
-        assert!(slots.values().any(|g| eligible(g, &c.ticket, Instant::now(), |_| true)));
+        assert!(slots
+            .values()
+            .any(|g| eligible(g, &b.ticket, Instant::now(), |_| true)));
+        assert!(slots
+            .values()
+            .any(|g| eligible(g, &c.ticket, Instant::now(), |_| true)));
         // Re-admission of A is denied while its original operation is live;
         // a denied second A cannot alter the existing A or B/C gate.
         let mut second_a = a.clone();
         second_a.ticket.operation_id = "second-a-operation".into();
         second_a.revoked = Arc::new(AtomicBool::new(false));
         assert!(insert_deployment_qualifier_gate(&mut slots, second_a.clone(), |_| true).is_err());
-        assert_eq!(slots["deployment-a"].ticket.operation_id, a.ticket.operation_id);
-        assert_eq!(slots["deployment-b"].ticket.operation_id, b.ticket.operation_id);
-        assert_eq!(slots["deployment-c"].ticket.operation_id, c.ticket.operation_id);
+        assert_eq!(
+            slots["deployment-a"].ticket.operation_id,
+            a.ticket.operation_id
+        );
+        assert_eq!(
+            slots["deployment-b"].ticket.operation_id,
+            b.ticket.operation_id
+        );
+        assert_eq!(
+            slots["deployment-c"].ticket.operation_id,
+            c.ticket.operation_id
+        );
         // A's retirement frees only A. Its stale ticket can never match A2
         // or cancel B/C even if callers retain the old ticket bytes.
         slots["deployment-a"].revoked.store(true, Ordering::Release);
-        assert!(insert_deployment_qualifier_gate(&mut slots, second_a.clone(),
-            |g| !g.revoked.load(Ordering::Acquire)).is_ok());
-        assert!(!eligible(&slots["deployment-a"], &a.ticket, Instant::now(), |_| true));
-        assert!(eligible(&slots["deployment-a"], &second_a.ticket, Instant::now(), |_| true));
-        assert!(eligible(&slots["deployment-b"], &b.ticket, Instant::now(), |_| true));
-        assert!(eligible(&slots["deployment-c"], &c.ticket, Instant::now(), |_| true));
-        assert!(!eligible(&slots["deployment-b"], &a.ticket, Instant::now(), |_| true));
-        assert!(!eligible(&slots["deployment-c"], &a.ticket, Instant::now(), |_| true));
+        assert!(
+            insert_deployment_qualifier_gate(&mut slots, second_a.clone(), |g| !g
+                .revoked
+                .load(Ordering::Acquire))
+            .is_ok()
+        );
+        assert!(!eligible(
+            &slots["deployment-a"],
+            &a.ticket,
+            Instant::now(),
+            |_| true
+        ));
+        assert!(eligible(
+            &slots["deployment-a"],
+            &second_a.ticket,
+            Instant::now(),
+            |_| true
+        ));
+        assert!(eligible(
+            &slots["deployment-b"],
+            &b.ticket,
+            Instant::now(),
+            |_| true
+        ));
+        assert!(eligible(
+            &slots["deployment-c"],
+            &c.ticket,
+            Instant::now(),
+            |_| true
+        ));
+        assert!(!eligible(
+            &slots["deployment-b"],
+            &a.ticket,
+            Instant::now(),
+            |_| true
+        ));
+        assert!(!eligible(
+            &slots["deployment-c"],
+            &a.ticket,
+            Instant::now(),
+            |_| true
+        ));
     }
 
     #[test]
@@ -1759,11 +2016,14 @@ mod tests {
         c.ticket.native_epoch = "native-c".into();
         let mut c_proposal = ack_b.clone();
         c_proposal["revision"] = json!(9);
-        c_proposal["fabric"]["qualificationReceipts"].as_array_mut().unwrap().push(json!({
-            "version":2,
-            "scope":{"deploymentId":c.deployment_id,"runtimeEpoch":c.runtime_epoch},
-            "capability":"streaming","status":"verified","evidence":"offline-only",
-        }));
+        c_proposal["fabric"]["qualificationReceipts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "version":2,
+                "scope":{"deploymentId":c.deployment_id,"runtimeEpoch":c.runtime_epoch},
+                "capability":"streaming","status":"verified","evidence":"offline-only",
+            }));
         let pending_c = prepare_qualifying_value(&ack_b, c_proposal, &c).unwrap();
         // The one settings-file revision is globally serialized, but B's
         // acknowledged physical markers cannot become a false conflict for C.
@@ -1794,10 +2054,14 @@ mod tests {
             assert!(!existing_qualifying_rows_preserved(&recovered, &ack));
             let restored: Value =
                 serde_json::from_slice(&serde_json::to_vec(&ack).unwrap()).unwrap();
-            assert_eq!(examine_qualifying_rows(&restored, &gate.ticket), "committed");
+            assert_eq!(
+                examine_qualifying_rows(&restored, &gate.ticket),
+                "committed"
+            );
             assert_eq!(receipt_rows(&restored, kind).unwrap().len(), 1);
             let unknown = QualificationCasTicket {
-                operation_id: "unknown".into(), native_epoch: gate.ticket.native_epoch.clone(),
+                operation_id: "unknown".into(),
+                native_epoch: gate.ticket.native_epoch.clone(),
             };
             assert_eq!(examine_qualifying_rows(&restored, &unknown), "absent");
         }
@@ -1837,15 +2101,21 @@ mod tests {
         let ticket = gate.ticket.clone();
         assert!(eligible(&gate, &ticket, Instant::now(), |_| true));
         let wrong = QualificationCasTicket {
-            operation_id: ticket.operation_id.clone(), native_epoch: "previous-boot".into(),
+            operation_id: ticket.operation_id.clone(),
+            native_epoch: "previous-boot".into(),
         };
         assert!(!eligible(&gate, &wrong, Instant::now(), |_| true));
         assert!(!eligible(&gate, &ticket, Instant::now(), |_| false));
         assert!(!eligible(&gate, &ticket, gate.expiry, |_| true));
         gate.revoked.store(true, Ordering::Release);
         assert!(!eligible(&gate, &ticket, Instant::now(), |_| true));
-        assert_eq!(guarded_native_save_checked(|| eligible(&gate, &ticket, Instant::now(), |_| true),
-            || panic!("must not write")), "rejected");
+        assert_eq!(
+            guarded_native_save_checked(
+                || eligible(&gate, &ticket, Instant::now(), |_| true),
+                || panic!("must not write")
+            ),
+            "rejected"
+        );
     }
 
     #[test]
@@ -1853,45 +2123,72 @@ mod tests {
         let gate = b03_gate("lm6", 10_000);
         let live = || eligible(&gate, &gate.ticket, Instant::now(), |_| true);
         assert_eq!(guarded_native_save_checked(live, || Ok(())), "acknowledged");
-        assert_eq!(guarded_native_save_checked(live, || Err("disk-full".into())), "ambiguous");
-        assert_eq!(guarded_native_save_checked(live, || {
-            gate.revoked.store(true, Ordering::Release);
-            Ok(())
-        }), "ambiguous");
-        assert_eq!(guarded_native_save_checked(live, || panic!("late retry")), "rejected");
+        assert_eq!(
+            guarded_native_save_checked(live, || Err("disk-full".into())),
+            "ambiguous"
+        );
+        assert_eq!(
+            guarded_native_save_checked(live, || {
+                gate.revoked.store(true, Ordering::Release);
+                Ok(())
+            }),
+            "ambiguous"
+        );
+        assert_eq!(
+            guarded_native_save_checked(live, || panic!("late retry")),
+            "rejected"
+        );
         let short = b03_gate("lm6", 10);
         let short_live = || eligible(&short, &short.ticket, Instant::now(), |_| true);
-        assert_eq!(guarded_native_save_checked(short_live, || {
-            std::thread::sleep(Duration::from_millis(25));
-            Ok(())
-        }), "ambiguous");
-        assert_eq!(guarded_native_save_checked(short_live, || panic!("expired start")), "rejected");
+        assert_eq!(
+            guarded_native_save_checked(short_live, || {
+                std::thread::sleep(Duration::from_millis(25));
+                Ok(())
+            }),
+            "ambiguous"
+        );
+        assert_eq!(
+            guarded_native_save_checked(short_live, || panic!("expired start")),
+            "rejected"
+        );
     }
 
     #[test]
     fn b03_storage_mutex_delay_is_bounded_and_no_effect_is_written() {
         let locked = WRITE_LOCK.lock().unwrap();
         let gate = b03_gate("lm6", 10);
-        let rejected = std::thread::spawn(move ||
-            lock_with_qualifier_deadline_checked(||
-                eligible(&gate, &gate.ticket, Instant::now(), |_| true)).map(|_| "acquired"));
+        let rejected = std::thread::spawn(move || {
+            lock_with_qualifier_deadline_checked(|| {
+                eligible(&gate, &gate.ticket, Instant::now(), |_| true)
+            })
+            .map(|_| "acquired")
+        });
         assert!(rejected.join().unwrap().is_err());
         drop(locked);
         let ready = b03_gate("lm6", 500);
-        assert!(lock_with_qualifier_deadline_checked(||
-            eligible(&ready, &ready.ticket, Instant::now(), |_| true)).is_ok());
+        assert!(lock_with_qualifier_deadline_checked(|| eligible(
+            &ready,
+            &ready.ticket,
+            Instant::now(),
+            |_| true
+        ))
+        .is_ok());
     }
 
     #[test]
     fn b03_cas_conflict_and_pre_save_failure_never_replay_effect() {
         let (old, next) = b03_state("lm2f");
         let mut writes = 0;
-        let conflict = compare_and_save(old.clone(), Value::Null, next.clone(),
-            |_| { writes += 1; Ok(()) });
+        let conflict = compare_and_save(old.clone(), Value::Null, next.clone(), |_| {
+            writes += 1;
+            Ok(())
+        });
         assert_eq!(conflict, Ok(false));
         assert_eq!(writes, 0);
-        let disk_failure = compare_and_save(old.clone(), old, next,
-            |_| { writes += 1; Err("disk failed".into()) });
+        let disk_failure = compare_and_save(old.clone(), old, next, |_| {
+            writes += 1;
+            Err("disk failed".into())
+        });
         assert!(disk_failure.is_err());
         assert_eq!(writes, 1); // never retried into success
     }
@@ -1901,10 +2198,16 @@ mod tests {
         for (kind, limit) in [("lm2f", 128), ("lm6", 48)] {
             let gate = b03_gate(kind, 10_000);
             let (mut old, _) = b03_state(kind);
-            let field = if kind == "lm2f" { "qualificationReceipts" } else { "measurementRuns" };
-            old["fabric"][field] = json!((0..limit).map(|i| json!({
-                "version": 99, "legacyEvidenceIndex": i,
-            })).collect::<Vec<_>>());
+            let field = if kind == "lm2f" {
+                "qualificationReceipts"
+            } else {
+                "measurementRuns"
+            };
+            old["fabric"][field] = json!((0..limit)
+                .map(|i| json!({
+                    "version": 99, "legacyEvidenceIndex": i,
+                }))
+                .collect::<Vec<_>>());
             let mut proposal = old.clone();
             proposal["revision"] = json!(8);
             let (_, fresh) = b03_state(kind);
@@ -1923,8 +2226,8 @@ mod tests {
             assert!(prepare_qualifying_value(&old, proposal, &gate).is_err());
             // Ordinary CAS can trim only oldest unmarked legacy records.
             let mut shorter = old.clone();
-            shorter["fabric"][field] = json!(old["fabric"][field]
-                .as_array().unwrap()[1..].to_vec());
+            shorter["fabric"][field] =
+                json!(old["fabric"][field].as_array().unwrap()[1..].to_vec());
             assert!(!existing_qualifying_rows_preserved(&old, &shorter));
         }
     }
@@ -1941,10 +2244,14 @@ mod tests {
         ]);
         assert!(existing_qualifying_rows_preserved(&old, &trimmed));
         trimmed["fabric"]["qualificationReceipts"]
-            .as_array_mut().unwrap().push(json!({"version":2}));
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"version":2}));
         assert!(!existing_qualifying_rows_preserved(&old, &trimmed));
-        assert!(!native_eligible(&b03_gate("lm6", 10_000),
-            &b03_gate("lm6", 10_000).ticket)); // remote has no native epoch authority
+        assert!(!native_eligible(
+            &b03_gate("lm6", 10_000),
+            &b03_gate("lm6", 10_000).ticket
+        )); // remote has no native epoch authority
     }
 
     #[test]
@@ -1961,11 +2268,13 @@ mod tests {
                 ticket: QualificationCasTicket {
                     operation_id: "new-ticket-after-restart".into(),
                     native_epoch: "new-native-boot".into(),
-                }, ..gate.clone()
+                },
+                ..gate.clone()
             };
             assert!(prior_qualifier_for_scope(&acknowledged, &restarted));
             let rolled_epoch = QualificationCasGate {
-                runtime_epoch: "legitimate-new-runtime-process".into(), ..restarted
+                runtime_epoch: "legitimate-new-runtime-process".into(),
+                ..restarted
             };
             assert!(!prior_qualifier_for_scope(&acknowledged, &rolled_epoch));
         }
@@ -1983,14 +2292,28 @@ mod tests {
         next.ticket.operation_id = "new-explicit-attempt".into();
         next.ticket.native_epoch = "new-native-ticket".into();
         next.runtime_epoch = "new-managed-runtime-epoch".into();
-        assert!(replace_stale_qualifier_slot(&mut slot, next.clone(), |g|
-            eligible(g, &g.ticket, Instant::now(), |_| true)).is_err());
+        assert!(
+            replace_stale_qualifier_slot(&mut slot, next.clone(), |g| eligible(
+                g,
+                &g.ticket,
+                Instant::now(),
+                |_| true
+            ))
+            .is_err()
+        );
         assert!(!revocation.load(Ordering::Acquire));
         replace_stale_qualifier_slot(&mut slot, next, |_| false).unwrap();
         assert!(revocation.load(Ordering::Acquire));
-        assert_eq!(slot.as_ref().unwrap().ticket.operation_id, "new-explicit-attempt");
-        assert!(!eligible(slot.as_ref().unwrap(), &old_ticket,
-            Instant::now(), |_| true));
+        assert_eq!(
+            slot.as_ref().unwrap().ticket.operation_id,
+            "new-explicit-attempt"
+        );
+        assert!(!eligible(
+            slot.as_ref().unwrap(),
+            &old_ticket,
+            Instant::now(),
+            |_| true
+        ));
     }
 
     #[test]
@@ -2004,13 +2327,15 @@ mod tests {
         let (old, new) = b03_state("lm6");
         let prepared = prepare_qualifying_value(&old, new, &gate).unwrap();
         let active = acknowledge_qualifying_value(prepared, &gate).unwrap();
-        let path = std::env::temp_dir().join(format!("clack-b03-{}-{}.json",
-            std::process::id(), qualifier_epoch().unwrap()));
+        let path = std::env::temp_dir().join(format!(
+            "clack-b03-{}-{}.json",
+            std::process::id(),
+            qualifier_epoch().unwrap()
+        ));
         let live = || eligible(&gate, &gate.ticket, Instant::now(), |_| true);
         let result = guarded_native_save_checked(live, || {
             std::thread::sleep(Duration::from_millis(25));
-            std::fs::write(&path, serde_json::to_vec(&active).unwrap())
-                .map_err(|e| e.to_string())
+            std::fs::write(&path, serde_json::to_vec(&active).unwrap()).map_err(|e| e.to_string())
         });
         assert_eq!(result, "ambiguous");
         let on_disk: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -2026,62 +2351,75 @@ mod tests {
         let prepared = prepare_qualifying_value(&old, candidate, &gate).unwrap();
         assert_eq!(examine_qualifying_rows(&prepared, &gate.ticket), "pending");
         let acknowledged = acknowledge_qualifying_value(prepared, &gate).unwrap();
-        assert_eq!(examine_qualifying_rows(&acknowledged, &gate.ticket), "committed");
+        assert_eq!(
+            examine_qualifying_rows(&acknowledged, &gate.ticket),
+            "committed"
+        );
         let mut corrupted = acknowledged.clone();
         corrupted["fabric"]["qualificationReceipts"][0]["qualificationCas"]["phase"] =
             json!("corrupt");
         assert_eq!(examine_qualifying_rows(&corrupted, &gate.ticket), "unknown");
         let mut corrupted_identity = acknowledged;
-        corrupted_identity["fabric"]["qualificationReceipts"][0]["qualificationCas"]["operationId"] =
-            json!(false);
-        assert_eq!(examine_qualifying_rows(&corrupted_identity, &gate.ticket), "unknown");
+        corrupted_identity["fabric"]["qualificationReceipts"][0]["qualificationCas"]
+            ["operationId"] = json!(false);
+        assert_eq!(
+            examine_qualifying_rows(&corrupted_identity, &gate.ticket),
+            "unknown"
+        );
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("terax-settings.json");
         std::fs::write(&path, b"{corrupt authoritative json").unwrap();
         assert!(read_settings_file(&path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt authoritative json");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"{corrupt authoritative json"
+        );
     }
 
     #[test]
     fn b03_existing_authority_never_normalizes_corrupt_or_inconsistent_receipts() {
-        let dir=tempfile::tempdir().unwrap();
-        let main=dir.path().join("terax-settings.json");
-        let malformed=b"{unresolved native B03 authority";
-        std::fs::write(&main,malformed).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("terax-settings.json");
+        let malformed = b"{unresolved native B03 authority";
+        std::fs::write(&main, malformed).unwrap();
         assert!(read_settings_file(&main).is_err());
-        assert_eq!(std::fs::read(&main).unwrap(),malformed);
+        assert_eq!(std::fs::read(&main).unwrap(), malformed);
 
-        let gate=b03_gate("lm2f",10_000);
-        let (old,next)=b03_state("lm2f");
-        let mut prepared=prepare_qualifying_value(&old,next,&gate).unwrap();
-        prepared["fabric"]["qualificationReceipts"][0][QUAL_MARKER]["phase"]=
+        let gate = b03_gate("lm2f", 10_000);
+        let (old, next) = b03_state("lm2f");
+        let mut prepared = prepare_qualifying_value(&old, next, &gate).unwrap();
+        prepared["fabric"]["qualificationReceipts"][0][QUAL_MARKER]["phase"] =
             json!("acknowledged");
-        let inconsistent=serde_json::to_vec(&json!({KEY:prepared})).unwrap();
-        std::fs::write(&main,&inconsistent).unwrap();
+        let inconsistent = serde_json::to_vec(&json!({KEY:prepared})).unwrap();
+        std::fs::write(&main, &inconsistent).unwrap();
         assert!(read_settings_file(&main).is_err());
-        assert_eq!(std::fs::read(&main).unwrap(),inconsistent);
+        assert_eq!(std::fs::read(&main).unwrap(), inconsistent);
 
         // A valid main ALWAYS wins over the obsolete/corrupt recovery file.
-        let valid=serde_json::to_vec(&json!({"ordinary":"preserved"})).unwrap();
-        std::fs::write(&main,&valid).unwrap();
-        std::fs::write(dir.path().join(".terax-settings.json.replaced-backup"),malformed).unwrap();
-        assert_eq!(read_settings_file(&main).unwrap()["ordinary"],"preserved");
-        assert_eq!(std::fs::read(&main).unwrap(),valid);
+        let valid = serde_json::to_vec(&json!({"ordinary":"preserved"})).unwrap();
+        std::fs::write(&main, &valid).unwrap();
+        std::fs::write(
+            dir.path().join(".terax-settings.json.replaced-backup"),
+            malformed,
+        )
+        .unwrap();
+        assert_eq!(read_settings_file(&main).unwrap()["ordinary"], "preserved");
+        assert_eq!(std::fs::read(&main).unwrap(), valid);
     }
 
     #[test]
     fn b03_missing_authority_never_fabricates_empty_settings_or_uses_corrupt_backup() {
-        let dir=tempfile::tempdir().unwrap();
-        let main=dir.path().join("terax-settings.json");
-        let backup=dir.path().join(".terax-settings.json.replaced-backup");
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("terax-settings.json");
+        let backup = dir.path().join(".terax-settings.json.replaced-backup");
         // This may be an interrupted real replacement, NOT a new install.
         assert!(read_settings_file(&main).is_err());
         assert!(!main.exists());
-        let forensic=b"{corrupt previous recovery";
-        std::fs::write(&backup,forensic).unwrap();
+        let forensic = b"{corrupt previous recovery";
+        std::fs::write(&backup, forensic).unwrap();
         assert!(read_settings_file(&main).is_err());
         assert!(!main.exists());
-        assert_eq!(std::fs::read(&backup).unwrap(),forensic);
+        assert_eq!(std::fs::read(&backup).unwrap(), forensic);
     }
 
     #[test]
@@ -2097,7 +2435,9 @@ mod tests {
         updated["revision"] = json!(2);
         next.insert(KEY.into(), updated);
         let outcome = self_hosted_atomic_file::replace_settings_file(
-            &path, &serde_json::to_vec(&next).unwrap(), || true,
+            &path,
+            &serde_json::to_vec(&next).unwrap(),
+            || true,
         );
         assert_eq!(outcome, PhysicalOutcome::Crossed);
         let restored = read_settings_file(&path).unwrap();
@@ -2111,9 +2451,7 @@ mod tests {
     fn b03_interprocess_settings_lock_fails_closed_and_releases_after_crash() {
         const CHILD: &str = "CLACK_B03_FILE_LOCK_CHILD_PATH";
         const READY: &str = "CLACK_B03_FILE_LOCK_READY_PATH";
-        if let (Some(target), Some(ready)) = (
-            std::env::var_os(CHILD), std::env::var_os(READY),
-        ) {
+        if let (Some(target), Some(ready)) = (std::env::var_os(CHILD), std::env::var_os(READY)) {
             let _lock = lock_settings_path(&PathBuf::from(target), || true).unwrap();
             std::fs::write(ready, b"locked").unwrap();
             std::thread::sleep(Duration::from_millis(120));
@@ -2131,7 +2469,10 @@ mod tests {
         while !marker.exists() && started.elapsed() < Duration::from_secs(3) {
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(marker.exists(), "offline native child did not acquire the lock");
+        assert!(
+            marker.exists(),
+            "offline native child did not acquire the lock"
+        );
         let deadline = Instant::now() + Duration::from_millis(30);
         assert!(lock_settings_path(&target, || Instant::now() < deadline).is_err());
         assert_eq!(child.wait().unwrap().code(), Some(74));
@@ -2144,7 +2485,9 @@ mod tests {
     fn b03_windows_authoritative_reader_reconciles_missing_name_and_preserves_new_commit() {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("terax-settings.json");
-        let backup = directory.path().join(".terax-settings.json.replaced-backup");
+        let backup = directory
+            .path()
+            .join(".terax-settings.json.replaced-backup");
         let old = json!({"revision":1, "selfHostedInference":{"version":1, "revision":1,
             "endpoints":[], "profiles":[]}});
         let next = json!({"revision":2, "selfHostedInference":{"version":1, "revision":2,
@@ -2154,15 +2497,27 @@ mod tests {
         // only in the backup; restore it before admitting any new native CAS.
         let recovered = read_settings_file(&target).unwrap();
         assert_eq!(recovered["revision"], 1);
-        assert_eq!(std::fs::read(&target).unwrap(), serde_json::to_vec(&old).unwrap());
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            serde_json::to_vec(&old).unwrap()
+        );
         assert!(!backup.exists());
 
-        assert_eq!(self_hosted_atomic_file::replace_settings_file(&target,
-            &serde_json::to_vec(&next).unwrap(), || true), PhysicalOutcome::Crossed);
+        assert_eq!(
+            self_hosted_atomic_file::replace_settings_file(
+                &target,
+                &serde_json::to_vec(&next).unwrap(),
+                || true
+            ),
+            PhysicalOutcome::Crossed
+        );
         assert_eq!(read_settings_file(&target).unwrap()["revision"], 2);
         // The old revision remains PASSIVE recovery evidence; a valid main
         // pathname always wins and is not rolled back on renderer timeout.
-        assert_eq!(std::fs::read(&backup).unwrap(), serde_json::to_vec(&old).unwrap());
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            serde_json::to_vec(&old).unwrap()
+        );
         assert_eq!(read_settings_file(&target).unwrap()["revision"], 2);
     }
 }

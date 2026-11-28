@@ -18,6 +18,16 @@ const frozenFiles = [
 ];
 const checksum = (file: string) =>
   createHash("sha256").update(readFileSync(file)).digest("hex");
+const runOfflineGuard = (mode: "probe" | "verify") => {
+  const impossibleSettings = path.join(repo, "__offline_isolation_missing_settings__");
+  const result = spawnSync(process.execPath,
+    [runner, `--offline-dry-run=${mode}`], {
+      cwd: repo, encoding: "utf8", windowsHide: true, timeout: 12_000,
+      env: { ...process.env, APPDATA: impossibleSettings,
+        CLACK_HOSTED_OFFLINE_DRY_RUN: "1" },
+    });
+  return { result, impossibleSettings };
+};
 
 describe("hosted offline WebView launches fail closed without independent OS egress isolation", () => {
   it.each(["probe", "verify"] as const)(
@@ -25,21 +35,27 @@ describe("hosted offline WebView launches fail closed without independent OS egr
     (mode) => {
       // A deliberately missing settings directory proves this guard fires
       // before credential/settings IO. No provider key is supplied.
-      const impossibleSettings = path.join(repo, "__offline_isolation_missing_settings__");
-      const oldHashes = frozenFiles.map(checksum);
-      const result = spawnSync(process.execPath,
-        [runner, `--offline-dry-run=${mode}`], {
-          cwd: repo, encoding: "utf8", windowsHide: true, timeout: 12_000,
-          env: { ...process.env, APPDATA: impossibleSettings,
-            CLACK_HOSTED_OFFLINE_DRY_RUN: "1" },
-        });
+      const { result, impossibleSettings } = runOfflineGuard(mode);
       expect(result.error).toBeUndefined();
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("POST-POLICY HOSTED TEST ISOLATION UNSAFE");
       expect(result.stderr).toContain("before any settings, workspace, or provider initialization");
       expect(result.stdout).not.toContain("remote-control-native-start");
-      expect(frozenFiles.map(checksum)).toEqual(oldHashes);
       expect(() => statSync(impossibleSettings)).toThrow();
+    },
+  );
+  it.each(["probe", "verify"] as const)(
+    "preserves independently frozen native report hashes during --offline-dry-run=%s",
+    (mode) => {
+      // Evidence acceptance is non-portable: require actual historical native
+      // reports before asserting that a dry run could not rewrite them.
+      const oldHashes = frozenFiles.map(checksum);
+      const { result } = runOfflineGuard(mode);
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("POST-POLICY HOSTED TEST ISOLATION UNSAFE");
+      expect(result.stdout).not.toContain("remote-control-native-start");
+      expect(frozenFiles.map(checksum)).toEqual(oldHashes);
     },
   );
   it("has no unsafe opt-in flag that silently turns the old dry-run back on", () => {

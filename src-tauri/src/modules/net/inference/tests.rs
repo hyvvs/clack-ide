@@ -7,13 +7,22 @@ use std::{
 
 #[test]
 fn lm11_native_quiescence_requires_actual_original_registry_lease_drop() {
-    let native=InferenceState::default();
-    let original=native.open("main").unwrap();
-    assert!(native.completion(&original).is_some(),"reserved original ID is still owned");
-    let lease=native.start("main",&original).unwrap();
-    assert!(native.completion(&original).is_some(),"completed SDK text cannot drop Rust lease");
+    let native = InferenceState::default();
+    let original = native.open("main").unwrap();
+    assert!(
+        native.completion(&original).is_some(),
+        "reserved original ID is still owned"
+    );
+    let lease = native.start("main", &original).unwrap();
+    assert!(
+        native.completion(&original).is_some(),
+        "completed SDK text cannot drop Rust lease"
+    );
     drop(lease);
-    assert!(native.completion(&original).is_none(),"only actual native lease drop drains the ID");
+    assert!(
+        native.completion(&original).is_none(),
+        "only actual native lease drop drains the ID"
+    );
 }
 
 #[test]
@@ -23,17 +32,25 @@ fn one_muse_permit_is_sha256_bound_and_never_permits_missing_or_foreign_tokens()
     assert!(valid_one_muse_permit(Some(&permit), Some(&expected)));
     assert!(!valid_one_muse_permit(Some(&permit), None));
     assert!(!valid_one_muse_permit(None, Some(&expected)));
-    assert!(!valid_one_muse_permit(Some(&"a".repeat(64)), Some(&expected)));
+    assert!(!valid_one_muse_permit(
+        Some(&"a".repeat(64)),
+        Some(&expected)
+    ));
     assert!(!valid_one_muse_permit(Some("short"), Some(&expected)));
     assert!(!valid_one_muse_permit(Some(&permit), Some(&"0".repeat(64))));
-    assert!(!valid_one_muse_permit(Some(&permit), Some(&expected.to_uppercase())));
+    assert!(!valid_one_muse_permit(
+        Some(&permit),
+        Some(&expected.to_uppercase())
+    ));
 }
 
 #[test]
 fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation() {
     let run_id = "muse-one-0123456789abcdef";
     let admission = admission::Admission {
-        endpoint_id: "real-qwen".into(), profile_id: "muse".into(), capacity: 1,
+        endpoint_id: "real-qwen".into(),
+        profile_id: "muse".into(),
+        capacity: 1,
     };
     let body = serde_json::json!({
         "model": "muse-glimmer:30b",
@@ -44,22 +61,52 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
     let raw = serde_json::to_vec(&body).unwrap();
     let headers = HashMap::from([("content-type".into(), "application/json".into())]);
     let candidate = OneMuseRequest {
-        run_id: Some(run_id), url: ONE_MUSE_ENDPOINT, method: "POST",
+        run_id: Some(run_id),
+        url: ONE_MUSE_ENDPOINT,
+        method: "POST",
         headers: Some(&headers),
-        body: Some(&raw), allow_private: true, policy: Some(Policy::SelfHosted),
-        admission: Some(&admission), preflight: false, fallback: false,
+        body: Some(&raw),
+        allow_private: true,
+        policy: Some(Policy::SelfHosted),
+        admission: Some(&admission),
+        preflight: false,
+        fallback: false,
     };
     assert!(valid_one_muse_request(run_id, &candidate));
     assert!(!valid_one_muse_request("muse-one-stale", &candidate));
     for invalid in [
-        OneMuseRequest { method: "GET", ..candidate },
-        OneMuseRequest { headers: None, ..candidate },
-        OneMuseRequest { url: "http://127.0.0.1:11436/api/chat", ..candidate },
-        OneMuseRequest { run_id: None, ..candidate },
-        OneMuseRequest { allow_private: false, ..candidate },
-        OneMuseRequest { preflight: true, ..candidate },
-        OneMuseRequest { fallback: true, ..candidate },
-        OneMuseRequest { policy: Some(Policy::Legacy), ..candidate },
+        OneMuseRequest {
+            method: "GET",
+            ..candidate
+        },
+        OneMuseRequest {
+            headers: None,
+            ..candidate
+        },
+        OneMuseRequest {
+            url: "http://127.0.0.1:11436/api/chat",
+            ..candidate
+        },
+        OneMuseRequest {
+            run_id: None,
+            ..candidate
+        },
+        OneMuseRequest {
+            allow_private: false,
+            ..candidate
+        },
+        OneMuseRequest {
+            preflight: true,
+            ..candidate
+        },
+        OneMuseRequest {
+            fallback: true,
+            ..candidate
+        },
+        OneMuseRequest {
+            policy: Some(Policy::Legacy),
+            ..candidate
+        },
     ] {
         assert!(!valid_one_muse_request(run_id, &invalid));
     }
@@ -67,15 +114,25 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
         ("content-type".into(), "application/json".into()),
         ("authorization".into(), "Bearer PRIVATE".into()),
     ]);
-    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-        headers: Some(&with_authorization), ..candidate
-    }));
+    assert!(!valid_one_muse_request(
+        run_id,
+        &OneMuseRequest {
+            headers: Some(&with_authorization),
+            ..candidate
+        }
+    ));
     let multiple = admission::Admission {
-        endpoint_id: "real-qwen".into(), profile_id: "muse".into(), capacity: 2,
+        endpoint_id: "real-qwen".into(),
+        profile_id: "muse".into(),
+        capacity: 2,
     };
-    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-        admission: Some(&multiple), ..candidate
-    }));
+    assert!(!valid_one_muse_request(
+        run_id,
+        &OneMuseRequest {
+            admission: Some(&multiple),
+            ..candidate
+        }
+    ));
     for mutation in [
         ("model", serde_json::json!("other:latest")),
         ("tools", serde_json::json!([{"type":"function"}])),
@@ -86,9 +143,13 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
         let mut changed = body.clone();
         changed[mutation.0] = mutation.1;
         let raw = serde_json::to_vec(&changed).unwrap();
-        assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-            body: Some(&raw), ..candidate
-        }));
+        assert!(!valid_one_muse_request(
+            run_id,
+            &OneMuseRequest {
+                body: Some(&raw),
+                ..candidate
+            }
+        ));
     }
     for changed in [
         serde_json::json!({"num_ctx": 4096, "num_predict": 32}),
@@ -97,18 +158,29 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
         let mut altered = body.clone();
         altered["options"] = changed;
         let raw = serde_json::to_vec(&altered).unwrap();
-        assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-            body: Some(&raw), ..candidate
-        }));
+        assert!(!valid_one_muse_request(
+            run_id,
+            &OneMuseRequest {
+                body: Some(&raw),
+                ..candidate
+            }
+        ));
     }
     let mut continued = body.clone();
-    continued["messages"].as_array_mut().unwrap().push(serde_json::json!({
-        "role": "assistant", "content": "Prior answer",
-    }));
+    continued["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "role": "assistant", "content": "Prior answer",
+        }));
     let raw = serde_json::to_vec(&continued).unwrap();
-    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-        body: Some(&raw), ..candidate
-    }));
+    assert!(!valid_one_muse_request(
+        run_id,
+        &OneMuseRequest {
+            body: Some(&raw),
+            ..candidate
+        }
+    ));
 }
 
 fn limits() -> Timeouts {
@@ -149,6 +221,16 @@ fn paced_server_with_gap(
     heartbeat: bool,
     pace: Duration,
     gap: Option<(usize, Duration)>,
+) -> Server {
+    paced_server_with_feedback(parts, close, heartbeat, pace, gap, None)
+}
+fn paced_server_with_feedback(
+    parts: Vec<Vec<u8>>,
+    close: bool,
+    heartbeat: bool,
+    pace: Duration,
+    gap: Option<(usize, Duration)>,
+    delivery_ack: Option<std::sync::mpsc::Receiver<()>>,
 ) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
@@ -198,6 +280,17 @@ fn paced_server_with_gap(
         }
         let _ = accepted_tx.send(());
         for (index, part) in parts.into_iter().enumerate() {
+            // For the chunked diagnostic fixture, the application must have
+            // independently observed the previous body before we offer the
+            // next one. TCP and HTTP write boundaries alone cannot promise
+            // distinct reqwest streaming deliveries on every operating system.
+            if index > 1
+                && delivery_ack
+                    .as_ref()
+                    .is_some_and(|ack| ack.recv_timeout(Duration::from_secs(1)).is_err())
+            {
+                break;
+            }
             std::thread::sleep(gap.filter(|(at, _)| *at == index).map_or(pace, |(_, d)| d));
             if socket.write_all(&part).is_err() {
                 break;
@@ -249,24 +342,52 @@ fn headers() -> Vec<u8> {
 
 #[cfg(debug_assertions)]
 async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, usize) {
-    let mut parts = if mode == "no-headers" { vec![] } else {
+    let mut parts = if mode == "no-headers" {
+        vec![]
+    } else {
         vec![b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec(),
             b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()]
     };
     if mode == "idle" {
+        // TCP write boundaries are not HTTP body boundaries: macOS can merge
+        // the five paced writes into one or two reqwest bytes_stream items.
+        // Make each body observation an actual HTTP chunk without completing
+        // the response, so five Body/IPC sequences remain a real assertion.
+        let chunk = |body: &[u8]| {
+            let mut framed = format!("{:X}\r\n", body.len()).into_bytes();
+            framed.extend_from_slice(body);
+            framed.extend_from_slice(b"\r\n");
+            framed
+        };
+        parts[0] = b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec();
+        let meaningful = std::mem::take(&mut parts[1]);
+        parts[1] = chunk(&meaningful);
         for _ in 0..4 {
-            parts.push(b"{\"message\":{\"content\":\"  \"},\"done\":false}\n".to_vec());
+            parts.push(chunk(
+                b"{\"message\":{\"content\":\"  \"},\"done\":false}\n",
+            ));
         }
     } else if mode == "done" {
         parts.push(b"{\"done\":true,\"done_reason\":\"stop\"}\n".to_vec());
     } else if mode == "sse-done" {
         parts.push(b"data: [DONE]\n\n".to_vec());
     }
-    let fixture = paced_server(
+    let (delivery_tx, delivery_rx) = std::sync::mpsc::channel();
+    let fixture = paced_server_with_feedback(
         parts,
         mode == "eof" || mode == "done",
         false,
-        Duration::from_millis(15),
+        // The idle case already has five *wire-framed* body chunks. Artificial
+        // per-write sleeps can overshoot the unchanged 100ms idle deadline on
+        // macOS, dropping later chunks before the test can check them. Send
+        // them promptly; the test still proves no whitespace renews progress.
+        if mode == "idle" {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(15)
+        },
+        None,
+        (mode == "idle").then_some(delivery_rx),
     );
     let captured = Arc::new(Mutex::new(None));
     let output = captured.clone();
@@ -284,12 +405,34 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
     req.body = Some(b"SECRET_PROMPT".to_vec());
     req.trace = diagnostics.request(&id);
     let emitted = Mutex::new(0);
-    let result = execute(&lease, req, limits(), &|payload| {
+    let mut fixture_limits = limits();
+    // This fixture measures ordering *after* real body delivery. Under loaded
+    // macOS CI the 150ms first-output limit can expire during localhost HTTP
+    // setup, before the 15ms-paced body begins. Give header-producing cases
+    // room to start; retain the strict 150ms no-headers negative and the
+    // unchanged 100ms meaningful-output idle deadline/assertions.
+    if mode != "no-headers" {
+        fixture_limits.first = Some(Duration::from_secs(1));
+    }
+    // Completion/EOF diagnostics compare *event ordering*, not enforcement of
+    // the idle bound. macOS can schedule the local fixture writer >100ms after
+    // the preceding meaningful chunk; those modes need room to finish without
+    // misclassifying a delayed writer as a provider stream-idle failure. The
+    // dedicated "idle" diagnostic keeps its exact 100ms limit and timing check.
+    if matches!(mode, "done" | "eof" | "sse-done") {
+        fixture_limits.idle = Some(Duration::from_secs(1));
+    }
+    let result = execute(&lease, req, fixture_limits, &|payload| {
         if matches!(payload, Payload::Chunk { .. }) {
             if mode == "reject" {
                 return false;
             }
             *emitted.lock().unwrap() += 1;
+            if mode == "idle" {
+                // One acknowledgment only after the *actual* application
+                // callback receives this chunk, not after a server write.
+                delivery_tx.send(()).unwrap();
+            }
             if mode == "cancel" {
                 state.close_owner("main");
             }
@@ -361,7 +504,9 @@ async fn request_stage_trace_distinguishes_no_headers_from_completed_synthetic_h
         ("no-headers", "deadline-observed", false),
     ] {
         let (result, snapshot, bytes) = traced_fixture(mode).await;
-        if has_headers { result.unwrap(); } else {
+        if has_headers {
+            result.unwrap();
+        } else {
             assert_eq!(result.unwrap_err().code, "first-output-timeout");
         }
         let events = snapshot["events"].as_array().unwrap();
@@ -398,7 +543,10 @@ async fn request_stage_trace_distinguishes_no_headers_from_completed_synthetic_h
 #[tokio::test]
 async fn diagnostic_connect_failure_keeps_last_genuine_phase_and_safe_code() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
     drop(listener);
     let captured = Arc::new(Mutex::new(None));
     let out = captured.clone();
@@ -440,7 +588,10 @@ async fn diagnostic_parent_cancel_during_no_header_wait_preserves_transport_stag
     let canceller = tokio::spawn(async move {
         fixture.accepted.await.unwrap();
         owner.close_owner("main");
-        tokio::time::timeout(Duration::from_secs(3), fixture.closed).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(3), fixture.closed)
+            .await
+            .unwrap()
+            .unwrap();
         fixture.thread.join().unwrap();
     });
     let result = execute(&lease, req, limits(), &|_| true).await;
@@ -449,7 +600,10 @@ async fn diagnostic_parent_cancel_during_no_header_wait_preserves_transport_stag
     canceller.await.unwrap();
     let snapshot = captured.lock().unwrap().take().unwrap();
     assert_eq!(snapshot["lastRequestStage"], "send-await-start");
-    assert_eq!(snapshot["events"].as_array().unwrap().last().unwrap()["kind"], "cancellation-observed");
+    assert_eq!(
+        snapshot["events"].as_array().unwrap().last().unwrap()["kind"],
+        "cancellation-observed"
+    );
     assert!(snapshot["httpStatus"].is_null());
 }
 
@@ -834,7 +988,7 @@ async fn cancellation_provenance_keeps_first_webview_initiator_and_in_flight_sta
     let first = state.cancel_with_origin("main", &id, registry::CancelOrigin::StreamConsumer);
     tokio::pin!(first);
     tokio::select! { _ = &mut first => panic!("cancel completed before lease drop"),
-        _ = tokio::time::sleep(Duration::from_millis(2)) => {} }
+    _ = tokio::time::sleep(Duration::from_millis(2)) => {} }
     let receipt = lease.cancellation_provenance().unwrap();
     assert_eq!(receipt.request_id, id);
     assert!(receipt.at > 0);
@@ -853,7 +1007,10 @@ async fn cancellation_provenance_keeps_first_webview_initiator_and_in_flight_sta
 fn diagnostic_cancellation_origin_is_strict_and_sdk_errors_are_redacted() {
     let sdk: registry::CancelOrigin = serde_json::from_str("\"sdk-stream-error\"").unwrap();
     assert_eq!(sdk, registry::CancelOrigin::SdkStreamError);
-    assert!(serde_json::from_str::<registry::CancelOrigin>("\"secret arbitrary provider text\"").is_err());
+    assert!(
+        serde_json::from_str::<registry::CancelOrigin>("\"secret arbitrary provider text\"")
+            .is_err()
+    );
     let state = InferenceState::default();
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
@@ -862,7 +1019,10 @@ fn diagnostic_cancellation_origin_is_strict_and_sdk_errors_are_redacted() {
     state.close_owner("another-window");
     assert!(!lease.cancelled());
     lease.note_ipc_rejected();
-    assert_eq!(lease.cancellation_provenance().unwrap().category, "transport");
+    assert_eq!(
+        lease.cancellation_provenance().unwrap().category,
+        "transport"
+    );
 }
 #[test]
 fn cancellation_provenance_distinguishes_native_shutdown_and_ipc_delivery_failure() {
@@ -870,11 +1030,20 @@ fn cancellation_provenance_distinguishes_native_shutdown_and_ipc_delivery_failur
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     lease.note_ipc_rejected();
-    assert!(!lease.cancelled(), "diagnostics must not change cancellation semantics");
-    assert_eq!(lease.cancellation_provenance().unwrap().reason, "ipc-event-delivery-rejected");
+    assert!(
+        !lease.cancelled(),
+        "diagnostics must not change cancellation semantics"
+    );
+    assert_eq!(
+        lease.cancellation_provenance().unwrap().reason,
+        "ipc-event-delivery-rejected"
+    );
     state.close_owner("main");
     assert!(lease.cancelled());
-    assert_eq!(lease.cancellation_provenance().unwrap().reason, "ipc-event-delivery-rejected");
+    assert_eq!(
+        lease.cancellation_provenance().unwrap().reason,
+        "ipc-event-delivery-rejected"
+    );
     drop(lease);
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
@@ -985,25 +1154,62 @@ async fn cancel_accepted_connection_before_response_headers() {
 }
 #[tokio::test]
 async fn slow_first_output_then_meaningful_chunks_extend_idle_until_completion() {
-    let fixture = paced_server(
-        vec![
-            headers(),
-            delta(),
-            delta(),
-            delta(),
-            b"data: [DONE]\n\n".to_vec(),
-        ],
-        false,
-        false,
-        Duration::from_millis(40),
-    );
+    // The dedicated 100ms idle-denial tests use the unchanged limits(). This
+    // positive case must prove that REAL delivered content resets an idle
+    // deadline despite loaded macOS CI scheduling delays. Send enough genuine
+    // SSE deltas to span a wider *test-only* idle period, and verify the native
+    // callbacks themselves span that period (not merely the server's writes).
+    const DELTAS: usize = 32;
+    let mut parts = vec![headers()];
+    parts.extend((0..DELTAS).map(|_| delta()));
+    parts.push(b"data: [DONE]\n\n".to_vec());
+    let fixture = paced_server(parts, false, false, Duration::from_millis(40));
     let state = InferenceState::default();
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     let start = Instant::now();
-    let result = execute(&lease, request(fixture.url), limits(), &|_| true).await;
+    // Network delivery and 40ms localhost writes can each be delayed by
+    // heavily loaded CI. These are fixture-only allowances: production
+    // timeouts and strict 100ms negative idle tests remain untouched.
+    let mut slow_fixture_limits = limits();
+    slow_fixture_limits.first = Some(Duration::from_secs(2));
+    slow_fixture_limits.idle = Some(Duration::from_millis(750));
+    slow_fixture_limits.overall = Duration::from_secs(8);
+    let delivered = Mutex::new(Vec::new());
+    let callback_times = Mutex::new(Vec::new());
+    let result = execute(
+        &lease,
+        request(fixture.url),
+        slow_fixture_limits,
+        &|payload| {
+            if let Payload::Chunk { bytes } = payload {
+                delivered.lock().unwrap().extend_from_slice(&bytes);
+                callback_times.lock().unwrap().push(Instant::now());
+            }
+            true
+        },
+    )
+    .await;
     assert!(result.is_ok(), "{result:?}");
-    assert!(start.elapsed() > limits().first.unwrap());
+    assert!(start.elapsed() > Duration::from_millis(750));
+    {
+        let times = callback_times.lock().unwrap();
+        assert!(
+            times.len() >= 2,
+            "stream must deliver distinct native chunks"
+        );
+        assert!(
+            times.last().unwrap().duration_since(times[0]) > Duration::from_millis(750),
+            "actual native content callbacks must span more than the test idle window"
+        );
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&delivered.lock().unwrap())
+            .matches("hello")
+            .count(),
+        DELTAS,
+        "every meaningful SSE delta reached the native IPC callback"
+    );
     drop(lease);
     assert_eq!(state.len(), 0);
     fixture.closed.await.unwrap();
@@ -1218,10 +1424,18 @@ async fn streaming_response_keeps_normal_headers_generation_chunk_and_completion
         false,
         limits(),
         None,
-    ).await;
+    )
+    .await;
     assert!(result.is_ok());
-    assert!(events.iter().any(|event| matches!(event, Payload::Headers { status: 200, .. })));
-    assert!(events.iter().any(|event| matches!(event, Payload::Phase { phase: Phase::Generating })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Payload::Headers { status: 200, .. })));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Payload::Phase {
+            phase: Phase::Generating
+        }
+    )));
     assert!(events.iter().any(|event| matches!(event, Payload::Chunk { bytes } if String::from_utf8_lossy(bytes).contains("hello"))));
     assert_eq!(terminal(&result), Phase::Completed);
 }
@@ -1238,26 +1452,52 @@ async fn non_streaming_ollama_json_completion_is_forwarded_unchanged_and_settles
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     let events = Mutex::new(Vec::new());
-    let result = execute_admitted(&state, &lease, request(fixture.url), limits(), None, &|event| {
-        events.lock().unwrap().push(event);
-        true
-    }).await;
-    assert!(result.is_ok(), "non-streaming JSON response must complete: {result:?}");
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(fixture.url),
+        limits(),
+        None,
+        &|event| {
+            events.lock().unwrap().push(event);
+            true
+        },
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "non-streaming JSON response must complete: {result:?}"
+    );
     assert_eq!(terminal(&result), Phase::Completed);
     let events = events.into_inner().unwrap();
-    assert!(events.iter().any(|event| matches!(event, Payload::Headers { status: 200, headers }
-        if headers.get("content-type").is_some_and(|value| value.contains("application/json")))));
-    let forwarded: Vec<u8> = events.iter().flat_map(|event| match event {
-        Payload::Chunk { bytes } => bytes.clone(),
-        _ => Vec::new(),
-    }).collect();
-    assert_eq!(forwarded, body, "native transport must preserve the JSON response bytes");
+    assert!(events.iter().any(
+        |event| matches!(event, Payload::Headers { status: 200, headers }
+        if headers.get("content-type").is_some_and(|value| value.contains("application/json")))
+    ));
+    let forwarded: Vec<u8> = events
+        .iter()
+        .flat_map(|event| match event {
+            Payload::Chunk { bytes } => bytes.clone(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(
+        forwarded, body,
+        "native transport must preserve the JSON response bytes"
+    );
     let decoded: serde_json::Value = serde_json::from_slice(&forwarded).unwrap();
     assert_eq!(decoded["done"], true);
     assert_eq!(decoded["message"]["content"], "{\"claims\":[]}");
     drop(lease);
-    assert_eq!(state.len(), 0, "completed non-streaming request releases its lease");
-    tokio::time::timeout(Duration::from_secs(4), fixture.closed).await.unwrap().unwrap();
+    assert_eq!(
+        state.len(),
+        0,
+        "completed non-streaming request releases its lease"
+    );
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
     fixture.thread.join().unwrap();
 }
 
@@ -1274,18 +1514,33 @@ async fn cancellation_during_non_streaming_json_delivery_still_wins_and_releases
     let lease = state.start("main", &id).unwrap();
     let owner = state.clone();
     let chunks = Mutex::new(0usize);
-    let result = execute_admitted(&state, &lease, request(fixture.url), limits(), None, &|event| {
-        if matches!(event, Payload::Chunk { .. }) {
-            *chunks.lock().unwrap() += 1;
-            owner.close_owner("main");
-        }
-        true
-    }).await;
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(fixture.url),
+        limits(),
+        None,
+        &|event| {
+            if matches!(event, Payload::Chunk { .. }) {
+                *chunks.lock().unwrap() += 1;
+                owner.close_owner("main");
+            }
+            true
+        },
+    )
+    .await;
     assert_eq!(terminal(&result), Phase::Cancelled);
     assert!(*chunks.lock().unwrap() > 0);
     drop(lease);
-    assert_eq!(state.len(), 0, "cancelled non-streaming request releases its lease");
-    tokio::time::timeout(Duration::from_secs(4), fixture.closed).await.unwrap().unwrap();
+    assert_eq!(
+        state.len(),
+        0,
+        "cancelled non-streaming request releases its lease"
+    );
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
     fixture.thread.join().unwrap();
 }
 

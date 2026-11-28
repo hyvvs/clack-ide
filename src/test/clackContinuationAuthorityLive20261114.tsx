@@ -26,6 +26,17 @@ import { createConversationProfile, saveSessionsList, type SessionMeta } from "@
 import { native } from "@/modules/ai/lib/native";
 
 type Config = { mode: string; runId: string; workspace: string; server: string; model: string; digest: string; report: string };
+// Keep reporting errors observable without a direct throw in the outer
+// completion finally block; native exit still runs even when reporting fails.
+async function reportAndExit(report: string, result: Record<string, unknown>) {
+  try {
+    const response = await fetch(report, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(result), signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error("Metadata-only final report rejected");
+  } finally {
+    await invoke("coworking_exit");
+  }
+}
 const configUrl = new URL(location.href).searchParams.get("configuration");
 if (!configUrl) throw new Error("Missing isolated test configuration");
 const cfg = await fetch(configUrl, { signal: AbortSignal.timeout(8_000) }).then(r => r.json()) as Config;
@@ -393,9 +404,5 @@ try {
   detachRun(); detachCalibrationJobs(); detachPreparation();
   Object.defineProperty(Channel.prototype, "onmessage", descriptor);
   globalThis.setTimeout = originalSetTimeout;
-  try {
-    const response = await fetch(cfg.report, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify(result), signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new Error("Metadata-only final report rejected");
-  } finally { await invoke("coworking_exit"); }
+  await reportAndExit(cfg.report, result);
 }

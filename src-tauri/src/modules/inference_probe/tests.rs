@@ -156,6 +156,14 @@ fn serve(
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
+    // An oversized Content-Length is rejected immediately, before the probe
+    // consumes the body. On macOS a blocking test-server write can otherwise
+    // wait forever after the client drops the unread response; Server::drop
+    // joins that writer. Bound fixture writes without changing production
+    // transport limits or the oversized-response assertion.
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let mut bytes = Vec::new();
     let mut buffer = [0; 2048];
     loop {
@@ -260,7 +268,8 @@ fn lm_multi_host_native_tags_preserve_optional_details_without_fabrication() {
             {"name":"other:latest"}
         ]}),
         10,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(models[0].digest.as_deref(), Some("a1"));
     assert_eq!(models[0].family.as_deref(), Some("qwen3"));
     assert_eq!(models[0].parameter_size.as_deref(), Some("30.5B"));

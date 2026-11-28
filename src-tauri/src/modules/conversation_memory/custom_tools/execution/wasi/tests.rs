@@ -5,7 +5,9 @@ static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn fixture(wat: &str) -> (tempfile::TempDir, Prepared, PathBuf) {
     let root = tempfile::tempdir().unwrap();
     let bytes = wat::parse_str(wat).unwrap();
-    let module = root.path().join("module.wasm");
+    // On macOS the temporary root is usually /var (a symlink to /private/var).
+    // Production staging requires a real, non-symlink module path.
+    let module = root.path().canonicalize().unwrap().join("module.wasm");
     fs::write(&module, &bytes).unwrap();
     let mut definition: Definition = serde_json::from_value(json!({"name":"custom_wasi","description":"Confined JSON function","inputSchema":{"type":"object","properties":{"value":{"type":"string","maxLength":200}},"additionalProperties":false},"outputSchema":{"type":"object","properties":{"value":{"type":"string","maxLength":200}},"additionalProperties":false},"outputDescription":"JSON result","binding":{"kind":"native","operation":"read_file"},"scope":"conversation","agents":["builtin:coder"],"conversations":["chat"],"permissions":["run-commands"],"credentialRef":null,"timeoutMs":1000,"outputBytes":8192})).unwrap();
     definition.binding = functions::binding(digest(&bytes));
@@ -242,7 +244,13 @@ async fn wasi_infinite_guest_times_out_and_revocation_interrupts_without_result(
         .unwrap_err(),
         "timed-out"
     );
-    let (root, p, module) = fixture(code);
+    let blocking = r#"(module
+      (import "wasi_snapshot_preview1" "poll_oneoff" (func $poll (param i32 i32 i32 i32) (result i32)))
+      (memory (export "memory") 1)
+      (func (export "_start")
+        (i64.store (i32.const 24) (i64.const 60000000000))
+        (drop (call $poll (i32.const 0) (i32.const 64) (i32.const 1) (i32.const 128)))))"#;
+    let (root, p, module) = fixture(blocking);
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let revoke = async move {
