@@ -76,16 +76,23 @@ fn acceptance_model_matches(body: &serde_json::Value, expected: &str) -> bool {
 fn acceptance_destination_matches(actual: Option<&str>, expected: &str) -> bool {
     actual == Some(expected)
 }
-fn acceptance_exact_output(body: &serde_json::Value, contract: &AcceptanceWireContract) -> Option<u64> {
+fn acceptance_exact_output(
+    body: &serde_json::Value,
+    contract: &AcceptanceWireContract,
+) -> Option<u64> {
     let context = body["options"]["num_ctx"].as_u64()?;
     let system = body["messages"].as_array()?.first()?;
-    if system["role"] != "system" { return None; }
+    if system["role"] != "system" {
+        return None;
+    }
     let content = system["content"].as_str()?;
     let marker = contract.agent.continuation_marker.as_str();
     // This suffix is inserted by production runAgentStream *only* for the next
     // logical batch. Reject an empty/malformed marker rather than treating any
     // prompt as a continuation. No prompt text is logged or persisted here.
-    if marker.len() < 32 || !marker.starts_with("\n\nThis generation continues the same logical run") {
+    if marker.len() < 32
+        || !marker.starts_with("\n\nThis generation continues the same logical run")
+    {
         return None;
     }
     // Ollama's serializer joins multiple production system messages with
@@ -96,16 +103,25 @@ fn acceptance_exact_output(body: &serde_json::Value, contract: &AcceptanceWireCo
         [] => false,
         [at] => {
             let suffix = &content[at + marker.len()..];
-            if !suffix.is_empty() && !suffix.starts_with("\n\n") { return None; }
+            if !suffix.is_empty() && !suffix.starts_with("\n\n") {
+                return None;
+            }
             true
         }
         _ => return None,
     };
     if continuation {
-        let matches = contract.agent.continuation_outputs.iter()
+        let matches = contract
+            .agent
+            .continuation_outputs
+            .iter()
             .filter(|entry| entry.context == context && entry.output > 0);
         let outputs: Vec<u64> = matches.map(|entry| entry.output).collect();
-        if outputs.len() == 1 { Some(outputs[0]) } else { None }
+        if outputs.len() == 1 {
+            Some(outputs[0])
+        } else {
+            None
+        }
     } else {
         (contract.agent.context >= context && contract.agent.output > 0)
             .then_some(contract.agent.output)
@@ -125,11 +141,18 @@ fn acceptance_wire_controls_match(
     let Some(stream) = body.get("stream").and_then(serde_json::Value::as_bool) else {
         return false;
     };
-    if !body.as_object().is_some_and(|map| map.keys().all(|key|
-            matches!(key.as_str(), "model" | "messages" | "stream" | "options" | "tools" | "think" | "format")))
-        || !body["options"].as_object().is_some_and(|map|
-            map.len() == 2 && map.contains_key("num_ctx") && map.contains_key("num_predict"))
-        || body["messages"].as_array().is_none_or(|messages| messages.is_empty())
+    if !body.as_object().is_some_and(|map| {
+        map.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "model" | "messages" | "stream" | "options" | "tools" | "think" | "format"
+            )
+        })
+    }) || !body["options"].as_object().is_some_and(|map| {
+        map.len() == 2 && map.contains_key("num_ctx") && map.contains_key("num_predict")
+    }) || body["messages"]
+        .as_array()
+        .is_none_or(|messages| messages.is_empty())
         || (body.get("tools").is_some() && !body["tools"].is_array())
     {
         return false;
@@ -153,9 +176,13 @@ fn acceptance_wire_controls_match(
     }
     // A provider response schema is only authorized for the exact
     // non-streaming extraction request. Never admit it on Agent/tool calls.
-    if body.get("format").is_some() { return false; }
+    if body.get("format").is_some() {
+        return false;
+    }
     if output == contract.calibration.output {
-        return think_matches && tools.is_empty() && contract.calibration.candidates.contains(&context);
+        return think_matches
+            && tools.is_empty()
+            && contract.calibration.candidates.contains(&context);
     }
     let valid_tools = tools.iter().all(|t| {
         t["type"] == "function"
@@ -186,8 +213,8 @@ fn acceptance_wire_controls_match(
         // production may probe a separately verified boolean alternative.
         // Accept the exact native *verification* wire shape only; this does
         // not authorize a different reasoning control for Agent or calibration.
-        let probe_think_matches = think_matches
-            || (expected_think == "omitted" && body["think"].is_boolean());
+        let probe_think_matches =
+            think_matches || (expected_think == "omitted" && body["think"].is_boolean());
         return probe_think_matches
             && tools.len() == 1
             // A model's verified runtime target may be below the previously
@@ -237,8 +264,10 @@ const EXTRACTION_REPAIR_GUIDANCE: &[&str] = &[
     "Provide at least one exact-quote grounded claim for EVERY supplied sourceIndex.",
 ];
 fn acceptance_extraction_system_match(content: &str, canonical: &str) -> bool {
-    content == canonical || EXTRACTION_REPAIR_GUIDANCE.iter()
-        .any(|repair| content == format!("{canonical}\nValidation repair: {repair}"))
+    content == canonical
+        || EXTRACTION_REPAIR_GUIDANCE
+            .iter()
+            .any(|repair| content == format!("{canonical}\nValidation repair: {repair}"))
 }
 
 fn acceptance_compaction_extraction_match(
@@ -251,72 +280,155 @@ fn acceptance_compaction_extraction_match(
         || output > contract.extraction.max_output
         || context <= output
         || !contract.calibration.candidates.contains(&context)
-        || body.get("tools").is_some_and(|tools| !tools.as_array().is_some_and(Vec::is_empty))
+        || body
+            .get("tools")
+            .is_some_and(|tools| !tools.as_array().is_some_and(Vec::is_empty))
     {
         return false;
     }
     if !body.get("format").is_some_and(|format| {
         format.is_object()
             && schema_without_meta(format) == schema_without_meta(&contract.extraction.schema)
-    }) { return false; }
-    let Some(messages) = body["messages"].as_array() else { return false };
+    }) {
+        return false;
+    }
+    let Some(messages) = body["messages"].as_array() else {
+        return false;
+    };
     if messages.len() != 2
-        || !messages[0].as_object().is_some_and(|message| message.len() == 2
-            && message.get("role").and_then(serde_json::Value::as_str) == Some("system")
-            && message.get("content").and_then(serde_json::Value::as_str)
-                .is_some_and(|content| acceptance_extraction_system_match(content, &contract.extraction.system_prompt)))
-        || !messages[1].as_object().is_some_and(|message| message.len() == 2
-            && message.get("role").and_then(serde_json::Value::as_str) == Some("user")
-            && message.get("content").is_some_and(serde_json::Value::is_string))
+        || !messages[0].as_object().is_some_and(|message| {
+            message.len() == 2
+                && message.get("role").and_then(serde_json::Value::as_str) == Some("system")
+                && message
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|content| {
+                        acceptance_extraction_system_match(
+                            content,
+                            &contract.extraction.system_prompt,
+                        )
+                    })
+        })
+        || !messages[1].as_object().is_some_and(|message| {
+            message.len() == 2
+                && message.get("role").and_then(serde_json::Value::as_str) == Some("user")
+                && message
+                    .get("content")
+                    .is_some_and(serde_json::Value::is_string)
+        })
     {
         return false;
     }
-    let Some(content) = messages[1]["content"].as_str() else { return false };
-    let Ok(payload) = serde_json::from_str::<serde_json::Value>(content) else { return false };
-    let Some(object) = payload.as_object() else { return false };
-    if object.len() != 2 || !object.contains_key("existingClaims") || !object.contains_key("sources") {
+    let Some(content) = messages[1]["content"].as_str() else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
+    if object.len() != 2
+        || !object.contains_key("existingClaims")
+        || !object.contains_key("sources")
+    {
         return false;
     }
-    let Some(claims) = payload["existingClaims"].as_array() else { return false };
-    let Some(sources) = payload["sources"].as_array() else { return false };
-    let Ok(source_bytes) = serde_json::to_vec(&payload["sources"]) else { return false };
+    let Some(claims) = payload["existingClaims"].as_array() else {
+        return false;
+    };
+    let Some(sources) = payload["sources"].as_array() else {
+        return false;
+    };
+    let Ok(source_bytes) = serde_json::to_vec(&payload["sources"]) else {
+        return false;
+    };
     if claims.len() > contract.extraction.max_claims
         || sources.is_empty()
         || sources.len() > contract.extraction.max_sources
         || source_bytes.len() > contract.extraction.max_source_bytes
-    { return false; }
-    let digest = |value: &serde_json::Value| value.as_str().is_some_and(|value|
-        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    {
+        return false;
+    }
+    let digest = |value: &serde_json::Value| {
+        value.as_str().is_some_and(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+    };
     let mut claim_ids = std::collections::HashSet::new();
     if !claims.iter().all(|claim| {
-        let Some(claim) = claim.as_object() else { return false };
-        if claim.len() != 4 || !claim.contains_key("id") || !claim.contains_key("section")
-            || !claim.contains_key("status") || !claim.contains_key("text")
-        { return false; }
+        let Some(claim) = claim.as_object() else {
+            return false;
+        };
+        if claim.len() != 4
+            || !claim.contains_key("id")
+            || !claim.contains_key("section")
+            || !claim.contains_key("status")
+            || !claim.contains_key("text")
+        {
+            return false;
+        }
         let section = claim["section"].as_str();
         let status = claim["status"].as_str();
         digest(&claim["id"])
-            && section.is_some_and(|value| matches!(value,
-                "objective" | "requirements" | "constraints" | "decisions" | "completed-work"
-                | "active-tasks" | "files-and-artifacts" | "unresolved-issues" | "errors"
-                | "agent-findings" | "project-state" | "uncertainty"))
-            && status.is_some_and(|value| matches!(value,
-                "user-requirement" | "verified-observation" | "inference" | "unresolved" | "superseded" | "stale"))
-            && claim["text"].as_str().is_some_and(|value| !value.trim().is_empty())
+            && section.is_some_and(|value| {
+                matches!(
+                    value,
+                    "objective"
+                        | "requirements"
+                        | "constraints"
+                        | "decisions"
+                        | "completed-work"
+                        | "active-tasks"
+                        | "files-and-artifacts"
+                        | "unresolved-issues"
+                        | "errors"
+                        | "agent-findings"
+                        | "project-state"
+                        | "uncertainty"
+                )
+            })
+            && status.is_some_and(|value| {
+                matches!(
+                    value,
+                    "user-requirement"
+                        | "verified-observation"
+                        | "inference"
+                        | "unresolved"
+                        | "superseded"
+                        | "stale"
+                )
+            })
+            && claim["text"]
+                .as_str()
+                .is_some_and(|value| !value.trim().is_empty())
             && claim_ids.insert(claim["id"].as_str().unwrap().to_string())
-    }) { return false; }
+    }) {
+        return false;
+    }
     sources.iter().enumerate().all(|(index, source)| {
-        let Some(source) = source.as_object() else { return false };
+        let Some(source) = source.as_object() else {
+            return false;
+        };
         if source.len() != 3
             || !source.contains_key("sourceIndex")
             || !source.contains_key("role")
             || !source.contains_key("passages")
-        { return false; }
+        {
+            return false;
+        }
         let passages = source["passages"].as_array();
         source["sourceIndex"].as_u64() == Some(index as u64)
             && matches!(source["role"].as_str(), Some("assistant" | "tool"))
-            && passages.is_some_and(|passages| !passages.is_empty()
-                && passages.iter().all(|passage| passage.as_str().is_some_and(|text| !text.trim().is_empty())))
+            && passages.is_some_and(|passages| {
+                !passages.is_empty()
+                    && passages
+                        .iter()
+                        .all(|passage| passage.as_str().is_some_and(|text| !text.trim().is_empty()))
+            })
     })
 }
 
@@ -332,19 +444,27 @@ fn acceptance_confirmed_agent_variant_match(
     contract: &AcceptanceWireContract,
     observed_variant: Option<bool>,
 ) -> bool {
-    if expected_think != "omitted" || observed_variant.is_none()
+    if expected_think != "omitted"
+        || observed_variant.is_none()
         || body.get("think").and_then(serde_json::Value::as_bool) != observed_variant
-        || body["options"]["num_predict"].as_u64().is_none_or(|output|
-            acceptance_exact_output(body, contract) != Some(output))
-        || !body["options"]["num_ctx"].as_u64().is_some_and(|ctx|
-            contract.calibration.candidates.contains(&ctx) &&
-                ctx > body["options"]["num_predict"].as_u64().unwrap_or(u64::MAX))
-        || body["tools"].as_array().is_none_or(|tools| tools.is_empty())
+        || body["options"]["num_predict"]
+            .as_u64()
+            .is_none_or(|output| acceptance_exact_output(body, contract) != Some(output))
+        || !body["options"]["num_ctx"].as_u64().is_some_and(|ctx| {
+            contract.calibration.candidates.contains(&ctx)
+                && ctx > body["options"]["num_predict"].as_u64().unwrap_or(u64::MAX)
+        })
+        || body["tools"]
+            .as_array()
+            .is_none_or(|tools| tools.is_empty())
     {
         return false;
     }
     let mut without_variant = body.clone();
-    without_variant.as_object_mut().expect("serialized object").remove("think");
+    without_variant
+        .as_object_mut()
+        .expect("serialized object")
+        .remove("think");
     acceptance_wire_controls_match(&without_variant, expected_think, contract)
 }
 
@@ -355,10 +475,12 @@ fn acceptance_host_wire_match(
     seen_probes: &mut std::collections::HashMap<bool, u8>,
 ) -> bool {
     if acceptance_wire_controls_match(body, expected_think, contract) {
-        if body["options"]["num_ctx"].as_u64().is_some_and(|ctx|
-            contract.calibration.candidates.contains(&ctx))
-            && body["tools"].as_array().is_some_and(|tools| tools.len() == 1
-                && tools[0]["function"]["name"] == contract.verification.name)
+        if body["options"]["num_ctx"]
+            .as_u64()
+            .is_some_and(|ctx| contract.calibration.candidates.contains(&ctx))
+            && body["tools"].as_array().is_some_and(|tools| {
+                tools.len() == 1 && tools[0]["function"]["name"] == contract.verification.name
+            })
         {
             if let Some(variant) = body.get("think").and_then(serde_json::Value::as_bool) {
                 let count = seen_probes.entry(variant).or_insert(0);
@@ -367,14 +489,20 @@ fn acceptance_host_wire_match(
         }
         return true;
     }
-    let observed = body.get("think").and_then(serde_json::Value::as_bool)
+    let observed = body
+        .get("think")
+        .and_then(serde_json::Value::as_bool)
         .filter(|variant| seen_probes.get(variant).copied().unwrap_or(0) >= 2);
     acceptance_confirmed_agent_variant_match(body, expected_think, contract, observed)
 }
 
 #[cfg(test)]
 mod acceptance_wire_tests {
-    use super::{acceptance_confirmed_agent_variant_match, acceptance_destination_matches, acceptance_host_wire_match, acceptance_model_matches, acceptance_wire_controls_match, AcceptanceWireContract};
+    use super::{
+        acceptance_confirmed_agent_variant_match, acceptance_destination_matches,
+        acceptance_host_wire_match, acceptance_model_matches, acceptance_wire_controls_match,
+        AcceptanceWireContract,
+    };
     use serde_json::json;
 
     fn contract() -> AcceptanceWireContract {
@@ -420,53 +548,148 @@ mod acceptance_wire_tests {
     fn automatic_verified_boolean_agent_variant_does_not_fail_host_guard() {
         let mut request = agent();
         request["think"] = json!(false);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), None));
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(true)));
-        assert!(acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(false)));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            None
+        ));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(true)
+        ));
+        assert!(acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(false)
+        ));
         request["options"]["num_ctx"] = json!(2048);
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(false)));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(false)
+        ));
         request = agent();
         request["think"] = json!(false);
         request["tools"][0]["function"]["name"] = json!("not_a_builtin");
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "omitted", &contract(), Some(false)));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "omitted",
+            &contract(),
+            Some(false)
+        ));
         request = agent();
         request["think"] = json!(false);
-        assert!(!acceptance_confirmed_agent_variant_match(&request, "false", &contract(), Some(false)));
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &request,
+            "false",
+            &contract(),
+            Some(false)
+        ));
     }
     #[test]
     fn host_requires_two_matching_qualified_probe_requests_before_variant_agent() {
         let mut seen = std::collections::HashMap::new();
         let mut agent_request = agent();
         agent_request["think"] = json!(false);
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         let mut probe_request = probe(512);
         probe_request["think"] = json!(false);
-        assert!(acceptance_host_wire_match(&probe_request, "omitted", &contract(), &mut seen));
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &probe_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         // Another boolean but a different wire value cannot confirm the first.
         probe_request["think"] = json!(true);
-        assert!(acceptance_host_wire_match(&probe_request, "omitted", &contract(), &mut seen));
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &probe_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         probe_request["think"] = json!(false);
-        assert!(acceptance_host_wire_match(&probe_request, "omitted", &contract(), &mut seen));
-        assert!(acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &probe_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         agent_request["think"] = json!("low");
-        assert!(!acceptance_host_wire_match(&agent_request, "omitted", &contract(), &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &agent_request,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
         let default_agent = agent();
-        assert!(acceptance_host_wire_match(&default_agent, "omitted", &contract(), &mut seen));
+        assert!(acceptance_host_wire_match(
+            &default_agent,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
     }
     #[test]
     fn acceptance_observes_production_selected_smaller_agent_tier_without_forcing_65k() {
         let mut lower = agent();
         lower["options"]["num_ctx"] = json!(32768);
-        assert!(acceptance_wire_controls_match(&lower, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &lower,
+            "omitted",
+            &contract()
+        ));
         lower["options"]["num_ctx"] = json!(16384);
-        assert!(acceptance_wire_controls_match(&lower, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &lower,
+            "omitted",
+            &contract()
+        ));
         lower["options"]["num_ctx"] = json!(12345);
-        assert!(!acceptance_wire_controls_match(&lower, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &lower,
+            "omitted",
+            &contract()
+        ));
         lower["options"]["num_ctx"] = json!(2048);
-        assert!(!acceptance_wire_controls_match(&lower, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &lower,
+            "omitted",
+            &contract()
+        ));
     }
     #[test]
     fn accepts_all_production_calibration_and_verification_stages_and_agent() {
@@ -497,9 +720,20 @@ mod acceptance_wire_tests {
         let original = body.clone();
         let mut seen = std::collections::HashMap::new();
         assert!(acceptance_model_matches(&body, "muse-glimmer:30b"));
-        assert!(acceptance_host_wire_match(&body, "omitted", &contract(), &mut seen));
-        assert!(seen.is_empty(), "extraction cannot mint native-tool verification evidence");
-        assert_eq!(body, original, "the acceptance host must observe, never rewrite, stream=false");
+        assert!(acceptance_host_wire_match(
+            &body,
+            "omitted",
+            &contract(),
+            &mut seen
+        ));
+        assert!(
+            seen.is_empty(),
+            "extraction cannot mint native-tool verification evidence"
+        );
+        assert_eq!(
+            body, original,
+            "the acceptance host must observe, never rewrite, stream=false"
+        );
         assert_eq!(body["stream"], false);
         assert_eq!(body["options"]["num_ctx"], 49152);
         assert_eq!(body["options"]["num_predict"], 1024);
@@ -510,44 +744,92 @@ mod acceptance_wire_tests {
         let valid = extraction();
         let mut malformed = valid.clone();
         malformed["stream"] = json!("false");
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["messages"][0]["content"] = json!("unrecognized non-streaming prompt");
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
-        malformed["format"]["properties"]["claims"]["items"]["properties"]["sourceIndex"]["type"] = json!("string");
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        malformed["format"]["properties"]["claims"]["items"]["properties"]["sourceIndex"]["type"] =
+            json!("string");
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed.as_object_mut().unwrap().remove("format");
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["messages"][0]["content"] = json!("Extract conversation evidence as JSON only.\nValidation repair: unsupported parser payload");
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         let mut guided_retry = valid.clone();
         guided_retry["messages"][0]["content"] = json!(
             "Extract conversation evidence as JSON only.\nValidation repair: Use only allowed section and status enum values.");
-        assert!(acceptance_wire_controls_match(&guided_retry, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &guided_retry,
+            "omitted",
+            &contract()
+        ));
         let mut invalid_index = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(invalid_index["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(invalid_index["messages"][1]["content"].as_str().unwrap())
+                .unwrap();
         payload["sources"][0]["sourceIndex"] = json!(99);
         invalid_index["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&invalid_index, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &invalid_index,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["messages"][1]["content"] = json!("{bad-json");
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["options"]["num_predict"] = json!(2048);
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["options"]["num_ctx"] = json!(12345);
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["tools"] = json!([{"type":"function","function":{"name":"bash_run","description":"shell","parameters":{"type":"object","properties":{}}}}]);
-        assert!(!acceptance_wire_controls_match(&malformed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &malformed,
+            "omitted",
+            &contract()
+        ));
         // `maxChunks` is the number of extraction calls, not the number of
         // source records in one request. Production permits up to maxEvidence.
         let mut five_sources = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(five_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(five_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
         for index in 2..=5 {
             payload["sources"].as_array_mut().unwrap().push(json!({
                 "sourceIndex":index - 1,
@@ -555,9 +837,15 @@ mod acceptance_wire_tests {
             }));
         }
         five_sources["messages"][1]["content"] = json!(payload.to_string());
-        assert!(acceptance_wire_controls_match(&five_sources, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &five_sources,
+            "omitted",
+            &contract()
+        ));
         let mut too_many_sources = five_sources.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(too_many_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(too_many_sources["messages"][1]["content"].as_str().unwrap())
+                .unwrap();
         for index in 6..=129 {
             payload["sources"].as_array_mut().unwrap().push(json!({
                 "sourceIndex":index - 1,
@@ -565,45 +853,103 @@ mod acceptance_wire_tests {
             }));
         }
         too_many_sources["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&too_many_sources, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &too_many_sources,
+            "omitted",
+            &contract()
+        ));
         let mut oversized_sources = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(oversized_sources["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value = serde_json::from_str(
+            oversized_sources["messages"][1]["content"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
         payload["sources"][0]["passages"][0] = json!("x".repeat(262144));
         oversized_sources["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&oversized_sources, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &oversized_sources,
+            "omitted",
+            &contract()
+        ));
         let mut too_many_claims = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(too_many_claims["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(too_many_claims["messages"][1]["content"].as_str().unwrap())
+                .unwrap();
         payload["existingClaims"] = json!(vec![json!({}); 65]);
         too_many_claims["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&too_many_claims, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &too_many_claims,
+            "omitted",
+            &contract()
+        ));
         let mut malformed_claim = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(malformed_claim["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(malformed_claim["messages"][1]["content"].as_str().unwrap())
+                .unwrap();
         payload["existingClaims"] = json!([{"id":"c".repeat(64),"section":"requirements",
             "status":"user-requirement","text":"Keep the original requirement."}]);
         malformed_claim["messages"][1]["content"] = json!(payload.to_string());
-        assert!(acceptance_wire_controls_match(&malformed_claim, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &malformed_claim,
+            "omitted",
+            &contract()
+        ));
         let mut duplicate_claim = malformed_claim.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(duplicate_claim["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(duplicate_claim["messages"][1]["content"].as_str().unwrap())
+                .unwrap();
         let duplicate = payload["existingClaims"][0].clone();
-        payload["existingClaims"].as_array_mut().unwrap().push(duplicate);
+        payload["existingClaims"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
         duplicate_claim["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&duplicate_claim, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &duplicate_claim,
+            "omitted",
+            &contract()
+        ));
         let mut duplicate_source = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(duplicate_source["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(duplicate_source["messages"][1]["content"].as_str().unwrap())
+                .unwrap();
         let first_source = payload["sources"][0].clone();
-        payload["sources"].as_array_mut().unwrap().push(first_source);
+        payload["sources"]
+            .as_array_mut()
+            .unwrap()
+            .push(first_source);
         duplicate_source["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&duplicate_source, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &duplicate_source,
+            "omitted",
+            &contract()
+        ));
         let mut whitespace_source = valid.clone();
-        let mut payload: serde_json::Value = serde_json::from_str(whitespace_source["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let mut payload: serde_json::Value = serde_json::from_str(
+            whitespace_source["messages"][1]["content"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
         payload["sources"][0]["passages"][0] = json!("  \n  ");
         whitespace_source["messages"][1]["content"] = json!(payload.to_string());
-        assert!(!acceptance_wire_controls_match(&whitespace_source, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &whitespace_source,
+            "omitted",
+            &contract()
+        ));
         malformed = valid.clone();
         malformed["model"] = json!("other-model");
         assert!(!acceptance_model_matches(&malformed, "muse-glimmer:30b"));
-        assert!(!acceptance_destination_matches(Some("https://hosted.example/api/chat"), "http://127.0.0.1:11435/api/chat"));
-        assert!(!acceptance_destination_matches(None, "http://127.0.0.1:11435/api/chat"));
+        assert!(!acceptance_destination_matches(
+            Some("https://hosted.example/api/chat"),
+            "http://127.0.0.1:11435/api/chat"
+        ));
+        assert!(!acceptance_destination_matches(
+            None,
+            "http://127.0.0.1:11435/api/chat"
+        ));
     }
     #[test]
     fn automatic_probe_alternatives_must_not_be_rejected_as_agent_overrides() {
@@ -614,32 +960,64 @@ mod acceptance_wire_tests {
             for output in contract().verification.outputs {
                 let mut request = probe(output);
                 request["think"] = json!(think);
-                assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+                assert!(acceptance_wire_controls_match(
+                    &request,
+                    "omitted",
+                    &contract()
+                ));
             }
         }
 
         let mut request = agent();
         request["think"] = json!(true);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         let mut request = json!({"stream":true,"messages":[{"role":"user","content":"Calibrate"}],"options":{"num_ctx":4096,"num_predict":32}});
         request["think"] = json!(false);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
 
         let mut request = probe(512);
         request["think"] = json!("medium");
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request["think"] = json!(true);
         request["tools"][0]["function"]["name"] = json!("different_tool");
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request = probe(512);
         request["think"] = json!(true);
         request["options"]["num_ctx"] = json!(8192);
-        assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request["options"]["num_ctx"] = json!(1234);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request = probe(512);
         request["think"] = json!(true);
-        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
     }
     #[test]
     fn rejects_wrong_context_reasoning_and_unauthorized_tool_shapes() {
@@ -710,7 +1088,11 @@ mod acceptance_wire_tests {
         ));
         changed = agent();
         changed["stream"] = json!(false);
-        assert!(!acceptance_wire_controls_match(&changed, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &changed,
+            "omitted",
+            &contract()
+        ));
     }
     #[test]
     fn preserves_model_identity_and_explicit_reasoning_guards() {
@@ -720,10 +1102,22 @@ mod acceptance_wire_tests {
         let mut request = agent();
         request["think"] = json!("low");
         assert!(acceptance_wire_controls_match(&request, "low", &contract()));
-        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
         request["think"] = json!(false);
-        assert!(acceptance_wire_controls_match(&request, "false", &contract()));
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
     }
 
     fn continuation(context: u64, output: u64) -> serde_json::Value {
@@ -737,31 +1131,48 @@ mod acceptance_wire_tests {
 
     #[test]
     fn exact_production_continuation_policy_rejects_wrong_output_in_every_tier() {
-        for (context, output) in [(32768,4096),(49152,6144),(65536,8192),(73728,8192)] {
+        for (context, output) in [(32768, 4096), (49152, 6144), (65536, 8192), (73728, 8192)] {
             let body = continuation(context, output);
-            assert!(acceptance_wire_controls_match(&body, "omitted", &contract()), "tier {context}");
+            assert!(
+                acceptance_wire_controls_match(&body, "omitted", &contract()),
+                "tier {context}"
+            );
             for incorrect in [output - 1, output + 1, 2048, 16384] {
                 if incorrect != output {
                     let mut mutant = body.clone();
                     mutant["options"]["num_predict"] = json!(incorrect);
-                    assert!(!acceptance_wire_controls_match(&mutant, "omitted", &contract()),
-                        "accepted {context}/{incorrect} instead of {output}");
+                    assert!(
+                        !acceptance_wire_controls_match(&mutant, "omitted", &contract()),
+                        "accepted {context}/{incorrect} instead of {output}"
+                    );
                 }
             }
         }
-        assert!(!acceptance_wire_controls_match(&continuation(49152,8192), "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &continuation(49152, 8192),
+            "omitted",
+            &contract()
+        ));
     }
 
     #[test]
     fn initial_batch_keeps_original_upper_tier_allowance_after_minimum_safe_selection() {
         let mut body = agent();
-        for context in [32768,49152,65536,73728] {
+        for context in [32768, 49152, 65536, 73728] {
             body["options"]["num_ctx"] = json!(context);
-            assert!(acceptance_wire_controls_match(&body, "omitted", &contract()));
+            assert!(acceptance_wire_controls_match(
+                &body,
+                "omitted",
+                &contract()
+            ));
         }
         // The first batch may dispatch 32768/8192. The next logical batch's
         // same serialized context would require a separately computed 4096.
-        assert!(!acceptance_wire_controls_match(&continuation(32768,8192), "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &continuation(32768, 8192),
+            "omitted",
+            &contract()
+        ));
     }
 
     #[test]
@@ -769,59 +1180,120 @@ mod acceptance_wire_tests {
         // Redacted mission-a-1.requests.jsonl, inference-35: 49152/6144,
         // omitted think and these 14 *native* tool names. Only schema shapes
         // are constructed here; no original prompt, arguments or API call.
-        let names = ["read_file","list_directory","write_file","create_directory",
-            "grep","glob","bash_run","run_subagent","get_terminal_output",
-            "open_preview","todo_write","promote_peer_finding","request_peer_task",
-            "propose_custom_tool"];
+        let names = [
+            "read_file",
+            "list_directory",
+            "write_file",
+            "create_directory",
+            "grep",
+            "glob",
+            "bash_run",
+            "run_subagent",
+            "get_terminal_output",
+            "open_preview",
+            "todo_write",
+            "promote_peer_finding",
+            "request_peer_task",
+            "propose_custom_tool",
+        ];
         let mut contract = contract();
-        contract.agent.tool_names = names.iter().chain(["bash_background","bash_logs","bash_list","bash_kill"].iter())
-            .map(|name| (*name).to_string()).collect();
-        let mut body = continuation(49152,6144);
+        contract.agent.tool_names = names
+            .iter()
+            .chain(["bash_background", "bash_logs", "bash_list", "bash_kill"].iter())
+            .map(|name| (*name).to_string())
+            .collect();
+        let mut body = continuation(49152, 6144);
         body["model"] = json!("muse-glimmer:30b");
         body["tools"] = json!(names.iter().map(|name| json!({"type":"function","function":{
             "name":name,"description":"Allowed native tool","parameters":{"type":"object","properties":{}}
         }})).collect::<Vec<_>>());
         let mut seen = std::collections::HashMap::new();
         assert!(acceptance_model_matches(&body, "muse-glimmer:30b"));
-        assert!(acceptance_host_wire_match(&body, "omitted", &contract, &mut seen));
-        assert!(seen.is_empty(), "Agent continuation must not mint verifier evidence");
+        assert!(acceptance_host_wire_match(
+            &body, "omitted", &contract, &mut seen
+        ));
+        assert!(
+            seen.is_empty(),
+            "Agent continuation must not mint verifier evidence"
+        );
         let mut output_mutation = body.clone();
         output_mutation["options"]["num_predict"] = json!(8192);
-        assert!(!acceptance_host_wire_match(&output_mutation, "omitted", &contract, &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &output_mutation,
+            "omitted",
+            &contract,
+            &mut seen
+        ));
         let mut unknown_tool = body.clone();
         unknown_tool["tools"][0]["function"]["name"] = json!("rogue_tool");
-        assert!(!acceptance_host_wire_match(&unknown_tool, "omitted", &contract, &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &unknown_tool,
+            "omitted",
+            &contract,
+            &mut seen
+        ));
         let mut duplicate_tool = body.clone();
         duplicate_tool["tools"][1]["function"]["name"] = json!("read_file");
-        assert!(!acceptance_host_wire_match(&duplicate_tool, "omitted", &contract, &mut seen));
+        assert!(!acceptance_host_wire_match(
+            &duplicate_tool,
+            "omitted",
+            &contract,
+            &mut seen
+        ));
     }
 
     #[test]
     fn continuation_mutations_fail_closed_without_weakening_tool_proof_or_reasoning() {
-        let mut valid = continuation(49152,6144);
-        assert!(acceptance_wire_controls_match(&valid, "omitted", &contract()));
-        for context in [0,49153,12345,131072] {
+        let mut valid = continuation(49152, 6144);
+        assert!(acceptance_wire_controls_match(
+            &valid,
+            "omitted",
+            &contract()
+        ));
+        for context in [0, 49153, 12345, 131072] {
             let mut mutant = valid.clone();
             mutant["options"]["num_ctx"] = json!(context);
-            assert!(!acceptance_wire_controls_match(&mutant, "omitted", &contract()));
+            assert!(!acceptance_wire_controls_match(
+                &mutant,
+                "omitted",
+                &contract()
+            ));
         }
-        for think in [json!(false),json!(true),json!("low")] {
+        for think in [json!(false), json!(true), json!("low")] {
             let mut mutant = valid.clone();
             mutant["think"] = think;
-            assert!(!acceptance_host_wire_match(&mutant, "omitted", &contract(), &mut Default::default()));
+            assert!(!acceptance_host_wire_match(
+                &mutant,
+                "omitted",
+                &contract(),
+                &mut Default::default()
+            ));
         }
         // There is no matching genuine probe history to permit a Boolean mode.
         valid["think"] = json!(false);
-        assert!(!acceptance_confirmed_agent_variant_match(&valid, "omitted", &contract(), None));
-        let mut valid = continuation(49152,6144);
-        for field in ["temperature","top_p","seed","num_thread"] {
+        assert!(!acceptance_confirmed_agent_variant_match(
+            &valid,
+            "omitted",
+            &contract(),
+            None
+        ));
+        let mut valid = continuation(49152, 6144);
+        for field in ["temperature", "top_p", "seed", "num_thread"] {
             valid["options"][field] = json!(1);
-            assert!(!acceptance_wire_controls_match(&valid, "omitted", &contract()));
+            assert!(!acceptance_wire_controls_match(
+                &valid,
+                "omitted",
+                &contract()
+            ));
             valid["options"].as_object_mut().unwrap().remove(field);
         }
-        for field in ["provider","digest","format","sampling_override"] {
+        for field in ["provider", "digest", "format", "sampling_override"] {
             valid[field] = json!("unexpected");
-            assert!(!acceptance_wire_controls_match(&valid, "omitted", &contract()));
+            assert!(!acceptance_wire_controls_match(
+                &valid,
+                "omitted",
+                &contract()
+            ));
             valid.as_object_mut().unwrap().remove(field);
         }
         valid["messages"][0]["content"] = json!("bad prompt");
@@ -830,8 +1302,12 @@ mod acceptance_wire_tests {
         // unexpected position may not impersonate a continuation.
         let marker = contract().agent.continuation_marker;
         valid["messages"][0]["content"] = json!(format!("Instructions{marker}\nextra suffix"));
-        assert!(!acceptance_wire_controls_match(&valid, "omitted", &contract()));
-        let mut wrong_model = continuation(49152,6144);
+        assert!(!acceptance_wire_controls_match(
+            &valid,
+            "omitted",
+            &contract()
+        ));
+        let mut wrong_model = continuation(49152, 6144);
         wrong_model["model"] = json!("other-digest:latest");
         assert!(!acceptance_model_matches(&wrong_model, "muse-glimmer:30b"));
     }
@@ -839,11 +1315,26 @@ mod acceptance_wire_tests {
     #[test]
     fn missing_or_ambiguous_tier_policy_is_rejected_without_fallback() {
         let mut contract = contract();
-        let body = continuation(49152,6144);
-        contract.agent.continuation_outputs.retain(|entry| entry.context != 49152);
+        let body = continuation(49152, 6144);
+        contract
+            .agent
+            .continuation_outputs
+            .retain(|entry| entry.context != 49152);
         assert!(!acceptance_wire_controls_match(&body, "omitted", &contract));
-        contract.agent.continuation_outputs.push(super::ContextOutput {context:49152,output:6144});
-        contract.agent.continuation_outputs.push(super::ContextOutput {context:49152,output:6144});
+        contract
+            .agent
+            .continuation_outputs
+            .push(super::ContextOutput {
+                context: 49152,
+                output: 6144,
+            });
+        contract
+            .agent
+            .continuation_outputs
+            .push(super::ContextOutput {
+                context: 49152,
+                output: 6144,
+            });
         assert!(!acceptance_wire_controls_match(&body, "omitted", &contract));
         contract.agent.continuation_outputs.pop();
         contract.agent.continuation_marker.clear();
@@ -852,15 +1343,33 @@ mod acceptance_wire_tests {
 
     #[test]
     fn compaction_system_message_after_logical_suffix_keeps_same_exact_budget_guard() {
-        let mut body = continuation(49152,6144);
+        let mut body = continuation(49152, 6144);
         let marker = contract().agent.continuation_marker;
-        body["messages"][0]["content"] = json!(format!("Original instructions{marker}\n\nCompacted memory context"));
-        assert!(acceptance_host_wire_match(&body, "omitted", &contract(), &mut Default::default()));
+        body["messages"][0]["content"] = json!(format!(
+            "Original instructions{marker}\n\nCompacted memory context"
+        ));
+        assert!(acceptance_host_wire_match(
+            &body,
+            "omitted",
+            &contract(),
+            &mut Default::default()
+        ));
         body["options"]["num_predict"] = json!(8192);
-        assert!(!acceptance_host_wire_match(&body, "omitted", &contract(), &mut Default::default()));
+        assert!(!acceptance_host_wire_match(
+            &body,
+            "omitted",
+            &contract(),
+            &mut Default::default()
+        ));
         body["options"]["num_predict"] = json!(6144);
-        body["messages"][0]["content"] = json!(format!("Original instructions{marker}\n\nHistory{marker}"));
-        assert!(!acceptance_host_wire_match(&body, "omitted", &contract(), &mut Default::default()));
+        body["messages"][0]["content"] =
+            json!(format!("Original instructions{marker}\n\nHistory{marker}"));
+        assert!(!acceptance_host_wire_match(
+            &body,
+            "omitted",
+            &contract(),
+            &mut Default::default()
+        ));
     }
 }
 
@@ -934,27 +1443,48 @@ fn main() {
         let destination = root.join(format!("{phase}.receive.jsonl"));
         let complete = move |snapshot: &net::inference::diagnostics::Snapshot| {
             let mut file = std::fs::OpenOptions::new()
-                .create(true).append(true).open(&destination).expect("owned receive audit");
-            writeln!(file, "{}", serde_json::to_string(snapshot).expect("receive metadata"))
-                .expect("persist receive audit");
+                .create(true)
+                .append(true)
+                .open(&destination)
+                .expect("owned receive audit");
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(snapshot).expect("receive metadata")
+            )
+            .expect("persist receive audit");
         };
         // Debug acceptance-host-only live tap: every body and semantic event
         // survives the bounded terminal snapshot ring, without body content.
         if phase == "mission-a-1" {
             let events = root.join("mission-a-1.native-events.jsonl");
-            builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new_live(
-                complete,
-                move |snapshot| {
-                    let Some(last) = snapshot.events.back() else { return };
-                    let mut file = std::fs::OpenOptions::new()
-                        .create(true).append(true).open(&events).expect("owned event audit");
-                    writeln!(file, "{}", serde_json::json!({
-                        "requestId": snapshot.request_id, "event":last,
-                    })).expect("persist per-event receive audit");
-                },
-            ))
+            builder.manage(
+                net::inference::diagnostics::AcceptanceDiagnostics::new_live(
+                    complete,
+                    move |snapshot| {
+                        let Some(last) = snapshot.events.back() else {
+                            return;
+                        };
+                        let mut file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&events)
+                            .expect("owned event audit");
+                        writeln!(
+                            file,
+                            "{}",
+                            serde_json::json!({
+                                "requestId": snapshot.request_id, "event":last,
+                            })
+                        )
+                        .expect("persist per-event receive audit");
+                    },
+                ),
+            )
         } else {
-            builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new(complete))
+            builder.manage(net::inference::diagnostics::AcceptanceDiagnostics::new(
+                complete,
+            ))
         }
     } else {
         builder

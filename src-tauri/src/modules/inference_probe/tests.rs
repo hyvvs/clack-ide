@@ -260,7 +260,8 @@ fn lm_multi_host_native_tags_preserve_optional_details_without_fabrication() {
             {"name":"other:latest"}
         ]}),
         10,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(models[0].digest.as_deref(), Some("a1"));
     assert_eq!(models[0].family.as_deref(), Some("qwen3"));
     assert_eq!(models[0].parameter_size.as_deref(), Some("30.5B"));

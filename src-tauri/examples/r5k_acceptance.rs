@@ -57,9 +57,7 @@ fn acceptance_wire_controls_match(
         "omitted" => body.get("think").is_none(),
         _ => false,
     };
-    if body["stream"] != true
-        || (body.get("tools").is_some() && !body["tools"].is_array())
-    {
+    if body["stream"] != true || (body.get("tools").is_some() && !body["tools"].is_array()) {
         return false;
     }
     let Some(output) = body["options"]["num_predict"].as_u64() else {
@@ -73,7 +71,9 @@ fn acceptance_wire_controls_match(
         .map(Vec::as_slice)
         .unwrap_or_default();
     if output == contract.calibration.output {
-        return think_matches && tools.is_empty() && contract.calibration.candidates.contains(&context);
+        return think_matches
+            && tools.is_empty()
+            && contract.calibration.candidates.contains(&context);
     }
     let valid_tools = tools.iter().all(|t| {
         t["type"] == "function"
@@ -104,8 +104,8 @@ fn acceptance_wire_controls_match(
         // production may probe a separately verified boolean alternative.
         // Accept the exact native *verification* wire shape only; this does
         // not authorize a different reasoning control for Agent or calibration.
-        let probe_think_matches = think_matches
-            || (expected_think == "omitted" && body["think"].is_boolean());
+        let probe_think_matches =
+            think_matches || (expected_think == "omitted" && body["think"].is_boolean());
         return probe_think_matches
             && tools.len() == 1
             // A model's verified runtime target may be below the previously
@@ -183,32 +183,64 @@ mod acceptance_wire_tests {
             for output in contract().verification.outputs {
                 let mut request = probe(output);
                 request["think"] = json!(think);
-                assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+                assert!(acceptance_wire_controls_match(
+                    &request,
+                    "omitted",
+                    &contract()
+                ));
             }
         }
 
         let mut request = agent();
         request["think"] = json!(true);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         let mut request = json!({"stream":true,"options":{"num_ctx":4096,"num_predict":32}});
         request["think"] = json!(false);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
 
         let mut request = probe(512);
         request["think"] = json!("medium");
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request["think"] = json!(true);
         request["tools"][0]["function"]["name"] = json!("different_tool");
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request = probe(512);
         request["think"] = json!(true);
         request["options"]["num_ctx"] = json!(8192);
-        assert!(acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request["options"]["num_ctx"] = json!(1234);
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
         request = probe(512);
         request["think"] = json!(true);
-        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
     }
     #[test]
     fn rejects_wrong_context_reasoning_and_unauthorized_tool_shapes() {
@@ -293,10 +325,22 @@ mod acceptance_wire_tests {
         let mut request = agent();
         request["think"] = json!("low");
         assert!(acceptance_wire_controls_match(&request, "low", &contract()));
-        assert!(!acceptance_wire_controls_match(&request, "false", &contract()));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
         request["think"] = json!(false);
-        assert!(acceptance_wire_controls_match(&request, "false", &contract()));
-        assert!(!acceptance_wire_controls_match(&request, "omitted", &contract()));
+        assert!(acceptance_wire_controls_match(
+            &request,
+            "false",
+            &contract()
+        ));
+        assert!(!acceptance_wire_controls_match(
+            &request,
+            "omitted",
+            &contract()
+        ));
     }
 }
 

@@ -159,7 +159,8 @@ pub(super) fn credential_changed(app: &AppHandle, service: &str, account: &str) 
             cache.invalidate_account(account);
         }
     }
-    let Ok(Some(previous)) = super::self_hosted_profiles::authoritative_settings_value(app, KEY) else {
+    let Ok(Some(previous)) = super::self_hosted_profiles::authoritative_settings_value(app, KEY)
+    else {
         return;
     };
     let mut next = previous.clone();
@@ -264,9 +265,7 @@ async fn handshake(
                 result.version = value["version"].as_str().map(str::to_owned);
                 detected.backend_hint = Some(Backend::Ollama);
             }
-            Err(error)
-                if endpoint.backend_hint == Some(Backend::Ollama) =>
-            {
+            Err(error) if endpoint.backend_hint == Some(Backend::Ollama) => {
                 // Version is optional; a reachable Ollama tag route may still work.
                 result.errors.push(RouteError {
                     route: Some(Route::OllamaVersion),
@@ -657,14 +656,13 @@ fn p_string<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or_default()
 }
 
-fn save_state(
-    app: &AppHandle,
-    previous: Value,
-    next: Value,
-) -> Result<(), ProbeError> {
+fn save_state(app: &AppHandle, previous: Value, next: Value) -> Result<(), ProbeError> {
     crate::modules::self_hosted_profiles::save_other_self_hosted_under_lock(
-        app, &previous, next.clone(),
-    ).map_err(|_| internal())?;
+        app,
+        &previous,
+        next.clone(),
+    )
+    .map_err(|_| internal())?;
     let _ = app.emit("terax://prefs-changed", json!({"key": KEY, "value": next}));
     Ok(())
 }
@@ -682,7 +680,8 @@ fn finish(app: &AppHandle, endpoint: &Endpoint, generation: u64, mut outcome: ca
     }
     let commit = || -> Result<(), ProbeError> {
         let previous = super::self_hosted_profiles::authoritative_settings_value(app, KEY)
-            .map_err(|_| internal())?.ok_or_else(internal)?;
+            .map_err(|_| internal())?
+            .ok_or_else(internal)?;
         if configured(&previous, &endpoint.id)? != *endpoint {
             return Err(ProbeError::new(ErrorCode::Cancelled));
         }
@@ -745,7 +744,8 @@ pub async fn self_hosted_probe_cache(
         .map_err(|_| ProbeError::new(ErrorCode::Unreachable))?;
     let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
     let state = super::self_hosted_profiles::authoritative_settings_value(&app, KEY)
-        .map_err(|_| internal())?.unwrap_or(Value::Null);
+        .map_err(|_| internal())?
+        .unwrap_or(Value::Null);
     let endpoint = configured(&state, &options.endpoint_id)?;
     transport::route_url(&endpoint, Route::CompatibleModels)?;
     let state = app.state::<ProbeState>();
@@ -782,7 +782,8 @@ pub async fn self_hosted_probe(
     let (endpoint, begin, requested_context) = {
         let _guard = WRITE_LOCK.lock().map_err(|_| internal())?;
         let value = super::self_hosted_profiles::authoritative_settings_value(&app, KEY)
-            .map_err(|_| internal())?.unwrap_or(Value::Null);
+            .map_err(|_| internal())?
+            .unwrap_or(Value::Null);
         let endpoint = configured(&value, &options.endpoint_id)?;
         let requested_context = options.requested_context.or_else(|| {
             value["profiles"].as_array()?.iter().find(|p| {

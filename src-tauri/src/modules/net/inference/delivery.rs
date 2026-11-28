@@ -6,7 +6,10 @@ use std::{
     fs::{self, OpenOptions},
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
@@ -68,7 +71,9 @@ pub const ONE_MUSE_ROOT_ENV: &str = "CLACK_ONE_MUSE_DIAGNOSTIC_ROOT";
 
 pub fn valid_run_id(run_id: &str) -> bool {
     (8..=80).contains(&run_id.len())
-        && run_id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         && run_id.as_bytes()[0].is_ascii_alphanumeric()
 }
 
@@ -77,7 +82,8 @@ type Sink = Arc<dyn Fn(Receipt) + Send + Sync>;
 /// The owned root is already created by the coordinator. Resolving symlinks,
 /// parent traversal or alternate roots at dispatch would weaken run ownership.
 fn diagnostic_root(run_id: &str, root: &Path) -> Option<PathBuf> {
-    if !root.is_absolute() || root.file_name()?.to_str()? != run_id
+    if !root.is_absolute()
+        || root.file_name()?.to_str()? != run_id
         || fs::symlink_metadata(root).ok()?.file_type().is_symlink()
         || !root.is_dir()
     {
@@ -131,7 +137,9 @@ impl DeliveryCapture {
     }
 
     fn acknowledge_with_root(&self, run_id: &str, root: Option<&Path>) -> bool {
-        if !self.ready_for(run_id) || root.is_none_or(|path| diagnostic_root(run_id, path).is_none()) {
+        if !self.ready_for(run_id)
+            || root.is_none_or(|path| diagnostic_root(run_id, path).is_none())
+        {
             return false;
         }
         self.readiness_acknowledged.store(true, Ordering::SeqCst);
@@ -144,8 +152,7 @@ impl DeliveryCapture {
 
     /// Read-only confirmation for the isolated host's journal/broker handshake.
     pub fn registration_active(&self, run_id: &str) -> bool {
-        self.run_id.as_deref() == Some(run_id)
-            && self.readiness_acknowledged.load(Ordering::SeqCst)
+        self.run_id.as_deref() == Some(run_id) && self.readiness_acknowledged.load(Ordering::SeqCst)
     }
 
     /// The allowance is permanently spent on any attempted dispatch. The
@@ -160,17 +167,21 @@ impl DeliveryCapture {
         {
             return Err("diagnostic-not-ready");
         }
-        self.claimed.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        self.claimed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| "diagnostic-dispatch-exhausted")?;
         let root = root.ok_or("diagnostic-run-root-invalid")?;
         self.claim_on_root(&root)
     }
 
     fn claim_on_root(&self, root: &Path) -> Result<(), &'static str> {
-        let file = OpenOptions::new().write(true).create_new(true)
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
             .open(root.join("one-muse-dispatch.claim"))
             .map_err(|_| "diagnostic-durable-claim-failed")?;
-        file.sync_all().map_err(|_| "diagnostic-durable-claim-failed")?;
+        file.sync_all()
+            .map_err(|_| "diagnostic-durable-claim-failed")?;
         // On POSIX, persist the directory entry as well as the claim file.
         #[cfg(unix)]
         fs::File::open(root)
@@ -335,8 +346,11 @@ mod tests {
         assert!(!valid_run_id("MUSE-ONE-abc"));
         let run_id = "muse-one-0123456789abcdef";
         let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target")
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
             .join(format!("clack-one-muse-{unique}-{}", std::process::id()));
         let root = parent.join(run_id);
         std::fs::create_dir_all(&root).unwrap();
@@ -350,12 +364,26 @@ mod tests {
         assert!(!capture.acknowledge_with_root(run_id, Some(&root.join(".."))));
         assert!(capture.acknowledge_with_root(run_id, Some(&root)));
         capture.claim_with_root(run_id, Some(root.clone())).unwrap();
-        assert_eq!(capture.claim_with_root(run_id, Some(root.clone())), Err("diagnostic-dispatch-exhausted"));
-        assert_eq!(std::fs::metadata(root.join("one-muse-dispatch.claim")).unwrap().len(), 0);
+        assert_eq!(
+            capture.claim_with_root(run_id, Some(root.clone())),
+            Err("diagnostic-dispatch-exhausted")
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("one-muse-dispatch.claim"))
+                .unwrap()
+                .len(),
+            0
+        );
         let second_host = DeliveryCapture::for_run(run_id.into(), |_| {}).unwrap();
         assert!(second_host.acknowledge_with_root(run_id, Some(&root)));
-        assert_eq!(second_host.claim_with_root(run_id, Some(root.clone())), Err("diagnostic-durable-claim-failed"));
-        assert_eq!(second_host.claim_with_root(run_id, Some(root.clone())), Err("diagnostic-dispatch-exhausted"));
+        assert_eq!(
+            second_host.claim_with_root(run_id, Some(root.clone())),
+            Err("diagnostic-durable-claim-failed")
+        );
+        assert_eq!(
+            second_host.claim_with_root(run_id, Some(root.clone())),
+            Err("diagnostic-dispatch-exhausted")
+        );
         std::fs::remove_dir_all(parent).unwrap();
     }
 
@@ -363,21 +391,38 @@ mod tests {
     fn concurrent_one_muse_dispatch_claims_admit_exactly_one_attempt() {
         let run_id = "muse-one-concurrency-fixture";
         let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target")
-            .join(format!("clack-one-muse-race-{unique}-{}", std::process::id()));
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!(
+                "clack-one-muse-race-{unique}-{}",
+                std::process::id()
+            ));
         let root = parent.join(run_id);
         std::fs::create_dir_all(&root).unwrap();
         let capture = Arc::new(DeliveryCapture::for_run(run_id.into(), |_| {}).unwrap());
         assert!(capture.acknowledge_with_root(run_id, Some(&root)));
-        let joined: Vec<_> = (0..24).map(|_| {
-            let capture = capture.clone();
-            let root = root.clone();
-            std::thread::spawn(move || capture.claim_with_root(run_id, Some(root)))
-        }).collect();
-        let results: Vec<_> = joined.into_iter().map(|thread| thread.join().unwrap()).collect();
+        let joined: Vec<_> = (0..24)
+            .map(|_| {
+                let capture = capture.clone();
+                let root = root.clone();
+                std::thread::spawn(move || capture.claim_with_root(run_id, Some(root)))
+            })
+            .collect();
+        let results: Vec<_> = joined
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-        assert_eq!(results.iter().filter(|result| *result == &Err("diagnostic-dispatch-exhausted")).count(), 23);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| *result == &Err("diagnostic-dispatch-exhausted"))
+                .count(),
+            23
+        );
         assert!(root.join("one-muse-dispatch.claim").is_file());
         std::fs::remove_dir_all(parent).unwrap();
     }
@@ -389,10 +434,13 @@ mod tests {
         let output = received.clone();
         let capture = DeliveryCapture::for_run(run_id.into(), move |row| {
             output.lock().unwrap().push(row);
-        }).unwrap();
+        })
+        .unwrap();
         let mut request = RequestCapture {
-            sink: Some(capture.sink), origin: capture.origin,
-            request_id: "inference-1".into(), body_sequence: 0,
+            sink: Some(capture.sink),
+            origin: capture.origin,
+            request_id: "inference-1".into(),
+            body_sequence: 0,
             run_id: capture.run_id,
         };
         request.record(Boundary::NativeDispatch, 0);

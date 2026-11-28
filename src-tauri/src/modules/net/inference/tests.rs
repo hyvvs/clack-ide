@@ -7,13 +7,22 @@ use std::{
 
 #[test]
 fn lm11_native_quiescence_requires_actual_original_registry_lease_drop() {
-    let native=InferenceState::default();
-    let original=native.open("main").unwrap();
-    assert!(native.completion(&original).is_some(),"reserved original ID is still owned");
-    let lease=native.start("main",&original).unwrap();
-    assert!(native.completion(&original).is_some(),"completed SDK text cannot drop Rust lease");
+    let native = InferenceState::default();
+    let original = native.open("main").unwrap();
+    assert!(
+        native.completion(&original).is_some(),
+        "reserved original ID is still owned"
+    );
+    let lease = native.start("main", &original).unwrap();
+    assert!(
+        native.completion(&original).is_some(),
+        "completed SDK text cannot drop Rust lease"
+    );
     drop(lease);
-    assert!(native.completion(&original).is_none(),"only actual native lease drop drains the ID");
+    assert!(
+        native.completion(&original).is_none(),
+        "only actual native lease drop drains the ID"
+    );
 }
 
 #[test]
@@ -23,17 +32,25 @@ fn one_muse_permit_is_sha256_bound_and_never_permits_missing_or_foreign_tokens()
     assert!(valid_one_muse_permit(Some(&permit), Some(&expected)));
     assert!(!valid_one_muse_permit(Some(&permit), None));
     assert!(!valid_one_muse_permit(None, Some(&expected)));
-    assert!(!valid_one_muse_permit(Some(&"a".repeat(64)), Some(&expected)));
+    assert!(!valid_one_muse_permit(
+        Some(&"a".repeat(64)),
+        Some(&expected)
+    ));
     assert!(!valid_one_muse_permit(Some("short"), Some(&expected)));
     assert!(!valid_one_muse_permit(Some(&permit), Some(&"0".repeat(64))));
-    assert!(!valid_one_muse_permit(Some(&permit), Some(&expected.to_uppercase())));
+    assert!(!valid_one_muse_permit(
+        Some(&permit),
+        Some(&expected.to_uppercase())
+    ));
 }
 
 #[test]
 fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation() {
     let run_id = "muse-one-0123456789abcdef";
     let admission = admission::Admission {
-        endpoint_id: "real-qwen".into(), profile_id: "muse".into(), capacity: 1,
+        endpoint_id: "real-qwen".into(),
+        profile_id: "muse".into(),
+        capacity: 1,
     };
     let body = serde_json::json!({
         "model": "muse-glimmer:30b",
@@ -44,22 +61,52 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
     let raw = serde_json::to_vec(&body).unwrap();
     let headers = HashMap::from([("content-type".into(), "application/json".into())]);
     let candidate = OneMuseRequest {
-        run_id: Some(run_id), url: ONE_MUSE_ENDPOINT, method: "POST",
+        run_id: Some(run_id),
+        url: ONE_MUSE_ENDPOINT,
+        method: "POST",
         headers: Some(&headers),
-        body: Some(&raw), allow_private: true, policy: Some(Policy::SelfHosted),
-        admission: Some(&admission), preflight: false, fallback: false,
+        body: Some(&raw),
+        allow_private: true,
+        policy: Some(Policy::SelfHosted),
+        admission: Some(&admission),
+        preflight: false,
+        fallback: false,
     };
     assert!(valid_one_muse_request(run_id, &candidate));
     assert!(!valid_one_muse_request("muse-one-stale", &candidate));
     for invalid in [
-        OneMuseRequest { method: "GET", ..candidate },
-        OneMuseRequest { headers: None, ..candidate },
-        OneMuseRequest { url: "http://127.0.0.1:11436/api/chat", ..candidate },
-        OneMuseRequest { run_id: None, ..candidate },
-        OneMuseRequest { allow_private: false, ..candidate },
-        OneMuseRequest { preflight: true, ..candidate },
-        OneMuseRequest { fallback: true, ..candidate },
-        OneMuseRequest { policy: Some(Policy::Legacy), ..candidate },
+        OneMuseRequest {
+            method: "GET",
+            ..candidate
+        },
+        OneMuseRequest {
+            headers: None,
+            ..candidate
+        },
+        OneMuseRequest {
+            url: "http://127.0.0.1:11436/api/chat",
+            ..candidate
+        },
+        OneMuseRequest {
+            run_id: None,
+            ..candidate
+        },
+        OneMuseRequest {
+            allow_private: false,
+            ..candidate
+        },
+        OneMuseRequest {
+            preflight: true,
+            ..candidate
+        },
+        OneMuseRequest {
+            fallback: true,
+            ..candidate
+        },
+        OneMuseRequest {
+            policy: Some(Policy::Legacy),
+            ..candidate
+        },
     ] {
         assert!(!valid_one_muse_request(run_id, &invalid));
     }
@@ -67,15 +114,25 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
         ("content-type".into(), "application/json".into()),
         ("authorization".into(), "Bearer PRIVATE".into()),
     ]);
-    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-        headers: Some(&with_authorization), ..candidate
-    }));
+    assert!(!valid_one_muse_request(
+        run_id,
+        &OneMuseRequest {
+            headers: Some(&with_authorization),
+            ..candidate
+        }
+    ));
     let multiple = admission::Admission {
-        endpoint_id: "real-qwen".into(), profile_id: "muse".into(), capacity: 2,
+        endpoint_id: "real-qwen".into(),
+        profile_id: "muse".into(),
+        capacity: 2,
     };
-    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-        admission: Some(&multiple), ..candidate
-    }));
+    assert!(!valid_one_muse_request(
+        run_id,
+        &OneMuseRequest {
+            admission: Some(&multiple),
+            ..candidate
+        }
+    ));
     for mutation in [
         ("model", serde_json::json!("other:latest")),
         ("tools", serde_json::json!([{"type":"function"}])),
@@ -86,9 +143,13 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
         let mut changed = body.clone();
         changed[mutation.0] = mutation.1;
         let raw = serde_json::to_vec(&changed).unwrap();
-        assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-            body: Some(&raw), ..candidate
-        }));
+        assert!(!valid_one_muse_request(
+            run_id,
+            &OneMuseRequest {
+                body: Some(&raw),
+                ..candidate
+            }
+        ));
     }
     for changed in [
         serde_json::json!({"num_ctx": 4096, "num_predict": 32}),
@@ -97,18 +158,29 @@ fn one_muse_wire_admission_rejects_calibration_tools_fallback_and_continuation()
         let mut altered = body.clone();
         altered["options"] = changed;
         let raw = serde_json::to_vec(&altered).unwrap();
-        assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-            body: Some(&raw), ..candidate
-        }));
+        assert!(!valid_one_muse_request(
+            run_id,
+            &OneMuseRequest {
+                body: Some(&raw),
+                ..candidate
+            }
+        ));
     }
     let mut continued = body.clone();
-    continued["messages"].as_array_mut().unwrap().push(serde_json::json!({
-        "role": "assistant", "content": "Prior answer",
-    }));
+    continued["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "role": "assistant", "content": "Prior answer",
+        }));
     let raw = serde_json::to_vec(&continued).unwrap();
-    assert!(!valid_one_muse_request(run_id, &OneMuseRequest {
-        body: Some(&raw), ..candidate
-    }));
+    assert!(!valid_one_muse_request(
+        run_id,
+        &OneMuseRequest {
+            body: Some(&raw),
+            ..candidate
+        }
+    ));
 }
 
 fn limits() -> Timeouts {
@@ -249,7 +321,9 @@ fn headers() -> Vec<u8> {
 
 #[cfg(debug_assertions)]
 async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, usize) {
-    let mut parts = if mode == "no-headers" { vec![] } else {
+    let mut parts = if mode == "no-headers" {
+        vec![]
+    } else {
         vec![b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nX-Private: SECRET_HEADER\r\nConnection: close\r\n\r\n".to_vec(),
             b"{\"message\":{\"content\":\"SECRET_TEXT\"},\"done\":false}\n".to_vec()]
     };
@@ -361,7 +435,9 @@ async fn request_stage_trace_distinguishes_no_headers_from_completed_synthetic_h
         ("no-headers", "deadline-observed", false),
     ] {
         let (result, snapshot, bytes) = traced_fixture(mode).await;
-        if has_headers { result.unwrap(); } else {
+        if has_headers {
+            result.unwrap();
+        } else {
             assert_eq!(result.unwrap_err().code, "first-output-timeout");
         }
         let events = snapshot["events"].as_array().unwrap();
@@ -398,7 +474,10 @@ async fn request_stage_trace_distinguishes_no_headers_from_completed_synthetic_h
 #[tokio::test]
 async fn diagnostic_connect_failure_keeps_last_genuine_phase_and_safe_code() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/v1/chat/completions", listener.local_addr().unwrap());
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
     drop(listener);
     let captured = Arc::new(Mutex::new(None));
     let out = captured.clone();
@@ -440,7 +519,10 @@ async fn diagnostic_parent_cancel_during_no_header_wait_preserves_transport_stag
     let canceller = tokio::spawn(async move {
         fixture.accepted.await.unwrap();
         owner.close_owner("main");
-        tokio::time::timeout(Duration::from_secs(3), fixture.closed).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(3), fixture.closed)
+            .await
+            .unwrap()
+            .unwrap();
         fixture.thread.join().unwrap();
     });
     let result = execute(&lease, req, limits(), &|_| true).await;
@@ -449,7 +531,10 @@ async fn diagnostic_parent_cancel_during_no_header_wait_preserves_transport_stag
     canceller.await.unwrap();
     let snapshot = captured.lock().unwrap().take().unwrap();
     assert_eq!(snapshot["lastRequestStage"], "send-await-start");
-    assert_eq!(snapshot["events"].as_array().unwrap().last().unwrap()["kind"], "cancellation-observed");
+    assert_eq!(
+        snapshot["events"].as_array().unwrap().last().unwrap()["kind"],
+        "cancellation-observed"
+    );
     assert!(snapshot["httpStatus"].is_null());
 }
 
@@ -834,7 +919,7 @@ async fn cancellation_provenance_keeps_first_webview_initiator_and_in_flight_sta
     let first = state.cancel_with_origin("main", &id, registry::CancelOrigin::StreamConsumer);
     tokio::pin!(first);
     tokio::select! { _ = &mut first => panic!("cancel completed before lease drop"),
-        _ = tokio::time::sleep(Duration::from_millis(2)) => {} }
+    _ = tokio::time::sleep(Duration::from_millis(2)) => {} }
     let receipt = lease.cancellation_provenance().unwrap();
     assert_eq!(receipt.request_id, id);
     assert!(receipt.at > 0);
@@ -853,7 +938,10 @@ async fn cancellation_provenance_keeps_first_webview_initiator_and_in_flight_sta
 fn diagnostic_cancellation_origin_is_strict_and_sdk_errors_are_redacted() {
     let sdk: registry::CancelOrigin = serde_json::from_str("\"sdk-stream-error\"").unwrap();
     assert_eq!(sdk, registry::CancelOrigin::SdkStreamError);
-    assert!(serde_json::from_str::<registry::CancelOrigin>("\"secret arbitrary provider text\"").is_err());
+    assert!(
+        serde_json::from_str::<registry::CancelOrigin>("\"secret arbitrary provider text\"")
+            .is_err()
+    );
     let state = InferenceState::default();
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
@@ -862,7 +950,10 @@ fn diagnostic_cancellation_origin_is_strict_and_sdk_errors_are_redacted() {
     state.close_owner("another-window");
     assert!(!lease.cancelled());
     lease.note_ipc_rejected();
-    assert_eq!(lease.cancellation_provenance().unwrap().category, "transport");
+    assert_eq!(
+        lease.cancellation_provenance().unwrap().category,
+        "transport"
+    );
 }
 #[test]
 fn cancellation_provenance_distinguishes_native_shutdown_and_ipc_delivery_failure() {
@@ -870,11 +961,20 @@ fn cancellation_provenance_distinguishes_native_shutdown_and_ipc_delivery_failur
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     lease.note_ipc_rejected();
-    assert!(!lease.cancelled(), "diagnostics must not change cancellation semantics");
-    assert_eq!(lease.cancellation_provenance().unwrap().reason, "ipc-event-delivery-rejected");
+    assert!(
+        !lease.cancelled(),
+        "diagnostics must not change cancellation semantics"
+    );
+    assert_eq!(
+        lease.cancellation_provenance().unwrap().reason,
+        "ipc-event-delivery-rejected"
+    );
     state.close_owner("main");
     assert!(lease.cancelled());
-    assert_eq!(lease.cancellation_provenance().unwrap().reason, "ipc-event-delivery-rejected");
+    assert_eq!(
+        lease.cancellation_provenance().unwrap().reason,
+        "ipc-event-delivery-rejected"
+    );
     drop(lease);
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
@@ -1218,10 +1318,18 @@ async fn streaming_response_keeps_normal_headers_generation_chunk_and_completion
         false,
         limits(),
         None,
-    ).await;
+    )
+    .await;
     assert!(result.is_ok());
-    assert!(events.iter().any(|event| matches!(event, Payload::Headers { status: 200, .. })));
-    assert!(events.iter().any(|event| matches!(event, Payload::Phase { phase: Phase::Generating })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Payload::Headers { status: 200, .. })));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Payload::Phase {
+            phase: Phase::Generating
+        }
+    )));
     assert!(events.iter().any(|event| matches!(event, Payload::Chunk { bytes } if String::from_utf8_lossy(bytes).contains("hello"))));
     assert_eq!(terminal(&result), Phase::Completed);
 }
@@ -1238,26 +1346,52 @@ async fn non_streaming_ollama_json_completion_is_forwarded_unchanged_and_settles
     let id = state.open("main").unwrap();
     let lease = state.start("main", &id).unwrap();
     let events = Mutex::new(Vec::new());
-    let result = execute_admitted(&state, &lease, request(fixture.url), limits(), None, &|event| {
-        events.lock().unwrap().push(event);
-        true
-    }).await;
-    assert!(result.is_ok(), "non-streaming JSON response must complete: {result:?}");
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(fixture.url),
+        limits(),
+        None,
+        &|event| {
+            events.lock().unwrap().push(event);
+            true
+        },
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "non-streaming JSON response must complete: {result:?}"
+    );
     assert_eq!(terminal(&result), Phase::Completed);
     let events = events.into_inner().unwrap();
-    assert!(events.iter().any(|event| matches!(event, Payload::Headers { status: 200, headers }
-        if headers.get("content-type").is_some_and(|value| value.contains("application/json")))));
-    let forwarded: Vec<u8> = events.iter().flat_map(|event| match event {
-        Payload::Chunk { bytes } => bytes.clone(),
-        _ => Vec::new(),
-    }).collect();
-    assert_eq!(forwarded, body, "native transport must preserve the JSON response bytes");
+    assert!(events.iter().any(
+        |event| matches!(event, Payload::Headers { status: 200, headers }
+        if headers.get("content-type").is_some_and(|value| value.contains("application/json")))
+    ));
+    let forwarded: Vec<u8> = events
+        .iter()
+        .flat_map(|event| match event {
+            Payload::Chunk { bytes } => bytes.clone(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(
+        forwarded, body,
+        "native transport must preserve the JSON response bytes"
+    );
     let decoded: serde_json::Value = serde_json::from_slice(&forwarded).unwrap();
     assert_eq!(decoded["done"], true);
     assert_eq!(decoded["message"]["content"], "{\"claims\":[]}");
     drop(lease);
-    assert_eq!(state.len(), 0, "completed non-streaming request releases its lease");
-    tokio::time::timeout(Duration::from_secs(4), fixture.closed).await.unwrap().unwrap();
+    assert_eq!(
+        state.len(),
+        0,
+        "completed non-streaming request releases its lease"
+    );
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
     fixture.thread.join().unwrap();
 }
 
@@ -1274,18 +1408,33 @@ async fn cancellation_during_non_streaming_json_delivery_still_wins_and_releases
     let lease = state.start("main", &id).unwrap();
     let owner = state.clone();
     let chunks = Mutex::new(0usize);
-    let result = execute_admitted(&state, &lease, request(fixture.url), limits(), None, &|event| {
-        if matches!(event, Payload::Chunk { .. }) {
-            *chunks.lock().unwrap() += 1;
-            owner.close_owner("main");
-        }
-        true
-    }).await;
+    let result = execute_admitted(
+        &state,
+        &lease,
+        request(fixture.url),
+        limits(),
+        None,
+        &|event| {
+            if matches!(event, Payload::Chunk { .. }) {
+                *chunks.lock().unwrap() += 1;
+                owner.close_owner("main");
+            }
+            true
+        },
+    )
+    .await;
     assert_eq!(terminal(&result), Phase::Cancelled);
     assert!(*chunks.lock().unwrap() > 0);
     drop(lease);
-    assert_eq!(state.len(), 0, "cancelled non-streaming request releases its lease");
-    tokio::time::timeout(Duration::from_secs(4), fixture.closed).await.unwrap().unwrap();
+    assert_eq!(
+        state.len(),
+        0,
+        "cancelled non-streaming request releases its lease"
+    );
+    tokio::time::timeout(Duration::from_secs(4), fixture.closed)
+        .await
+        .unwrap()
+        .unwrap();
     fixture.thread.join().unwrap();
 }
 

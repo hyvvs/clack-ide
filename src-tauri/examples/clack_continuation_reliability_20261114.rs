@@ -233,24 +233,39 @@ fn main() {
                         use std::io::Write;
                         let bytes: Vec<u8> = serde_json::from_value(value["body"].clone())
                             .expect("serialized inference body required");
-                        let body: serde_json::Value = serde_json::from_slice(&bytes)
-                            .expect("JSON inference body required");
-                        assert_eq!(body["model"], "muse-glimmer:30b", "Only approved model may dispatch");
+                        let body: serde_json::Value =
+                            serde_json::from_slice(&bytes).expect("JSON inference body required");
+                        assert_eq!(
+                            body["model"], "muse-glimmer:30b",
+                            "Only approved model may dispatch"
+                        );
                         let at = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis();
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("clock")
+                            .as_millis();
                         let directory = std::env::var("CLACK_ACCEPTANCE_ROOT").expect("owned root");
-                        let mut file = std::fs::OpenOptions::new().create(true).append(true)
-                            .open(std::path::Path::new(&directory).join("continuation.requests.jsonl"))
+                        let mut file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(
+                                std::path::Path::new(&directory)
+                                    .join("continuation.requests.jsonl"),
+                            )
                             .expect("owned content-free request journal");
-                        writeln!(file, "{}", serde_json::json!({
-                            "at": at,
-                            "requestId": value["requestId"],
-                            "numCtx": body["options"]["num_ctx"],
-                            "numPredict": body["options"]["num_predict"],
-                            "stream": body["stream"],
-                            "toolSchemas": body["tools"].as_array().map(Vec::len).unwrap_or(0),
-                            "modelMatches": true
-                        })).expect("persist numeric request metadata");
+                        writeln!(
+                            file,
+                            "{}",
+                            serde_json::json!({
+                                "at": at,
+                                "requestId": value["requestId"],
+                                "numCtx": body["options"]["num_ctx"],
+                                "numPredict": body["options"]["num_predict"],
+                                "stream": body["stream"],
+                                "toolSchemas": body["tools"].as_array().map(Vec::len).unwrap_or(0),
+                                "modelMatches": true
+                            })
+                        )
+                        .expect("persist numeric request metadata");
                     }
                 }
                 handler(invoke)

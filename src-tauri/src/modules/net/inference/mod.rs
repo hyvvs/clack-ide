@@ -1,6 +1,6 @@
 mod admission;
-pub mod diagnostics;
 pub mod delivery;
+pub mod diagnostics;
 mod progress;
 mod registry;
 #[cfg(test)]
@@ -11,8 +11,8 @@ use super::{
 use futures_util::StreamExt;
 use progress::Progress;
 pub use registry::InferenceState;
-use registry::{CancelOrigin, CancellationProvenance};
 pub(crate) use registry::Lease;
+use registry::{CancelOrigin, CancellationProvenance};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -47,7 +47,8 @@ fn valid_one_muse_permit(permit: Option<&str>, expected_hash: Option<&str>) -> b
     let (Some(permit), Some(expected_hash)) = (permit, expected_hash) else {
         return false;
     };
-    if permit.len() != 64 || !permit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    if permit.len() != 64
+        || !permit.bytes().all(|byte| byte.is_ascii_hexdigit())
         || expected_hash.len() != 64
         || !expected_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
@@ -94,9 +95,12 @@ fn valid_one_muse_request(expected_run_id: &str, request: &OneMuseRequest<'_>) -
     if request.run_id != Some(expected_run_id)
         || request.url != ONE_MUSE_ENDPOINT
         || request.method != "POST"
-        || !request.headers.is_some_and(|headers| headers.len() == 1
-            && headers.iter().all(|(name, value)|
-                name.eq_ignore_ascii_case("content-type") && value == "application/json"))
+        || !request.headers.is_some_and(|headers| {
+            headers.len() == 1
+                && headers.iter().all(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-type") && value == "application/json"
+                })
+        })
         || !request.allow_private
         || !matches!(request.policy, Some(Policy::SelfHosted))
         || request.admission.is_none_or(|entry| entry.capacity != 1)
@@ -105,12 +109,18 @@ fn valid_one_muse_request(expected_run_id: &str, request: &OneMuseRequest<'_>) -
     {
         return false;
     }
-    let Some(body) = request.body else { return false };
+    let Some(body) = request.body else {
+        return false;
+    };
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return false;
     };
-    let Some(data) = value.as_object() else { return false };
-    if data.keys().any(|key| !matches!(key.as_str(), "model" | "messages" | "stream" | "options"))
+    let Some(data) = value.as_object() else {
+        return false;
+    };
+    if data
+        .keys()
+        .any(|key| !matches!(key.as_str(), "model" | "messages" | "stream" | "options"))
         || data.get("model").and_then(|v| v.as_str()) != Some(ONE_MUSE_MODEL)
         || data.get("stream").and_then(|v| v.as_bool()) != Some(true)
     {
@@ -119,7 +129,9 @@ fn valid_one_muse_request(expected_run_id: &str, request: &OneMuseRequest<'_>) -
     let Some(options) = data.get("options").and_then(|v| v.as_object()) else {
         return false;
     };
-    if options.keys().any(|key| !matches!(key.as_str(), "num_ctx" | "num_predict"))
+    if options
+        .keys()
+        .any(|key| !matches!(key.as_str(), "num_ctx" | "num_predict"))
         || options.get("num_ctx").and_then(|v| v.as_u64()) != Some(32768)
         || options.get("num_predict").and_then(|v| v.as_u64()) != Some(8192)
     {
@@ -128,11 +140,20 @@ fn valid_one_muse_request(expected_run_id: &str, request: &OneMuseRequest<'_>) -
     let Some(messages) = data.get("messages").and_then(|v| v.as_array()) else {
         return false;
     };
-    let [message] = messages.as_slice() else { return false };
-    let Some(message) = message.as_object() else { return false };
-    message.keys().all(|key| matches!(key.as_str(), "role" | "content"))
+    let [message] = messages.as_slice() else {
+        return false;
+    };
+    let Some(message) = message.as_object() else {
+        return false;
+    };
+    message
+        .keys()
+        .all(|key| matches!(key.as_str(), "role" | "content"))
         && message.get("role").and_then(|v| v.as_str()) == Some("user")
-        && message.get("content").and_then(|v| v.as_str()).is_some_and(|text| !text.trim().is_empty())
+        && message
+            .get("content")
+            .and_then(|v| v.as_str())
+            .is_some_and(|text| !text.trim().is_empty())
 }
 
 #[derive(Debug, Serialize)]
@@ -150,12 +171,16 @@ pub fn ai_http_diagnostic_ready(
     run_id: String,
 ) -> Result<OneMuseDiagnosticReady, Failure> {
     if active_one_muse_run()?.as_deref() != Some(run_id.as_str())
-        || !app.try_state::<delivery::DeliveryCapture>()
+        || !app
+            .try_state::<delivery::DeliveryCapture>()
             .is_some_and(|capture| capture.acknowledge_ready(&run_id))
     {
         return Err(Failure::new("diagnostic-not-ready"));
     }
-    Ok(OneMuseDiagnosticReady { run_id, native_ready: true })
+    Ok(OneMuseDiagnosticReady {
+        run_id,
+        native_ready: true,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -627,9 +652,11 @@ pub fn ai_http_request_quiescent(
     state: tauri::State<'_, InferenceState>,
     request_id: String,
 ) -> Result<bool, Failure> {
-    if !request_id.starts_with("inference-") || request_id.len() <= 10 ||
-        !request_id[10..].bytes().all(|b|b.is_ascii_digit()) ||
-        window.label().is_empty() {
+    if !request_id.starts_with("inference-")
+        || request_id.len() <= 10
+        || !request_id[10..].bytes().all(|b| b.is_ascii_digit())
+        || window.label().is_empty()
+    {
         return Err(Failure::new("invalid-request"));
     }
     // The registry is an in-memory singleton per app owner; only lease drop
@@ -644,8 +671,13 @@ pub async fn ai_http_cancel(
     request_id: String,
     cancellation_origin: Option<CancelOrigin>,
 ) -> Result<(), Failure> {
-    state.cancel_with_origin(window.label(), &request_id,
-        cancellation_origin.unwrap_or(CancelOrigin::Unspecified)).await;
+    state
+        .cancel_with_origin(
+            window.label(),
+            &request_id,
+            cancellation_origin.unwrap_or(CancelOrigin::Unspecified),
+        )
+        .await;
     #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
     match acceptance_cancel_ack_fault(&window, &request_id) {
         Some("original-late-cancel-ack") => {
@@ -672,51 +704,79 @@ pub async fn ai_http_cancel(
 }
 #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
 async fn acceptance_hold_original_cancel_ack(
-    window: &tauri::WebviewWindow, id: &str,
+    window: &tauri::WebviewWindow,
+    id: &str,
 ) -> Result<(), Failure> {
     use std::io::Write;
-    let data=window.app_handle().path().app_data_dir()
-        .map_err(|_|Failure::new("cancelled"))?
-        .canonicalize().map_err(|_|Failure::new("cancelled"))?;
-    let root=data.parent().ok_or_else(||Failure::new("cancelled"))?;
+    let data = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .map_err(|_| Failure::new("cancelled"))?
+        .canonicalize()
+        .map_err(|_| Failure::new("cancelled"))?;
+    let root = data.parent().ok_or_else(|| Failure::new("cancelled"))?;
     if !crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(root)
-        || window.app_handle().state::<InferenceState>().completion(id).is_some() {
+        || window
+            .app_handle()
+            .state::<InferenceState>()
+            .completion(id)
+            .is_some()
+    {
         return Err(Failure::new("cancelled"));
     }
-    let held=root.join("cancel-ack-held.json");
-    let release=root.join("cancel-ack-release.json");
-    let returned=root.join("cancel-ack-native-return.json");
-    let mut witness=std::fs::OpenOptions::new().write(true).create_new(true)
-        .open(&held).map_err(|_|Failure::new("cancelled"))?;
-    let value=serde_json::json!({
+    let held = root.join("cancel-ack-held.json");
+    let release = root.join("cancel-ack-release.json");
+    let returned = root.join("cancel-ack-native-return.json");
+    let mut witness = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&held)
+        .map_err(|_| Failure::new("cancelled"))?;
+    let value = serde_json::json!({
         "requestId":id,"hostPid":std::process::id(),
         "actualProductionCancelAndNativeDrainBeforeAck":true,
         "syntheticOnly":true,
     });
-    witness.write_all(&serde_json::to_vec(&value).map_err(|_|Failure::new("cancelled"))?)
-        .and_then(|_|witness.sync_all()).map_err(|_|Failure::new("cancelled"))?;
+    witness
+        .write_all(&serde_json::to_vec(&value).map_err(|_| Failure::new("cancelled"))?)
+        .and_then(|_| witness.sync_all())
+        .map_err(|_| Failure::new("cancelled"))?;
     drop(witness);
     for _ in 0..1500 {
-        if let Ok(raw)=std::fs::read(&release) {
-            let marker: serde_json::Value=serde_json::from_slice(&raw)
-                .map_err(|_|Failure::new("cancelled"))?;
-            if marker["requestId"]!=id || marker["hostPid"]!=std::process::id()
-                || marker["originalCallerAlreadyTerminal"]!=true
-                || marker["syntheticOnly"]!=true {
+        if let Ok(raw) = std::fs::read(&release) {
+            let marker: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|_| Failure::new("cancelled"))?;
+            if marker["requestId"] != id
+                || marker["hostPid"] != std::process::id()
+                || marker["originalCallerAlreadyTerminal"] != true
+                || marker["syntheticOnly"] != true
+            {
                 return Err(Failure::new("cancelled"));
             }
-            if window.app_handle().state::<InferenceState>().completion(id).is_some() {
+            if window
+                .app_handle()
+                .state::<InferenceState>()
+                .completion(id)
+                .is_some()
+            {
                 return Err(Failure::new("cancelled"));
             }
-            let mut output=std::fs::OpenOptions::new().write(true).create_new(true)
-                .open(&returned).map_err(|_|Failure::new("cancelled"))?;
-            let bytes=serde_json::to_vec(&serde_json::json!({
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&returned)
+                .map_err(|_| Failure::new("cancelled"))?;
+            let bytes = serde_json::to_vec(&serde_json::json!({
                 "requestId":id,"hostPid":std::process::id(),
                 "returnedOnlyAfterOriginalCallerTerminal":true,
                 "nativeRegistryStillDrained":true,"syntheticOnly":true,
-            })).map_err(|_|Failure::new("cancelled"))?;
-            output.write_all(&bytes).and_then(|_|output.sync_all())
-                .map_err(|_|Failure::new("cancelled"))?;
+            }))
+            .map_err(|_| Failure::new("cancelled"))?;
+            output
+                .write_all(&bytes)
+                .and_then(|_| output.sync_all())
+                .map_err(|_| Failure::new("cancelled"))?;
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -733,7 +793,13 @@ fn acceptance_cancel_ack_fault(
     request_id: &str,
 ) -> Option<&'static str> {
     use std::os::windows::fs::MetadataExt;
-    let data = window.app_handle().path().app_data_dir().ok()?.canonicalize().ok()?;
+    let data = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .ok()?
+        .canonicalize()
+        .ok()?;
     if data.file_name()? != std::ffi::OsStr::new("data") {
         return None;
     }
@@ -744,20 +810,28 @@ fn acceptance_cancel_ack_fault(
         let marker = root.join("cancel-ack-fault.json");
         let meta = std::fs::symlink_metadata(&marker).ok()?;
         const WINDOWS_REPARSE: u32 = 0x00000400;
-        if !meta.is_file() || meta.file_type().is_symlink()
+        if !meta.is_file()
+            || meta.file_type().is_symlink()
             || meta.file_attributes() & WINDOWS_REPARSE != 0
             || marker.canonicalize().ok()? != marker
         {
             return None;
         }
         let bytes = std::fs::read(&marker).ok()?;
-        if bytes.len() > 1024 { return None; }
+        if bytes.len() > 1024 {
+            return None;
+        }
         let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
         let fault = value["runtimeScenario"].as_str()?;
         if value["syntheticOnly"] != true
             || value["requestId"] != request_id
             || value["hostPid"] != u64::from(std::process::id())
-            || !matches!(fault, "delayed-cancellation-ack" | "cancellation-ack-failure" | "original-late-cancel-ack")
+            || !matches!(
+                fault,
+                "delayed-cancellation-ack"
+                    | "cancellation-ack-failure"
+                    | "original-late-cancel-ack"
+            )
         {
             return None;
         }
@@ -767,10 +841,13 @@ fn acceptance_cancel_ack_fault(
         if fault != "original-late-cancel-ack" {
             let active = root.join("runtime-active.json");
             let meta = std::fs::symlink_metadata(&active).ok()?;
-            if !meta.is_file() || meta.file_type().is_symlink()
+            if !meta.is_file()
+                || meta.file_type().is_symlink()
                 || meta.file_attributes() & WINDOWS_REPARSE != 0
                 || active.canonicalize().ok()? != active
-            { return None; }
+            {
+                return None;
+            }
             let active: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(active).ok()?).ok()?;
             if active["runtimeScenario"] != fault || active["syntheticOnly"] != true {
@@ -821,7 +898,8 @@ pub async fn ai_http_stream(
         if !valid_one_muse_permit(diagnostic_permit.as_deref(), expected_hash.as_deref()) {
             return Err(Failure::new("diagnostic-permit-denied"));
         }
-        let capture = app.try_state::<delivery::DeliveryCapture>()
+        let capture = app
+            .try_state::<delivery::DeliveryCapture>()
             .ok_or_else(|| Failure::new("diagnostic-not-ready"))?;
         // The atomic allowance is consumed before validation or any network action.
         // A malformed first attempt cannot unlock a second request.
@@ -906,7 +984,9 @@ pub async fn ai_http_stream(
     }
     let cancellation = if phase == Phase::Cancelled {
         lease.cancellation_provenance()
-    } else { None };
+    } else {
+        None
+    };
     drop(lease);
     let _ = on_event.send(Event {
         request_id: request_id.clone(),
@@ -928,34 +1008,69 @@ pub async fn ai_http_stream(
 /// NOT an SDK timer, fake handler or parallel request/persistence registry.
 #[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
 fn acceptance_defer_original_native_quiescence(
-    window: &tauri::WebviewWindow, id: &str, phase: Phase, channel: &Channel<Event>,
+    window: &tauri::WebviewWindow,
+    id: &str,
+    phase: Phase,
+    channel: &Channel<Event>,
 ) -> bool {
     if std::env::var("CLACK_LM11_AUTHENTICATED_ACCEPTANCE_SCENARIO").as_deref()
-        != Ok("original-native-quiescence-failure") || phase != Phase::Completed
-        || window.label() != "main" { return false; }
+        != Ok("original-native-quiescence-failure")
+        || phase != Phase::Completed
+        || window.label() != "main"
+    {
+        return false;
+    }
     use std::io::Write;
-    let Some(root)=window.app_handle().path().app_data_dir().ok()
-        .and_then(|p|p.canonicalize().ok())
-        .and_then(|p|p.parent().map(std::path::Path::to_path_buf)) else{return false};
+    let Some(root) = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    else {
+        return false;
+    };
     if !crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(&root)
-        || window.app_handle().state::<InferenceState>().completion(id).is_none() {return false;}
-    let original_native_terminal_sent=channel.send(Event {
-        request_id:id.to_owned(),
-        payload:Payload::Settled {
-            phase: Phase::Completed,error:None,cancellation:None,
-        },
-    }).is_ok();
-    if !original_native_terminal_sent{return false;}
-    let started=root.join("native-quiescence-original-held.json");
-    if let Ok(mut f)=std::fs::OpenOptions::new().create_new(true).write(true).open(&started) {
-        let _=f.write_all(serde_json::json!({
-            "requestId":id,"nativeLeaseStillRegistered":true,
-            "actualHttpResponseAlreadyCompleted":true,
-            "originalNativeTerminalSentBeforeNativeDrain":true,
-            "nativeRegistryDrainHeld":true,
-            "delayMs":3500,"syntheticOnly":true
-        }).to_string().as_bytes());
-        let _=f.sync_all();
+        || window
+            .app_handle()
+            .state::<InferenceState>()
+            .completion(id)
+            .is_none()
+    {
+        return false;
+    }
+    let original_native_terminal_sent = channel
+        .send(Event {
+            request_id: id.to_owned(),
+            payload: Payload::Settled {
+                phase: Phase::Completed,
+                error: None,
+                cancellation: None,
+            },
+        })
+        .is_ok();
+    if !original_native_terminal_sent {
+        return false;
+    }
+    let started = root.join("native-quiescence-original-held.json");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&started)
+    {
+        let _ = f.write_all(
+            serde_json::json!({
+                "requestId":id,"nativeLeaseStillRegistered":true,
+                "actualHttpResponseAlreadyCompleted":true,
+                "originalNativeTerminalSentBeforeNativeDrain":true,
+                "nativeRegistryDrainHeld":true,
+                "delayMs":3500,"syntheticOnly":true
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        let _ = f.sync_all();
     }
     true
 }
@@ -976,33 +1091,58 @@ fn acceptance_schedule_post_terminal_channel_fault(
     if !matches!(phase, Phase::Completed | Phase::Cancelled) || window.label() != "main" {
         return;
     }
-    let Some(root) = window.app_handle().path().app_data_dir().ok()
+    let Some(root) = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .ok()
         .and_then(|data| data.canonicalize().ok())
-        .and_then(|data| (data.file_name() == Some(std::ffi::OsStr::new("data")))
-            .then(|| data.parent().map(std::path::Path::to_path_buf)).flatten())
-    else { return; };
+        .and_then(|data| {
+            (data.file_name() == Some(std::ffi::OsStr::new("data")))
+                .then(|| data.parent().map(std::path::Path::to_path_buf))
+                .flatten()
+        })
+    else {
+        return;
+    };
     if !crate::modules::managed_local_runtime::acceptance_is_owned_webview_root(&root)
-        || !root.file_name().is_some_and(|name| name.to_string_lossy().starts_with("wry-"))
-    { return; }
+        || !root
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("wry-"))
+    {
+        return;
+    }
     let marker = root.join("post-terminal-channel-fault.json");
     let output = root.join("post-terminal-channel-send.json");
     const REPARSE: u32 = 0x00000400;
     let valid_file = |path: &std::path::Path| {
-        std::fs::symlink_metadata(path).ok().is_some_and(|meta|
-            meta.is_file() && !meta.file_type().is_symlink()
+        std::fs::symlink_metadata(path).ok().is_some_and(|meta| {
+            meta.is_file()
+                && !meta.file_type().is_symlink()
                 && meta.file_attributes() & REPARSE == 0
-                && path.canonicalize().ok().as_deref() == Some(path))
+                && path.canonicalize().ok().as_deref() == Some(path)
+        })
     };
-    if !valid_file(&marker) || output.exists() { return; }
-    let Ok(bytes) = std::fs::read(&marker) else { return };
-    if bytes.len() > 1024 { return; }
-    let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return };
+    if !valid_file(&marker) || output.exists() {
+        return;
+    }
+    let Ok(bytes) = std::fs::read(&marker) else {
+        return;
+    };
+    if bytes.len() > 1024 {
+        return;
+    }
+    let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
     let expected = match phase {
-        Phase::Completed if data["scenario"] == "original-duplicate-terminal" =>
-            "original-duplicate-terminal",
+        Phase::Completed if data["scenario"] == "original-duplicate-terminal" => {
+            "original-duplicate-terminal"
+        }
         Phase::Completed => "post-terminal-channel-callback",
-        Phase::Cancelled if data["scenario"] == "post-cancel-original-lm2f-channel" =>
-            "post-cancel-original-lm2f-channel",
+        Phase::Cancelled if data["scenario"] == "post-cancel-original-lm2f-channel" => {
+            "post-cancel-original-lm2f-channel"
+        }
         Phase::Cancelled => "post-cancel-channel-callback",
         _ => return,
     };
@@ -1010,7 +1150,9 @@ fn acceptance_schedule_post_terminal_channel_fault(
         || data["scenario"] != expected
         || data["requestId"] != request_id
         || data["hostPid"] != u64::from(std::process::id())
-    { return; }
+    {
+        return;
+    }
     // DO NOT await the late callback in the original ai_http_stream handler:
     // doing so keeps its renderer IPC Promise pending while the callback
     // arrives, which would not prove a post-terminal renderer callback.
@@ -1033,7 +1175,9 @@ fn acceptance_schedule_post_terminal_channel_fault(
                     if valid_file(&release) {
                         if let Ok(bytes) = std::fs::read(&release) {
                             if bytes.len() <= 2048 {
-                                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                if let Ok(value) =
+                                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                                {
                                     if value["scenario"] == "post-cancel-original-lm2f-channel"
                                         && value["syntheticOnly"] == true
                                         && value["hostPid"] == u64::from(std::process::id())
@@ -1049,7 +1193,9 @@ fn acceptance_schedule_post_terminal_channel_fault(
                     }
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-            }).await.is_ok()
+            })
+            .await
+            .is_ok()
         } else {
             tokio::time::sleep(Duration::from_millis(500)).await;
             true
@@ -1057,22 +1203,36 @@ fn acceptance_schedule_post_terminal_channel_fault(
         // The original lease was dropped before this helper was scheduled.
         // Independently check no *new* registry membership was installed for
         // the exact old ID. This is observation only; never open a request.
-        let old_registry_absent = app.state::<InferenceState>()
-            .completion(&request_id).is_none();
+        let old_registry_absent = app
+            .state::<InferenceState>()
+            .completion(&request_id)
+            .is_none();
         let may_inject = release_confirmed && (!production_lm2f || old_registry_absent);
-        let late_chunk_sent = may_inject && channel.send(Event {
-            request_id: request_id.clone(),
-            payload: Payload::Chunk {
-                bytes: b"LM11-POST-TERMINAL-NATIVE-CHANNEL-ONLY-NO-MODEL".to_vec(),
-            },
-        }).is_ok();
-        let late_terminal_sent = may_inject && channel.send(Event {
-            request_id: request_id.clone(),
-            payload: Payload::Settled {
-                phase, error: None, cancellation: None,
-            },
-        }).is_ok();
-        if let Ok(mut file) = std::fs::OpenOptions::new().create_new(true).write(true).open(&output) {
+        let late_chunk_sent = may_inject
+            && channel
+                .send(Event {
+                    request_id: request_id.clone(),
+                    payload: Payload::Chunk {
+                        bytes: b"LM11-POST-TERMINAL-NATIVE-CHANNEL-ONLY-NO-MODEL".to_vec(),
+                    },
+                })
+                .is_ok();
+        let late_terminal_sent = may_inject
+            && channel
+                .send(Event {
+                    request_id: request_id.clone(),
+                    payload: Payload::Settled {
+                        phase,
+                        error: None,
+                        cancellation: None,
+                    },
+                })
+                .is_ok();
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&output)
+        {
             let recorded = serde_json::json!({
                 "requestId":request_id,
                 "afterOriginalNativeSettled":true,

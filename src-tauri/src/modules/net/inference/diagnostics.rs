@@ -87,26 +87,29 @@ mod enabled {
             if id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
                 return Trace::default();
             }
-            Trace(Some(Box::new(Recording {
-                sink: self.0.clone(),
-                live_sink: self.1.clone(),
-                start: Instant::now(),
-                snapshot: Snapshot {
-                    boundary: "reqwest-http-body-delivery",
-                    request_id: id.into(),
-                    last_request_stage: None,
-                    http_status: None,
-                    failure_code: None,
-                    destination_port: None,
-                    resolved_ip_scope: None,
-                    events: VecDeque::new(),
-                    dropped_events: 0,
-                    body_chunks: 0,
-                    body_bytes: 0,
-                    last_body: None,
-                    last_forwarded: None,
-                },
-            })), super::super::delivery::RequestCapture::default())
+            Trace(
+                Some(Box::new(Recording {
+                    sink: self.0.clone(),
+                    live_sink: self.1.clone(),
+                    start: Instant::now(),
+                    snapshot: Snapshot {
+                        boundary: "reqwest-http-body-delivery",
+                        request_id: id.into(),
+                        last_request_stage: None,
+                        http_status: None,
+                        failure_code: None,
+                        destination_port: None,
+                        resolved_ip_scope: None,
+                        events: VecDeque::new(),
+                        dropped_events: 0,
+                        body_chunks: 0,
+                        body_bytes: 0,
+                        last_body: None,
+                        last_forwarded: None,
+                    },
+                })),
+                super::super::delivery::RequestCapture::default(),
+            )
         }
     }
 
@@ -118,11 +121,15 @@ mod enabled {
     }
 
     #[derive(Default)]
-    pub(crate) struct Trace(Option<Box<Recording>>, super::super::delivery::RequestCapture);
+    pub(crate) struct Trace(
+        Option<Box<Recording>>,
+        super::super::delivery::RequestCapture,
+    );
     impl Trace {
         pub fn from_app(app: &tauri::AppHandle, id: &str) -> Self {
             use tauri::Manager;
-            let mut trace = app.try_state::<AcceptanceDiagnostics>()
+            let mut trace = app
+                .try_state::<AcceptanceDiagnostics>()
                 .map(|s| s.request(id))
                 .unwrap_or_default();
             trace.1 = super::super::delivery::RequestCapture::from_app(app, id);
@@ -132,10 +139,20 @@ mod enabled {
             self.1.record_kind(kind, bytes);
             let Some(recording) = &mut self.0 else { return };
             let snapshot = &mut recording.snapshot;
-            if matches!(kind, Kind::NativeIpcReady | Kind::ResolveStart |
-                Kind::ResolveEnd | Kind::HttpClientBuildStart | Kind::HttpClientReady |
-                Kind::RequestBuilt | Kind::SendAwaitStart | Kind::Headers |
-                Kind::FirstBodyChunk | Kind::ProviderDone | Kind::Eof) {
+            if matches!(
+                kind,
+                Kind::NativeIpcReady
+                    | Kind::ResolveStart
+                    | Kind::ResolveEnd
+                    | Kind::HttpClientBuildStart
+                    | Kind::HttpClientReady
+                    | Kind::RequestBuilt
+                    | Kind::SendAwaitStart
+                    | Kind::Headers
+                    | Kind::FirstBodyChunk
+                    | Kind::ProviderDone
+                    | Kind::Eof
+            ) {
                 snapshot.last_request_stage = Some(kind);
             }
             if kind == Kind::Body {
@@ -225,7 +242,9 @@ impl Trace {
     pub fn from_app(app: &tauri::AppHandle, id: &str) -> Self {
         Self(super::delivery::RequestCapture::from_app(app, id))
     }
-    pub fn record(&mut self, kind: Kind, bytes: usize) { self.0.record_kind(kind, bytes); }
+    pub fn record(&mut self, kind: Kind, bytes: usize) {
+        self.0.record_kind(kind, bytes);
+    }
     pub fn http_status(&mut self, _: u16) {}
     pub fn destination(&mut self, _: Option<u16>, _: &'static str) {}
     pub fn finish(&mut self, _: &Result<(), super::Failure>) {
@@ -289,9 +308,12 @@ mod tests {
         let finished = completed.clone();
         let sink = AcceptanceDiagnostics::new_live(
             move |snapshot| finished.lock().unwrap().push(snapshot.request_id.clone()),
-            move |snapshot| streamed.lock().unwrap().push(
-                (snapshot.request_id.clone(), snapshot.events.back().unwrap().kind)
-            ),
+            move |snapshot| {
+                streamed.lock().unwrap().push((
+                    snapshot.request_id.clone(),
+                    snapshot.events.back().unwrap().kind,
+                ))
+            },
         );
         let mut request = sink.request("inference-8");
         request.record(Kind::Dispatch, 0);

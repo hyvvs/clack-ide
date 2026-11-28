@@ -1,8 +1,11 @@
 use super::Failure;
-use std::collections::HashMap;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
-use tokio::sync::watch;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use tokio::sync::watch;
 
 // Fixed, payload-free provenance. The native receiver does not trust or store
 // caller-supplied text. A stream-consumer cancellation is not proof of *why*
@@ -46,8 +49,10 @@ impl CancelOrigin {
             Self::StreamConsumer => "consumer-cleanup",
             Self::SdkStreamError | Self::ProviderRetryError => "error-cleanup",
             Self::ProviderRetryFinalizer | Self::SettledCleanup => "cleanup",
-            Self::PreflightFailure | Self::ResponseConstructionFailure |
-                Self::NativeCommandFailure | Self::FetchPreparationFailure => "error-cleanup",
+            Self::PreflightFailure
+            | Self::ResponseConstructionFailure
+            | Self::NativeCommandFailure
+            | Self::FetchPreparationFailure => "error-cleanup",
             Self::ParentSignal | Self::Unspecified => "unknown",
         }
     }
@@ -93,22 +98,38 @@ pub struct Entry {
     cancellation: Mutex<Option<CancellationProvenance>>,
 }
 impl Entry {
-    fn note_cancel(&self, id: &str, source: &'static str, layer: &'static str,
-                   reason: &'static str, category: &'static str) {
+    fn note_cancel(
+        &self,
+        id: &str,
+        source: &'static str,
+        layer: &'static str,
+        reason: &'static str,
+        category: &'static str,
+    ) {
         // Preserve the *first* initiating signal, even if cleanup later sends
         // another ai_http_cancel or host shutdown. The watch retains its
         // original boolean-only cancellation semantics.
         let mut first = self.cancellation.lock().unwrap_or_else(|e| e.into_inner());
         if first.is_none() {
             *first = Some(CancellationProvenance {
-                request_id: id.into(), at: now_millis(), source,
-                initiating_layer: layer, reason, category,
+                request_id: id.into(),
+                at: now_millis(),
+                source,
+                initiating_layer: layer,
+                reason,
+                category,
                 provider_request_in_flight: self.provider_request_in_flight.load(Ordering::SeqCst),
             });
         }
     }
-    fn cancel_with(&self, id: &str, source: &'static str, layer: &'static str,
-                   reason: &'static str, category: &'static str) {
+    fn cancel_with(
+        &self,
+        id: &str,
+        source: &'static str,
+        layer: &'static str,
+        reason: &'static str,
+        category: &'static str,
+    ) {
         self.note_cancel(id, source, layer, reason, category);
         self.cancel.send_replace(true);
     }
@@ -194,7 +215,8 @@ impl InferenceState {
     }
 
     pub async fn cancel(&self, owner: &str, id: &str) {
-        self.cancel_with_origin(owner, id, CancelOrigin::Unspecified).await;
+        self.cancel_with_origin(owner, id, CancelOrigin::Unspecified)
+            .await;
     }
     pub async fn cancel_with_origin(&self, owner: &str, id: &str, origin: CancelOrigin) {
         let mut done = {
@@ -217,7 +239,13 @@ impl InferenceState {
                 CancelOrigin::NativeCommandFailure => "native-command-rejected",
                 CancelOrigin::FetchPreparationFailure => "fetch-preparation-failed",
             };
-            entry.cancel_with(id, "webview-cancel-ipc", origin.layer(), reason, origin.category());
+            entry.cancel_with(
+                id,
+                "webview-cancel-ipc",
+                origin.layer(),
+                reason,
+                origin.category(),
+            );
             if !entry.running.load(std::sync::atomic::Ordering::SeqCst) {
                 inner.entries.remove(id);
                 entry.done.send_replace(true);
@@ -235,7 +263,13 @@ impl InferenceState {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = inner.entries.get(id).filter(|e| e.owner == owner) {
             if !entry.running.load(std::sync::atomic::Ordering::SeqCst) {
-                entry.cancel_with(id, "reservation-expiry", "native-registry", "unstarted-reservation-expired", "cleanup");
+                entry.cancel_with(
+                    id,
+                    "reservation-expiry",
+                    "native-registry",
+                    "unstarted-reservation-expired",
+                    "cleanup",
+                );
                 entry.done.send_replace(true);
                 inner.entries.remove(id);
             }
@@ -255,11 +289,21 @@ impl InferenceState {
         }
         inner.entries.retain(|id, entry| {
             if owner.is_none_or(|owner| entry.owner == owner) {
-                entry.cancel_with(id,
-                    if owner.is_some() { "window-close" } else { "host-shutdown" },
+                entry.cancel_with(
+                    id,
+                    if owner.is_some() {
+                        "window-close"
+                    } else {
+                        "host-shutdown"
+                    },
                     "native-lifecycle",
-                    if owner.is_some() { "window-owner-closed" } else { "host-shutdown" },
-                    "cleanup");
+                    if owner.is_some() {
+                        "window-owner-closed"
+                    } else {
+                        "host-shutdown"
+                    },
+                    "cleanup",
+                );
                 if !entry.running.load(std::sync::atomic::Ordering::SeqCst) {
                     entry.done.send_replace(true);
                     return false;
@@ -289,14 +333,25 @@ impl Lease {
     pub fn note_ipc_rejected(&self) {
         // A failed Channel send cancels execution without setting the watch.
         // Record the cause, but do not introduce an additional cancellation.
-        self.entry.note_cancel(&self.id, "native-channel", "native-transport",
-            "ipc-event-delivery-rejected", "transport");
+        self.entry.note_cancel(
+            &self.id,
+            "native-channel",
+            "native-transport",
+            "ipc-event-delivery-rejected",
+            "transport",
+        );
     }
     pub fn mark_provider_dispatched(&self) {
-        self.entry.provider_request_in_flight.store(true, Ordering::SeqCst);
+        self.entry
+            .provider_request_in_flight
+            .store(true, Ordering::SeqCst);
     }
     pub fn cancellation_provenance(&self) -> Option<CancellationProvenance> {
-        self.entry.cancellation.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.entry
+            .cancellation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     pub(crate) fn cancellation_sender(&self) -> watch::Sender<bool> {
         self.entry.cancel.clone()
@@ -324,7 +379,9 @@ impl Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.entry.provider_request_in_flight.store(false, Ordering::SeqCst);
+        self.entry
+            .provider_request_in_flight
+            .store(false, Ordering::SeqCst);
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())

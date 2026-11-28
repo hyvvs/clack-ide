@@ -236,10 +236,12 @@ pub async fn acquire_for_endpoint(
         let _lock = super::super::self_hosted_profiles::WRITE_LOCK
             .lock()
             .map_err(|_| "settings-unavailable")?;
-        let value = super::super::self_hosted_profiles::authoritative_settings_value(app,
-            super::super::self_hosted_profiles::KEY)
-            .map_err(|_| "settings-unavailable")?
-            .unwrap_or(Value::Null);
+        let value = super::super::self_hosted_profiles::authoritative_settings_value(
+            app,
+            super::super::self_hosted_profiles::KEY,
+        )
+        .map_err(|_| "settings-unavailable")?
+        .unwrap_or(Value::Null);
         value["endpoints"].as_array().is_some_and(|es| {
             es.iter()
                 .any(|e| e["id"] == id && e["deletedAt"].is_null() && e["ssh"].is_object())
@@ -293,10 +295,12 @@ pub fn pin_active_url(app: &AppHandle, raw: &str) -> Result<Option<ConnectionLea
     if url.host_str() != Some(HOST) {
         return Ok(None);
     }
-    let value = super::super::self_hosted_profiles::authoritative_settings_value(app,
-        super::super::self_hosted_profiles::KEY)
-        .map_err(|_| "settings-unavailable")?
-        .unwrap_or(Value::Null);
+    let value = super::super::self_hosted_profiles::authoritative_settings_value(
+        app,
+        super::super::self_hosted_profiles::KEY,
+    )
+    .map_err(|_| "settings-unavailable")?
+    .unwrap_or(Value::Null);
     let id = value["endpoints"]
         .as_array()
         .and_then(|es| {
