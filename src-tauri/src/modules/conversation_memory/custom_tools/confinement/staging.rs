@@ -107,6 +107,10 @@ impl Prepared {
             return Err(Failure::UnsupportedSecrets);
         }
         let executable = reviewed(&policy.executable.path, &mut pins, true)?;
+        #[cfg(windows)]
+        if denied_resolved_path(&policy.executable.path, &policy.denied_paths)? {
+            return Err(Failure::UnsupportedSecrets);
+        }
         copy(
             &executable,
             &root.path().join("program.exe"),
@@ -129,6 +133,10 @@ impl Prepared {
                 return Err(Failure::InvalidPolicy);
             }
             let source = reviewed(&input.source, &mut pins, true)?;
+            #[cfg(windows)]
+            if denied_resolved_path(&input.source, &policy.denied_paths)? {
+                return Err(Failure::InvalidPolicy);
+            }
             total += source
                 .metadata()
                 .map_err(|_| Failure::WorkspaceChanged)?
@@ -538,6 +546,15 @@ fn under_case_insensitive(path: &Path, root: &Path) -> bool {
 }
 
 #[cfg(windows)]
+fn denied_resolved_path(path: &Path, denied_paths: &[PathBuf]) -> Result<bool> {
+    let resolved = std::fs::canonicalize(path).map_err(|_| Failure::WorkspaceChanged)?;
+    Ok(denied_paths.iter().any(|denied| {
+        std::fs::canonicalize(denied)
+            .is_ok_and(|canonical| under_case_insensitive(&resolved, &canonical))
+    }))
+}
+
+#[cfg(windows)]
 pub(super) fn supported_host() -> bool {
     use windows_sys::Win32::System::Registry::*;
     if !cfg!(target_arch = "x86_64") {
@@ -628,6 +645,14 @@ fn reviewed(path: &Path, pins: &mut Vec<File>, protect: bool) -> Result<File> {
     #[cfg(unix)]
     let file = unix_open(path, false)?;
     verify_path(&file, path)?;
+    // A Windows short-name alias can hide a sensitive final component (for
+    // example, a secret or credential file) from the original lexical check.
+    // Check the resolved spelling as well, while keeping the pinned open-handle
+    // identity and no-reparse checks mandatory.
+    #[cfg(windows)]
+    if protect && sensitive(&std::fs::canonicalize(path).map_err(|_| Failure::WorkspaceChanged)?) {
+        return Err(Failure::UnsupportedSecrets);
+    }
     let info = identity(&file)?;
     if info.links != 1 || info.reparse || !info.regular {
         return Err(Failure::InvalidPolicy);
@@ -650,8 +675,11 @@ fn verify_path(file: &File, path: &Path) -> Result<()> {
         return Err(Failure::WorkspaceChanged);
     }
     let actual = String::from_utf16(&buffer[..n]).map_err(|_| Failure::WorkspaceChanged)?;
-    let requested = format!("\\\\?\\{}", path.display());
-    if !actual.eq_ignore_ascii_case(&requested) {
+    // Windows may normalize an existing short-name component or volume spelling
+    // in the handle path. Compare the two resolved paths, retaining the
+    // no-reparse checks and pinned handles above to deny workspace redirects.
+    let requested = std::fs::canonicalize(path).map_err(|_| Failure::WorkspaceChanged)?;
+    if !actual.eq_ignore_ascii_case(&requested.to_string_lossy()) {
         return Err(Failure::WorkspaceChanged);
     }
     Ok(())
