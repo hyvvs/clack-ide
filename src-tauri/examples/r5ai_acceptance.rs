@@ -144,7 +144,7 @@ fn acceptance_confirmed_agent_variant_match(
         || body.get("think").and_then(serde_json::Value::as_bool) != observed_variant
         || body["options"]["num_predict"] != contract.agent.output
         || body["options"]["num_ctx"] != contract.agent.context
-        || !body["tools"].as_array().is_some_and(|tools| !tools.is_empty())
+        || body["tools"].as_array().is_none_or(|tools| tools.is_empty())
     {
         return false;
     }
