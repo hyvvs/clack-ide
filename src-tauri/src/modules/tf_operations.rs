@@ -6,9 +6,11 @@
 use crate::modules::workspace::WorkspaceRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(windows)]
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
