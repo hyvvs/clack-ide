@@ -41,11 +41,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || inputs.expected_sha }}
           persist-credentials: false
       - name: Verify exact source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || inputs.expected_sha }}
         run: |
-          $expected = if ('${{ github.event_name }}' -eq 'pull_request') {
-            '${{ github.event.pull_request.head.sha }}'
-          } else { '${{ inputs.expected_sha }}' }
-          if ($expected -cnotmatch '^[a-f0-9]{40}$' -or (git rev-parse HEAD).Trim() -ne $expected) {
+          $ErrorActionPreference = 'Stop'
+          $expected = $env:EXPECTED_SHA
+          if ($expected -cnotmatch '^[a-f0-9]{40}$') { throw 'Invalid lifecycle source SHA' }
+          $head = @(& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $head.Count -ne 1 -or $head[0].Trim() -ne $expected) {
             throw 'Source lifecycle checkout not exact'
           }
       - name: Compile with locked original toolchain
@@ -81,42 +84,77 @@ jobs:
 
       - name: Verify source and tracked build inputs
         id: source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || inputs.expected_sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = if ('${{ github.event_name }}' -eq 'pull_request') {
-            '${{ github.event.pull_request.head.sha }}'
-          } else { '${{ inputs.expected_sha }}' }
+          $expected = $env:EXPECTED_SHA
           if ($expected -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid exact source SHA' }
-          $actual = (git rev-parse HEAD).Trim()
+          $actualLines = @(& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $actualLines.Count -ne 1) { throw 'Cannot read source revision' }
+          $actual = $actualLines[0].Trim()
           if ($actual -ne $expected) { throw "Wrong source: $actual" }
-          if ((git status --porcelain=v1 --untracked-files=no)) {
-            throw 'Tracked checkout unexpectedly dirty'
-          }
-          git log -1 --format='%H %cI %s'
-          git ls-files --stage package-lock.json src-tauri/Cargo.lock scripts/Build-Tf4NativeBundle.ps1 src-tauri/build.rs src-tauri/tauri.tf4-native.conf.json
+          $dirty = @(& git status --porcelain=v1 --untracked-files=no)
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify tracked checkout cleanliness' }
+          if ($dirty.Count -ne 0) { throw 'Tracked checkout unexpectedly dirty' }
+          $sourceDescription = @(& git log -1 --format='%H %cI %s')
+          if ($LASTEXITCODE -ne 0 -or $sourceDescription.Count -ne 1) { throw 'Cannot read source commit metadata' }
+          $sourceDescription
+          $trackedInputs = @(& git ls-files --stage package-lock.json src-tauri/Cargo.lock scripts/Build-Tf4NativeBundle.ps1 src-tauri/build.rs src-tauri/tauri.tf4-native.conf.json)
+          if ($LASTEXITCODE -ne 0 -or $trackedInputs.Count -ne 5) { throw 'Cannot verify all five tracked build inputs' }
+          $trackedInputs
           Get-FileHash package-lock.json,src-tauri/Cargo.lock,scripts/Build-Tf4NativeBundle.ps1,src-tauri/build.rs,src-tauri/tauri.tf4-native.conf.json -Algorithm SHA256 | Format-Table
           Write-Output "EXACT_SECURITY_SOURCE=$actual" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
           Write-Output "source=$actual" >> $env:GITHUB_OUTPUT
 
       - name: Active Defender and tamper-preserving baseline
         id: av
+        env:
+          VERIFIED_SHA: ${{ steps.source.outputs.source }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $mp = Get-MpComputerStatus -ErrorAction Stop
+          # Begin the threat window before dependency download, compilation or packaging.
           $record = [ordered]@{
-            source = '${{ steps.source.outputs.source }}'
+            source = $env:VERIFIED_SHA
             observedUtc = (Get-Date).ToUniversalTime().ToString('o')
-            runningMode = [string]$mp.AMRunningMode
-            antivirusEnabled = [bool]$mp.AntivirusEnabled
-            realtimeEnabled = [bool]$mp.RealTimeProtectionEnabled
-            tamperProtected = [bool]$mp.IsTamperProtected
-            signatureVersion = [string]$mp.AntivirusSignatureVersion
-            engineVersion = [string]$mp.AMEngineVersion
+            buildWindowStartUtc = (Get-Date).ToUniversalTime().ToString('o')
+            defenderStatusReadable = $false
+            defenderThreatHistoryReadable = $false
+            runningMode = $null
+            antivirusEnabled = $null
+            realtimeEnabled = $null
+            tamperProtected = $null
+            signatureVersion = $null
+            engineVersion = $null
+            baselineDetectionCount = $null
+            baselineDetectionIds = @()
           }
-          $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$env:RUNNER_TEMP/tf4-security-av-before.json" -Encoding UTF8
-          if (-not $record.antivirusEnabled -or -not $record.realtimeEnabled -or
-              $record.runningMode -ne 'Normal' -or -not $record.tamperProtected) {
-            throw 'Active, normal Defender with tamper protection is mandatory BEFORE compiling; do not enable/alter it in CI'
+          try {
+            $mp = Get-MpComputerStatus -ErrorAction Stop
+            $record.defenderStatusReadable = $true
+            $record.runningMode = [string]$mp.AMRunningMode
+            $record.antivirusEnabled = [bool]$mp.AntivirusEnabled
+            $record.realtimeEnabled = [bool]$mp.RealTimeProtectionEnabled
+            $record.tamperProtected = [bool]$mp.IsTamperProtected
+            $record.signatureVersion = [string]$mp.AntivirusSignatureVersion
+            $record.engineVersion = [string]$mp.AMEngineVersion
+            $beforeDetections = @(Get-MpThreatDetection -ErrorAction Stop)
+            $record.defenderThreatHistoryReadable = $true
+            $record.baselineDetectionCount = $beforeDetections.Count
+            $record.baselineDetectionIds = @($beforeDetections | ForEach-Object {
+              $id = [string]$_.DetectionID
+              if ([string]::IsNullOrWhiteSpace($id)) { throw 'Defender baseline detection lacks a stable ID' }
+              $id
+            })
+            if ($record.runningMode -ne 'Normal' -or -not $record.antivirusEnabled -or
+                -not $record.realtimeEnabled -or -not $record.tamperProtected) {
+              throw 'Active, normal Defender with tamper protection is mandatory BEFORE compiling; do not enable/alter it in CI'
+            }
+          } catch {
+            $record.error = $_.Exception.Message
+            throw
+          } finally {
+            $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$env:RUNNER_TEMP/tf4-security-av-before.json" -Encoding UTF8
           }
 
       - name: Set up independent locked Node 22 toolchain
@@ -154,14 +192,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mp = Get-MpComputerStatus -ErrorAction Stop
-          if (-not $mp.RealTimeProtectionEnabled -or -not $mp.IsTamperProtected) { throw 'Defender changed during build preparation' }
-          $lines = @(& ./scripts/Build-Tf4NativeBundle.ps1 -Bundles nsis)
+          if ($mp.AMRunningMode -ne 'Normal' -or -not $mp.AntivirusEnabled -or
+              -not $mp.RealTimeProtectionEnabled -or -not $mp.IsTamperProtected) {
+            throw 'Defender changed during build preparation'
+          }
+          # Emit authentic Cargo/NSIS diagnostics while preserving a text-only copy on failure.
+          $buildLog = Join-Path $env:RUNNER_TEMP 'tf4-security-native-build.log'
+          & ./scripts/Build-Tf4NativeBundle.ps1 -Bundles nsis *>&1 | Tee-Object -FilePath $buildLog
           if ($LASTEXITCODE -ne 0) { throw "Qualified source build failed" }
-          $preStage = @($lines | Where-Object { $_ -match '^TF4_PRE_STAGE_HOST_SHA256=([0-9a-f]{64})$' })
-          $final = @($lines | Where-Object { $_ -match '^TF4_NATIVE_BUNDLE_BUILD=PASS host_sha256=([0-9a-f]{64})$' })
+          $lines = @(Get-Content -LiteralPath $buildLog -ErrorAction Stop)
+          $preStage = @($lines | Where-Object { $_ -cmatch '^TF4_PRE_STAGE_HOST_SHA256=([0-9a-f]{64})$' })
+          $final = @($lines | Where-Object { $_ -cmatch '^TF4_NATIVE_BUNDLE_BUILD=PASS host_sha256=([0-9a-f]{64})$' })
           if ($preStage.Count -ne 1 -or $final.Count -ne 1) { throw 'Missing authentic build-time native host proof' }
-          $preHash = $preStage[0].Split('=')[1]
-          $finalHash = $final[0].Split('=')[1]
+          $preHash = [regex]::Match($preStage[0], '^TF4_PRE_STAGE_HOST_SHA256=([0-9a-f]{64})$').Groups[1].Value
+          $finalHash = [regex]::Match($final[0], '^TF4_NATIVE_BUNDLE_BUILD=PASS host_sha256=([0-9a-f]{64})$').Groups[1].Value
           if ($preHash -ne $finalHash) { throw 'Pre-stage source to postbundle staged host drift' }
           Write-Output "pre_stage_hash=$preHash" >> $env:GITHUB_OUTPUT
           Write-Output 'The source host matched its staged copy before bundling and the staged copy was immutable after bundling.'
@@ -169,10 +213,14 @@ jobs:
       - name: Read-only hashes of output and independently unpacked payload
         id: provenance
         if: steps.build.outcome == 'success'
+        env:
+          VERIFIED_SHA: ${{ steps.source.outputs.source }}
+          PRE_STAGE_SHA: ${{ steps.build.outputs.pre_stage_hash }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $expected = '${{ steps.source.outputs.source }}'
-          if ((git rev-parse HEAD).Trim() -ne $expected) { throw 'Source drift' }
+          $expected = $env:VERIFIED_SHA
+          $revision = @(& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $revision.Count -ne 1 -or $revision[0].Trim() -ne $expected) { throw 'Source drift' }
           $root = (Get-Location).Path
           $installer = Join-Path $root 'src-tauri/target/release/bundle/nsis/Clack_0.8.0_x64-setup.exe'
           $app = Join-Path $root 'src-tauri/target/release/clack.exe'
@@ -197,6 +245,10 @@ jobs:
           $artifacts = [ordered]@{}
           foreach ($kind in $paths.Keys) {
             $entry = Get-Item -LiteralPath $paths[$kind] -ErrorAction Stop
+            if ($entry.PSIsContainer -or $entry.Length -le 0 -or
+                (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+              throw "Invalid, empty or reparse-point artifact: $kind"
+            }
             $sig = Get-AuthenticodeSignature -LiteralPath $entry.FullName
             $artifacts[$kind] = [ordered]@{
               sha256 = (Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -212,16 +264,28 @@ jobs:
           $hostConsistent = (
             $artifacts.stagedHost.sha256 -eq $artifacts.extractedHost.sha256 -and
             $artifacts.stagedHost.bytes -eq $artifacts.extractedHost.bytes -and
-            $artifacts.stagedHost.sha256 -eq '${{ steps.build.outputs.pre_stage_hash }}'
+            $artifacts.stagedHost.sha256 -eq $env:PRE_STAGE_SHA
           )
-          $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          $mp = Get-MpComputerStatus -ErrorAction Stop
+          if ($mp.AMRunningMode -ne 'Normal' -or -not $mp.AntivirusEnabled -or
+              -not $mp.RealTimeProtectionEnabled -or -not $mp.IsTamperProtected) {
+            throw 'Defender integrity check failed during payload inspection'
+          }
+          function Get-VerifiedGitBlob([string]$path) {
+            $lines = @(& git rev-parse "HEAD:$path")
+            if ($LASTEXITCODE -ne 0 -or $lines.Count -ne 1 -or
+                $lines[0] -cnotmatch '^[0-9a-f]{40}$') {
+              throw "Cannot verify tracked Git blob: $path"
+            }
+            return $lines[0]
+          }
           $report = [ordered]@{
             intent = 'Independent source-pinned build provenance only; NOT a safety verdict'
             repository = $env:GITHUB_REPOSITORY
             workflowRun = $env:GITHUB_RUN_ID
             observedAt = (Get-Date).ToUniversalTime().ToString('o')
             requestedSource = $expected
-            verifiedSource = (git rev-parse HEAD).Trim()
+            verifiedSource = $revision[0].Trim()
             runnerImage = $env:ImageOS
             runnerVersion = $env:ImageVersion
             windowsVersion = [Environment]::OSVersion.VersionString
@@ -231,19 +295,25 @@ jobs:
             npm = (& npm -v).Trim()
             lockedNpmInstall = $true
             lockedCargoBuild = $true
-            bundleScriptBlob = (git rev-parse 'HEAD:scripts/Build-Tf4NativeBundle.ps1').Trim()
-            cargoLockBlob = (git rev-parse 'HEAD:src-tauri/Cargo.lock').Trim()
-            npmLockBlob = (git rev-parse 'HEAD:package-lock.json').Trim()
+            bundleScriptBlob = Get-VerifiedGitBlob 'scripts/Build-Tf4NativeBundle.ps1'
+            cargoLockBlob = Get-VerifiedGitBlob 'src-tauri/Cargo.lock'
+            npmLockBlob = Get-VerifiedGitBlob 'package-lock.json'
+            tauriBuildScriptBlob = Get-VerifiedGitBlob 'src-tauri/build.rs'
+            nativeBundleConfigBlob = Get-VerifiedGitBlob 'src-tauri/tauri.tf4-native.conf.json'
             artifacts = $artifacts
-            preStageCompiledHostSha256 = '${{ steps.build.outputs.pre_stage_hash }}'
+            preStageCompiledHostSha256 = $env:PRE_STAGE_SHA
             stagedAndPackagedHostIdentical = [bool]$hostConsistent
             postBundleCompiledHostEqualsStaged = ($artifacts.compiledHost.sha256 -eq $artifacts.stagedHost.sha256)
             nativeHostIdentityStatus = if ($hostConsistent) { 'PASS_STAGED_PACKAGED' } else { 'FAIL_NEEDS_FORENSIC_REVIEW' }
-            avRunningMode = if ($mp) { [string]$mp.AMRunningMode } else { 'NOT_REPORTED' }
-            avRealTimeEnabled = if ($mp) { [bool]$mp.RealTimeProtectionEnabled } else { $null }
+            # The installer may legitimately patch clack.exe; hash recording is not a
+            # static proof that only an approved NSIS transformation occurred.
+            applicationPayloadIntegrityStatus = 'PARTIAL_APPROVED_NSIS_TRANSFORMATION_NOT_VERIFIED'
+            extractedAppEmbeddedNativeHostPinStatus = 'NOT_INDEPENDENTLY_VERIFIED'
+            avRunningMode = [string]$mp.AMRunningMode
+            avRealTimeEnabled = [bool]$mp.RealTimeProtectionEnabled
             appExecuted = $false
             binariesUploaded = $false
-            verdict = 'NOT_ADJUDICATED'
+            verdict = if ($hostConsistent) { 'PARTIAL_HOST_PROVENANCE_ONLY_APP_INTEGRITY_UNVERIFIED' } else { 'FAIL_NATIVE_HOST_IDENTITY' }
           }
           $outfile = Join-Path $env:RUNNER_TEMP 'tf4-independent-security-build-hashes.json'
           [IO.File]::WriteAllText($outfile,($report | ConvertTo-Json -Depth 10),[Text.Encoding]::UTF8)
@@ -253,43 +323,114 @@ jobs:
             Write-Warning 'Host mismatch: digests recorded in retained JSON before failing.'
             throw 'Actual staged / independently extracted native host identity mismatched'
           }
-          Write-Output 'Independent static build hashes generated; no binaries executed/uploaded' | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
+          Write-Output 'Staged and packaged native host identity verified. Extracted application NSIS transform and embedded pin remain unverified; no binary execution or upload.' | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY
           Write-Output "SECURITY_EVIDENCE_JSON=$outfile"
 
       - name: Preserve hosted Defender status and any build-time detections
         if: always()
+        env:
+          VERIFIED_SHA: ${{ steps.source.outputs.source }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $mp = Get-MpComputerStatus -ErrorAction SilentlyContinue
-          $events = @(Get-MpThreatDetection -ErrorAction SilentlyContinue |
-            Where-Object { @($_.Resources) -match '(?i)clack(.exe|[-\\])|tf4-native-host' } |
-            Select-Object ThreatID,InitialDetectionTime,ActionSuccess,Resources)
           $record = [ordered]@{
             observedAt = (Get-Date).ToUniversalTime().ToString('o')
             intent = 'Isolated hosted source build; do not execute or upload EXE'
-            source = '${{ steps.source.outputs.source }}'
+            source = $env:VERIFIED_SHA
             buildOutcome = '${{ steps.build.outcome }}'
             provenanceOutcome = '${{ steps.provenance.outcome }}'
-            defenderAvailable = [bool]$mp
-            defenderRealtime = if ($mp) { [bool]$mp.RealTimeProtectionEnabled } else { $null }
-            defenderTamperProtected = if ($mp) { [bool]$mp.IsTamperProtected } else { $null }
-            defenderEngine = if ($mp) { [string]$mp.AMEngineVersion } else { $null }
-            defenderIntelligence = if ($mp) { [string]$mp.AntivirusSignatureVersion } else { $null }
-            matchingDefenderEvents = $events
+            buildWindowStartUtc = $null
+            defenderAvailable = $false
+            defenderThreatHistoryReadable = $false
+            defenderRunningMode = $null
+            defenderAntivirusEnabled = $null
+            defenderRealtime = $null
+            defenderTamperProtected = $null
+            defenderEngine = $null
+            defenderIntelligence = $null
+            baselineDetectionCount = $null
+            observedDetectionCount = $null
+            newBuildWindowDetections = @()
+            matchingDefenderEvents = @()
+            securityPostcondition = 'BLOCKED_UNVERIFIED'
             zeroMatchingEventsDoesNotProveSafety = $true
           }
-          $outfile = Join-Path $env:RUNNER_TEMP 'tf4-security-defender-status.json'
-          [IO.File]::WriteAllText($outfile,($record | ConvertTo-Json -Depth 8),[Text.Encoding]::UTF8)
-          if (-not $mp -or -not $mp.RealTimeProtectionEnabled -or
-              -not $mp.IsTamperProtected -or $events.Count -ne 0) {
-            throw 'Active Defender or no-new-detection postcondition not established'
+          try {
+            $baselineFile = Join-Path $env:RUNNER_TEMP 'tf4-security-av-before.json'
+            $baseline = Get-Content -LiteralPath $baselineFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($baseline.source -ne $env:VERIFIED_SHA -or -not $baseline.defenderStatusReadable -or
+                -not $baseline.defenderThreatHistoryReadable -or -not $baseline.buildWindowStartUtc) {
+              throw 'Missing authenticated Defender baseline and threat-history snapshot'
+            }
+            $record.buildWindowStartUtc = [string]$baseline.buildWindowStartUtc
+            $record.baselineDetectionCount = [int]$baseline.baselineDetectionCount
+            $windowStart = [DateTime]::Parse(
+              $record.buildWindowStartUtc,
+              [Globalization.CultureInfo]::InvariantCulture,
+              [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+            $baselineIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($id in @($baseline.baselineDetectionIds)) {
+              if ([string]::IsNullOrWhiteSpace([string]$id)) { throw 'Invalid Defender baseline detection identity' }
+              [void]$baselineIds.Add([string]$id)
+            }
+            if (@($baseline.baselineDetectionIds).Count -ne $record.baselineDetectionCount) {
+              throw 'Defender baseline threat count is inconsistent'
+            }
+            $mp = Get-MpComputerStatus -ErrorAction Stop
+            $record.defenderAvailable = $true
+            $record.defenderRunningMode = [string]$mp.AMRunningMode
+            $record.defenderAntivirusEnabled = [bool]$mp.AntivirusEnabled
+            $record.defenderRealtime = [bool]$mp.RealTimeProtectionEnabled
+            $record.defenderTamperProtected = [bool]$mp.IsTamperProtected
+            $record.defenderEngine = [string]$mp.AMEngineVersion
+            $record.defenderIntelligence = [string]$mp.AntivirusSignatureVersion
+            # Inspect ALL new detections during the dependency/build/package window,
+            # not only executable names; npm/Cargo cache artifacts can also be flagged.
+            $history = @(Get-MpThreatDetection -ErrorAction Stop)
+            $record.defenderThreatHistoryReadable = $true
+            $record.observedDetectionCount = $history.Count
+            $newDetections = @()
+            foreach ($detection in $history) {
+              $id = [string]$detection.DetectionID
+              if ([string]::IsNullOrWhiteSpace($id) -or -not $detection.InitialDetectionTime) {
+                throw 'Defender returned a detection without an auditable identity or timestamp'
+              }
+              $detectedUtc = ([DateTime]$detection.InitialDetectionTime).ToUniversalTime()
+              if (-not $baselineIds.Contains($id) -or $detectedUtc -ge $windowStart) {
+                $newDetections += [ordered]@{
+                  detectionId = $id
+                  threatId = $detection.ThreatID
+                  initialDetectionUtc = $detectedUtc.ToString('o')
+                  actionSuccess = $detection.ActionSuccess
+                  resources = @($detection.Resources)
+                }
+              }
+            }
+            $record.newBuildWindowDetections = @($newDetections)
+            $record.matchingDefenderEvents = @($newDetections)
+            if ($record.defenderRunningMode -ne 'Normal' -or -not $record.defenderAntivirusEnabled -or
+                -not $record.defenderRealtime -or -not $record.defenderTamperProtected) {
+              throw 'Defender is not active, normal and tamper-protected after the build'
+            }
+            if ($newDetections.Count -ne 0) {
+              throw 'New Defender detection observed during the independent build window'
+            }
+            $record.securityPostcondition = 'PASS_ACTIVE_AV_ZERO_NEW_DETECTIONS_NOT_MALWARE_CLEARANCE'
+          } catch {
+            $record.error = $_.Exception.Message
+            throw
+          } finally {
+            $outfile = Join-Path $env:RUNNER_TEMP 'tf4-security-defender-status.json'
+            [IO.File]::WriteAllText($outfile,($record | ConvertTo-Json -Depth 10),[Text.Encoding]::UTF8)
           }
 
-      - name: Upload hash-only build and Defender evidence, no executables
+      - name: Upload JSON evidence and build log, never executables
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: tf4-security-independent-hashes-only-${{ github.run_id }}
-          path: ${{ runner.temp }}/tf4-*security*.json
+          name: tf4-security-independent-evidence-no-executables-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/tf4-*security*.json
+            ${{ runner.temp }}/tf4-security-native-build.log
           if-no-files-found: warn
           retention-days: 30

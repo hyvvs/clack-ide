@@ -35,12 +35,40 @@ pub(crate) fn cancel_native_action_phase(phase: &AtomicU8) -> bool {
         .is_ok()
 }
 
+/// Native actor admission after the original approval has been consumed.
+/// The same helper is used by both native COM and bounded TF3 FORM dispatch.
+/// No irreversible dispatch can be committed unless the ledger write succeeds.
+/// The returned guard remains owned by the actor until it records its receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeDispatchAdmission {
+    Committed,
+    CancelledBeforeDispatch,
+    StaleReservation,
+}
+
+pub(crate) fn admit_native_dispatch_after_write_ahead<T, E>(
+    phase: Option<&AtomicU8>,
+    write_ahead: impl FnOnce() -> Result<T, E>,
+    reservation_valid: impl FnOnce() -> bool,
+) -> Result<(T, NativeDispatchAdmission), E> {
+    let durable = write_ahead()?;
+    let decision = if !reservation_valid() {
+        NativeDispatchAdmission::StaleReservation
+    } else if phase.is_none_or(|phase| !commit_native_action_phase(phase)) {
+        NativeDispatchAdmission::CancelledBeforeDispatch
+    } else {
+        NativeDispatchAdmission::Committed
+    };
+    Ok((durable, decision))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
     use std::sync::Arc;
+    use std::time::Duration;
 
     /// An independent observation of the test's simulated effect. Only the
     /// exact same phase transition used by the native actor may increment it.
@@ -63,10 +91,10 @@ mod tests {
         let effects = Arc::clone(&witnessed);
         let worker = std::thread::spawn(move || {
             cancelled.send(()).unwrap();
-            resume.recv().unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
             try_effect(&other, &effects)
         });
-        advance.recv().unwrap();
+        advance.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(cancel_native_action_phase(&phase));
         allow_dispatch.send(()).unwrap();
         assert!(!worker.join().unwrap());
@@ -85,10 +113,10 @@ mod tests {
         let other = Arc::clone(&phase);
         let worker = std::thread::spawn(move || {
             ready.send(()).unwrap();
-            resume.recv().unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
             cancel_native_action_phase(&other)
         });
-        proceed.recv().unwrap();
+        proceed.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(try_effect(&phase, &witnessed));
         allow_cancel.send(()).unwrap();
         assert!(!worker.join().unwrap());
@@ -144,5 +172,76 @@ mod tests {
         assert!(!cancel_native_action_phase(&spent));
         assert!(!commit_native_action_phase(&cancelled));
         assert!(!cancel_native_action_phase(&cancelled));
+    }
+
+    #[test]
+    fn grouped_case10_real_actor_admission_refuses_dispatch_on_write_failure() {
+        let phase = AtomicU8::new(NATIVE_CLICK_QUEUED);
+        let attempted_write = AtomicUsize::new(0);
+        let actual_effects = AtomicUsize::new(0);
+        let result = admit_native_dispatch_after_write_ahead(
+            Some(&phase),
+            || {
+                attempted_write.fetch_add(1, Ordering::SeqCst);
+                Err::<(), &'static str>("ledger-write-rejected")
+            },
+            || true,
+        );
+        if let Ok((_, NativeDispatchAdmission::Committed)) = result {
+            actual_effects.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(result.unwrap_err(), "ledger-write-rejected");
+        assert_eq!(attempted_write.load(Ordering::SeqCst), 1);
+        assert_eq!(actual_effects.load(Ordering::SeqCst), 0);
+        assert_eq!(phase.load(Ordering::Acquire), NATIVE_CLICK_QUEUED);
+    }
+
+    #[test]
+    fn grouped_case10_real_actor_admission_preserves_cancel_before_dispatch() {
+        let phase = AtomicU8::new(NATIVE_CLICK_QUEUED);
+        let writes = AtomicUsize::new(0);
+        assert!(cancel_native_action_phase(&phase));
+        let (guard, decision) = admit_native_dispatch_after_write_ahead(
+            Some(&phase),
+            || {
+                writes.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, ()>("durably-recorded-possible")
+            },
+            || true,
+        ).unwrap();
+        assert_eq!(guard, "durably-recorded-possible");
+        assert_eq!(decision, NativeDispatchAdmission::CancelledBeforeDispatch);
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert_eq!(phase.load(Ordering::Acquire), NATIVE_CLICK_CANCELLED);
+    }
+
+    #[test]
+    fn grouped_case10_real_actor_admission_commits_only_after_write_ahead() {
+        let phase = AtomicU8::new(NATIVE_CLICK_QUEUED);
+        let writes = AtomicUsize::new(0);
+        let (guard, decision) = admit_native_dispatch_after_write_ahead(
+            Some(&phase),
+            || {
+                assert_eq!(phase.load(Ordering::Acquire), NATIVE_CLICK_QUEUED);
+                writes.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, ()>("durably-recorded-possible")
+            },
+            || true,
+        ).unwrap();
+        assert_eq!(guard, "durably-recorded-possible");
+        assert_eq!(decision, NativeDispatchAdmission::Committed);
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert!(!cancel_native_action_phase(&phase));
+        assert!(!commit_native_action_phase(&phase));
+    }
+
+    #[test]
+    fn grouped_case10_stale_reservation_cannot_commit_even_after_write_ahead() {
+        let phase = AtomicU8::new(NATIVE_CLICK_QUEUED);
+        let (_, decision) = admit_native_dispatch_after_write_ahead(
+            Some(&phase), || Ok::<_, ()>(()), || false,
+        ).unwrap();
+        assert_eq!(decision, NativeDispatchAdmission::StaleReservation);
+        assert_eq!(phase.load(Ordering::Acquire), NATIVE_CLICK_QUEUED);
     }
 }

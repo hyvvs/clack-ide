@@ -45,8 +45,9 @@ use tokio::sync::{watch, Semaphore};
 #[path = "tf_browser_action_phase.rs"]
 mod tf_browser_action_phase;
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-use tf_browser_action_phase::{
-    cancel_native_action_phase, commit_native_action_phase, NATIVE_CLICK_CANCELLED,
+use self::tf_browser_action_phase::{
+    admit_native_dispatch_after_write_ahead, cancel_native_action_phase,
+    commit_native_action_phase, NativeDispatchAdmission, NATIVE_CLICK_CANCELLED,
     NATIVE_CLICK_DISPATCH_COMMITTED, NATIVE_CLICK_QUEUED,
 };
 
@@ -4204,10 +4205,11 @@ async fn execute_confined_native(
                                                             ),
                                                             None,
                                                         ))
-                                                    } else if let Ok(guard) =
-                                                        NativeDurableEffect::begin(
-                                                            &service_app,
-                                                            &grant,
+                                                    } else if let Ok((guard, admission)) =
+                                                        admit_native_dispatch_after_write_ahead(
+                                                            active.native_click_phase.as_ref(),
+                                                            || NativeDurableEffect::begin(&service_app, &grant),
+                                                            || reservation.matches(&token, &target, &action),
                                                         )
                                                     {
                                                         // Persist the one-use possible-effect record
@@ -4215,13 +4217,11 @@ async fn execute_confined_native(
                                                         // commit. A crash cannot slip between the phase
                                                         // transition and the durable no-replay ledger.
                                                         durable_effect = Some(guard);
-                                                        if !reservation.matches(&token, &target, &action) {
+                                                        if admission == NativeDispatchAdmission::StaleReservation {
                                                             Ok((NativeEffectReceipt::classify(
                                                                 NativeEffectTerminal::Stale,
                                                             ), None))
-                                                        } else if active.native_click_phase.as_ref()
-                                                            .is_none_or(|phase| !commit_native_action_phase(phase))
-                                                        {
+                                                        } else if admission == NativeDispatchAdmission::CancelledBeforeDispatch {
                                                             Ok((NativeEffectReceipt::classify(
                                                                 NativeEffectTerminal::CancelledBeforeDispatch,
                                                             ), None))
@@ -4332,19 +4332,21 @@ async fn execute_confined_native(
                                                     } else {
                                                         Ok((NativeEffectReceipt::classify(NativeEffectTerminal::FailedBeforeDispatch), None))
                                                     }
-                                                } else if let Ok(guard) =
-                                                    NativeDurableEffect::begin(&service_app, &grant)
+                                                } else if let Ok((guard, admission)) =
+                                                    admit_native_dispatch_after_write_ahead(
+                                                        active.native_click_phase.as_ref(),
+                                                        || NativeDurableEffect::begin(&service_app, &grant),
+                                                        || reservation.matches(&token, &target, &action),
+                                                    )
                                                 {
                                                     // The write-ahead ledger must exist even if
                                                     // the owner crashes directly after commit.
                                                     durable_effect = Some(guard);
-                                                    if !reservation.matches(&token, &target, &action) {
+                                                    if admission == NativeDispatchAdmission::StaleReservation {
                                                         Ok((NativeEffectReceipt::classify(
                                                             NativeEffectTerminal::Stale,
                                                         ), None))
-                                                    } else if active.native_click_phase.as_ref()
-                                                        .is_none_or(|phase| !commit_native_action_phase(phase))
-                                                    {
+                                                    } else if admission == NativeDispatchAdmission::CancelledBeforeDispatch {
                                                         Ok((NativeEffectReceipt::classify(
                                                             NativeEffectTerminal::CancelledBeforeDispatch,
                                                         ), None))
@@ -7832,20 +7834,24 @@ mod tests {
         });
         state.entries.lock().unwrap().active.insert(token.clone(), active.clone());
         let witnessed_effects = AtomicUsize::new(0);
-        let (ready_tx, ready_rx) = sync_channel(0);
-        let (permit_tx, permit_rx) = sync_channel(0);
+        // Buffered one-shot gates and bounded receives cannot strand a scoped
+        // worker when the parent test fails an assertion before releasing it.
+        let (ready_tx, ready_rx) = sync_channel(1);
+        let (permit_tx, permit_rx) = sync_channel(1);
         std::thread::scope(|scope| {
-            let actor = scope.spawn(|| {
+            let active_ref = &active;
+            let witnessed_ref = &witnessed_effects;
+            let actor = scope.spawn(move || {
                 ready_tx.send(()).unwrap();
-                permit_rx.recv().unwrap();
-                if commit_native_action_phase(active.native_click_phase.as_ref().unwrap()) {
-                    witnessed_effects.fetch_add(1, Ordering::SeqCst);
+                permit_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                if commit_native_action_phase(active_ref.native_click_phase.as_ref().unwrap()) {
+                    witnessed_ref.fetch_add(1, Ordering::SeqCst);
                     true
                 } else {
                     false
                 }
             });
-            ready_rx.recv().unwrap();
+            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             // This is the real application token-cancellation authority,
             // not a test-only bool or a simulated desktop consent.
             assert!(cancel(&token, &state, &web).unwrap());
@@ -7880,16 +7886,18 @@ mod tests {
         });
         state.entries.lock().unwrap().active.insert(token.clone(), active.clone());
         let witnessed_effects = AtomicUsize::new(0);
-        let (committed_tx, committed_rx) = sync_channel(0);
-        let (release_tx, release_rx) = sync_channel(0);
+        let (committed_tx, committed_rx) = sync_channel(1);
+        let (release_tx, release_rx) = sync_channel(1);
         std::thread::scope(|scope| {
-            let actor = scope.spawn(|| {
-                assert!(commit_native_action_phase(active.native_click_phase.as_ref().unwrap()));
-                witnessed_effects.fetch_add(1, Ordering::SeqCst);
+            let active_ref = &active;
+            let witnessed_ref = &witnessed_effects;
+            let actor = scope.spawn(move || {
+                assert!(commit_native_action_phase(active_ref.native_click_phase.as_ref().unwrap()));
+                witnessed_ref.fetch_add(1, Ordering::SeqCst);
                 committed_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             });
-            committed_rx.recv().unwrap();
+            committed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(!cancel(&token, &state, &web).unwrap());
             assert!(!active.cancelled.load(Ordering::Acquire));
             release_tx.send(()).unwrap();

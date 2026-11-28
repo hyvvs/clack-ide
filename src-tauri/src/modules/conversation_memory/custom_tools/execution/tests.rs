@@ -298,6 +298,203 @@ fn grouped_case11_crash_after_write_ahead_before_receipt_is_unknown_forever() {
     assert_eq!(recovered.records[0].effect, "unknown");
 }
 
+#[test]
+fn grouped_case10_native_ledger_failed_write_ahead_cannot_admit_effect() {
+    // Exercise the production record, append and SessionFile persistence path.
+    // The Tauri-only begin_native_browser_effect wrapper cannot be called
+    // without an authenticated live app and original workspace owner.
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let approval = "case10-failed-write-ahead";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    write_ledger(
+        &store,
+        &path,
+        &Ledger {
+            version: 1,
+            records: vec![],
+        },
+    )
+    .unwrap();
+    let before = fs::read(&path).unwrap();
+    let mut proposed = read_ledger(&store, &path).unwrap();
+    append_native_browser_effect(
+        &mut proposed,
+        native_browser_effect_record(owner.clone(), approval),
+        |_| Ok(owner.clone()),
+    )
+    .unwrap();
+    let proposed_value = serde_json::to_value(&proposed).unwrap();
+
+    // This is the same SessionFile::set -> update persistence operation
+    // used by begin_native_browser_effect, with its disk writer failing
+    // deterministically before any durable change. An in-memory candidate
+    // row does not confer dispatch authority.
+    assert!(store
+        .update(&path, "executions", Some(proposed_value.clone()), |_, _| {
+            Err("injected-native-write-ahead-failure".into())
+        })
+        .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(read_ledger(&store, &path).unwrap().records.is_empty());
+    assert!(read_ledger(&session_file::SessionFile::default(), &path)
+        .unwrap()
+        .records
+        .is_empty());
+
+    // Only an independently successful subsequent durable admission may
+    // introduce this record; the original consumed approval remains unique.
+    store
+        .set(&path, "executions", Some(proposed_value))
+        .unwrap();
+    let mut admitted = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(admitted.records.len(), 1);
+    assert_eq!(admitted.records[0].effect, "possible");
+    assert!(append_native_browser_effect(
+        &mut admitted,
+        native_browser_effect_record(owner.clone(), approval),
+        |_| Ok(owner.clone()),
+    )
+    .is_err());
+    assert_eq!(admitted.records.len(), 1);
+}
+
+#[test]
+fn grouped_case11_native_write_ahead_post_replace_error_keeps_once_only_authority() {
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let approval = "case11-ambiguous-sync-original";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    write_ledger(
+        &store,
+        &path,
+        &Ledger {
+            version: 1,
+            records: vec![],
+        },
+    )
+    .unwrap();
+    let mut proposed = read_ledger(&store, &path).unwrap();
+    append_native_browser_effect(
+        &mut proposed,
+        native_browser_effect_record(owner.clone(), approval),
+        |_| Ok(owner.clone()),
+    )
+    .unwrap();
+    let proposed_value = serde_json::to_value(&proposed).unwrap();
+
+    // Simulate an error after atomic file replacement. The native begin
+    // wrapper must treat any set error as non-admission, even when the
+    // effect record may already exist on disk; a repeat must not reuse it.
+    assert!(store
+        .update(&path, "executions", Some(proposed_value), |path, bytes| {
+            super::super::super::atomic_write(path, bytes)?;
+            Err("injected-native-post-replace-sync-failure".into())
+        })
+        .is_err());
+    let mut cached = read_ledger(&store, &path).unwrap();
+    let mut persisted = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(cached.records.len(), 1);
+    assert_eq!(cached.records[0].id, persisted.records[0].id);
+    assert_eq!(persisted.records[0].effect, "possible");
+    for ledger in [&mut cached, &mut persisted] {
+        assert!(append_native_browser_effect(
+            ledger,
+            native_browser_effect_record(owner.clone(), approval),
+            |_| Ok(owner.clone()),
+        )
+        .is_err());
+        assert_eq!(ledger.records.len(), 1);
+    }
+
+    // The recorded possibility must survive a fresh process epoch. A
+    // failed directory-sync acknowledgment is never a safe replay grant.
+    persisted.records[0].epoch = "previous-process".into();
+    write_ledger(&store, &path, &persisted).unwrap();
+    let recovered = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(recovered.records[0].state, "interrupted");
+    assert_eq!(recovered.records[0].effect, "unknown");
+}
+
+#[test]
+fn grouped_case11_native_epoch_recovery_unknown_remains_terminal_on_every_reopen() {
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let approval = "case11-restart-after-durable-admission";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    let mut ledger = Ledger {
+        version: 1,
+        records: vec![],
+    };
+    append_native_browser_effect(
+        &mut ledger,
+        native_browser_effect_record(owner.clone(), approval),
+        |_| Ok(owner.clone()),
+    )
+    .unwrap();
+    write_ledger(&store, &path, &ledger).unwrap();
+    let original_id = ledger.records[0].id.clone();
+    assert_eq!(read_ledger(&session_file::SessionFile::default(), &path)
+        .unwrap()
+        .records[0]
+        .state, "running");
+
+    // Model process death solely as an epoch change; no network, native
+    // process, synthetic human approver or physical effect is involved.
+    ledger.records[0].epoch = "terminated-owner-epoch".into();
+    write_ledger(&store, &path, &ledger).unwrap();
+    for _ in 0..3 {
+        let restarted = session_file::SessionFile::default();
+        let mut recovered = read_ledger(&restarted, &path).unwrap();
+        assert_eq!(recovered.records.len(), 1);
+        assert_eq!(recovered.records[0].id, original_id);
+        assert_eq!(recovered.records[0].state, "interrupted");
+        assert_eq!(recovered.records[0].effect, "unknown");
+        assert_eq!(
+            recovered.records[0].error.as_deref(),
+            Some("interrupted-no-replay")
+        );
+        assert!(!prunable(&recovered.records[0], Ok(owner.clone())));
+        assert!(!recover(&mut recovered, &MEMORY_EPOCH));
+        assert!(append_native_browser_effect(
+            &mut recovered,
+            native_browser_effect_record(owner.clone(), approval),
+            |_| Ok(owner.clone()),
+        )
+        .is_err());
+        // Even with the local epoch forcibly aligned, terminal state
+        // guards reject late contradictory evidence and replay.
+        recovered.records[0].epoch = MEMORY_EPOCH.clone();
+        assert_eq!(
+            settle_native_browser_record(&mut recovered.records[0], true, false).unwrap_err(),
+            "browser-ledger-terminal-no-replay"
+        );
+        assert_eq!(
+            settle_native_browser_record(&mut recovered.records[0], false, true).unwrap_err(),
+            "browser-ledger-terminal-no-replay"
+        );
+        assert_eq!(recovered.records[0].effect, "unknown");
+    }
+}
+
 #[tokio::test]
 async fn mcp_success_preserves_external_provenance_and_untrusted_output_in_t2_history() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
