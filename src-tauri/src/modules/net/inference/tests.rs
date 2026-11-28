@@ -358,7 +358,16 @@ async fn traced_fixture(mode: &str) -> (Result<(), Failure>, serde_json::Value, 
     req.body = Some(b"SECRET_PROMPT".to_vec());
     req.trace = diagnostics.request(&id);
     let emitted = Mutex::new(0);
-    let result = execute(&lease, req, limits(), &|payload| {
+    let mut fixture_limits = limits();
+    // This fixture measures ordering *after* real body delivery. Under loaded
+    // macOS CI the 150ms first-output limit can expire during localhost HTTP
+    // setup, before the 15ms-paced body begins. Give header-producing cases
+    // room to start; retain the strict 150ms no-headers negative and the
+    // unchanged 100ms meaningful-output idle deadline/assertions.
+    if mode != "no-headers" {
+        fixture_limits.first = Some(Duration::from_secs(1));
+    }
+    let result = execute(&lease, req, fixture_limits, &|payload| {
         if matches!(payload, Payload::Chunk { .. }) {
             if mode == "reject" {
                 return false;
