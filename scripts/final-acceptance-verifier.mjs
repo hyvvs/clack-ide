@@ -20,8 +20,21 @@ export const FINAL_CHECK_ACTIVATION_APPROVED = false;
 
 export function makeApi({ token, fetcher = fetch, ownerRepo = REPO } = {}) {
   if (!token) throw new Error('Trusted GITHUB_TOKEN absent');
+  if (ownerRepo !== REPO) throw new Error('GitHub API route escaped trusted repository');
   return async (route, { method = 'GET', body } = {}) => {
-    if (!route.startsWith('/repos/' + ownerRepo + '/') || route.includes('://')) {
+    // The one bare repository metadata endpoint is necessary for main() to
+    // validate default_branch. Everything else must be a real child of the
+    // exact authorized repository, never a textual prefix or normalized URL.
+    const root = '/repos/' + ownerRepo;
+    const path = typeof route === 'string' ? route.split('?')[0] : '';
+    const isMetadata = route === root;
+    const isChild = path.startsWith(root + '/') &&
+      path.slice(1).split('/').every((segment) =>
+        segment.length > 0 && segment !== '.' && segment !== '..');
+    if (!(isMetadata || isChild) ||
+      /[\u0000-\u001f\u007f\\#]/.test(route) ||
+      path.includes('%') || route.includes('://') ||
+      (route.match(/\?/g) || []).length > 1) {
       throw new Error('GitHub API route escaped trusted repository');
     }
     const response = await fetcher(API + route, {
@@ -198,7 +211,7 @@ export async function verifyOnePR(api, prNumber, env = {}) {
   return result;
 }
 
-export async function main(env = process.env) {
+export async function main(env = process.env, { fetcher = fetch } = {}) {
   const eventName = env.GITHUB_EVENT_NAME;
   const payload = JSON.parse((await import('node:fs')).readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
   const repo = env.GITHUB_REPOSITORY;
@@ -206,7 +219,7 @@ export async function main(env = process.env) {
   assert(['workflow_run','pull_request_target','issue_comment','push','schedule'].includes(eventName),
     'Untrusted event mode for verifier');
   assert(env.GITHUB_REF === 'refs/heads/' + BASE, 'Privileged verifier must execute on default branch');
-  const api = makeApi({ token: env.GITHUB_TOKEN });
+  const api = makeApi({ token: env.GITHUB_TOKEN, fetcher });
   const repoInfo = await api('/repos/' + repo);
   assert(repoInfo.default_branch === BASE, 'Trusted repository default branch differs');
   const tip = await api('/repos/' + repo + '/git/ref/heads/' + BASE);

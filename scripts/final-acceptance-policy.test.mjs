@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ACTIONS_APP_ID, BASE, CHECK_NAME, CI_PATH, RECEIPT_DOMAIN, RECEIPT_MARKER,
   REPO, REPOSITORY_ID, REQUIRED_JOBS, immutablePrRunTitle, canonicalReceiptJSON, decideAcceptance,
 } from './final-acceptance-policy.mjs';
 import { externalId, loadCandidateSnapshot, makeApi, upsertTrustedCheck,
-  verifyOnePR, FINAL_CHECK_ACTIVATION_APPROVED } from './final-acceptance-verifier.mjs';
+  verifyOnePR, main, FINAL_CHECK_ACTIVATION_APPROVED } from './final-acceptance-verifier.mjs';
 
 // Synthetic identities and ephemeral in-memory signing keys ONLY. These
 // receipts CANNOT be accepted as CLACK real-world evidence or production data.
@@ -306,6 +310,64 @@ test('API refuses cross-repo routes and does not allow arbitrary host URLs', asy
   await assert.rejects(() => api('https://api.evil.test/'), /escaped trusted repository/);
   await assert.rejects(() => api('/repos/other/repo/pulls/1'), /escaped trusted repository/);
 });
+test('real REST wrapper permits ONLY exact authorized repository metadata and real descendants', async () => {
+  const urls = [];
+  const api = makeApi({ token: 'SYNTHETIC_NOT_A_CREDENTIAL',
+    fetcher: async (url, request) => {
+      urls.push(url);
+      assert.equal(request.headers.Authorization, 'Bearer SYNTHETIC_NOT_A_CREDENTIAL');
+      return { ok: true, status: 200, json: async () => ({ checked: true }) };
+    },
+  });
+  assert.deepEqual(await api('/repos/' + REPO), { checked: true });
+  await api('/repos/' + REPO + '/git/ref/heads/main');
+  await api('/repos/' + REPO + '/commits/' + HEAD + '/check-runs?check_name=' +
+    encodeURIComponent(CHECK_NAME) + '&per_page=100');
+  await api('/repos/' + REPO + '/contents/a?ref=source%2Fbranch');
+  assert.deepEqual(urls, [
+    'https://api.github.com/repos/' + REPO,
+    'https://api.github.com/repos/' + REPO + '/git/ref/heads/main',
+    'https://api.github.com/repos/' + REPO + '/commits/' + HEAD +
+      '/check-runs?check_name=' + CHECK_NAME + '&per_page=100',
+    'https://api.github.com/repos/' + REPO + '/contents/a?ref=source%2Fbranch',
+  ]);
+});
+
+test('REST wrapper rejects prefix confusion, traversal, encoded path ambiguity and external URLs before fetch', async () => {
+  const forbidden = [
+    '/repos/hyvvs/clack-ide-other',
+    '/repos/hyvvs/clack-ide2/pulls/1',
+    '/repos/hyvvs/clack-ide/../other-repo',
+    '/repos/hyvvs/clack-ide/actions/./runs',
+    '/repos/hyvvs/clack-ide//checks',
+    '/repos/hyvvs/clack-ide/%2e%2e/pulls/1',
+    '/repos/hyvvs/clack-ide/%252e%252e/pulls',
+    '/repos/hyvvs/clack-ide/actions%2Fruns',
+    '/repos/hyvvs/clack-ide/%5c..%5cother',
+    '/repos/hyvvs/clack-ide?check_name=forged',
+    '/repos/other/clack-ide',
+    '/repos/hyvvs/another-repo/pulls/1',
+    '//evil.example/repos/hyvvs/clack-ide',
+    'https://api.github.com/repos/hyvvs/clack-ide',
+    'https://evil.example/repos/hyvvs/clack-ide',
+    '/repos/hyvvs/clack-ide/https://evil.example',
+    '/repos/hyvvs/clack-ide/evil\\..\\route',
+    '/repos/hyvvs/clack-ide/branches/main#other',
+    '/repos/hyvvs/clack-ide/pulls/1\r\nInjected: yes',
+    '/repos/hyvvs/clack-ide/contents/x?a=1?b=2',
+  ];
+  let fetchCount = 0;
+  const api = makeApi({ token: 'SYNTHETIC_ONLY', fetcher: async () => {
+    fetchCount++;
+    throw new Error('No rejected URI may reach fetch');
+  } });
+  for (const route of forbidden) {
+    await assert.rejects(() => api(route), /escaped trusted repository/, route);
+  }
+  assert.equal(fetchCount, 0);
+  assert.throws(() => makeApi({ token: 'SYNTHETIC_ONLY', ownerRepo: 'hyvvs/another-repo' }),
+    /escaped trusted repository/);
+});
 test('source workflow separates PR/check identities and retains all exact job names', () => {
   const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const verifier = readFileSync(new URL('../.github/workflows/final-acceptance-verifier.yml', import.meta.url), 'utf8');
@@ -331,6 +393,7 @@ function mockGitHubApi(d) {
   let prReads = 0;
   const api = async (route, options = {}) => {
     calls.push({ route, options });
+    if (route === '/repos/' + REPO) return { default_branch: BASE };
     if (route === '/repos/' + REPO + '/pulls/' + PR) {
       prReads++;
       return d.prReads?.(prReads, d.pr) || d.pr;
@@ -373,6 +436,115 @@ function mockGitHubApi(d) {
   };
   return { api, calls, getFinal: () => finalCheck };
 }
+
+function withSyntheticEvent(payload, callback) {
+  const dir = mkdtempSync(join(tmpdir(), 'clack-governance-event-'));
+  try {
+    const event = join(dir, 'event.json');
+    writeFileSync(event, JSON.stringify(payload));
+    return callback({ dir, event });
+  } finally {
+    // callback is used synchronously when creating files; asynchronous callers
+    // must explicitly await before cleanup instead of using this helper.
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('real main initialization calls exact repository metadata through confined REST wrapper', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'clack-governance-main-'));
+  try {
+    const eventFile = join(dir, 'event.json');
+    writeFileSync(eventFile, JSON.stringify({ issue: { number: 8 } }));
+    const requests = [];
+    const fetcher = async (url) => {
+      requests.push(url);
+      if (url === 'https://api.github.com/repos/' + REPO) return {
+        ok: true, status: 200, json: async () => ({ default_branch: BASE }),
+      };
+      if (url === 'https://api.github.com/repos/' + REPO + '/git/ref/heads/main') return {
+        ok: true, status: 200, json: async () => ({ object: { sha: BASE_SHA } }),
+      };
+      throw new Error('Unrequested mock endpoint ' + url);
+    };
+    await main({
+      GITHUB_EVENT_NAME: 'issue_comment', GITHUB_EVENT_PATH: eventFile,
+      GITHUB_REPOSITORY: REPO, GITHUB_REF: 'refs/heads/main',
+      GITHUB_SHA: BASE_SHA, GITHUB_TOKEN: 'SYNTHETIC_NOT_A_CREDENTIAL',
+    }, { fetcher });
+    assert.deepEqual(requests, [
+      'https://api.github.com/repos/' + REPO,
+      'https://api.github.com/repos/' + REPO + '/git/ref/heads/main',
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('actual Node CLI module entry executes main with exact repo metadata, no real network', () => {
+  withSyntheticEvent({ issue: { number: 8 } }, ({ dir, event }) => {
+    const preload = join(dir, 'mock-fetch.mjs');
+    writeFileSync(preload, `
+globalThis.fetch = async (url) => {
+  if (url === 'https://api.github.com/repos/hyvvs/clack-ide') {
+    return { ok: true, status: 200, json: async () => ({ default_branch: 'main' }) };
+  }
+  if (url === 'https://api.github.com/repos/hyvvs/clack-ide/git/ref/heads/main') {
+    return { ok: true, status: 200, json: async () => ({ object: { sha: '${BASE_SHA}' } }) };
+  }
+  throw new Error('Unexpected synthetic-only fetch: ' + url);
+};
+`);
+    const childEnv = {
+      ...process.env, GITHUB_EVENT_NAME: 'issue_comment', GITHUB_EVENT_PATH: event,
+      GITHUB_REPOSITORY: REPO, GITHUB_REF: 'refs/heads/main',
+      GITHUB_SHA: BASE_SHA, GITHUB_TOKEN: 'SYNTHETIC_NOT_A_CREDENTIAL',
+    };
+    const entry = fileURLToPath(new URL('./final-acceptance-verifier.mjs', import.meta.url));
+    const args = ['--import', pathToFileURL(preload).href, entry];
+    const success = spawnSync(process.execPath, args, { env: childEnv, encoding: 'utf8', timeout: 8000 });
+    assert.equal(success.status, 0, success.stderr || success.error?.message);
+    const stale = spawnSync(process.execPath, args, {
+      env: { ...childEnv, GITHUB_SHA: 'f'.repeat(40) }, encoding: 'utf8', timeout: 8000,
+    });
+    assert.notEqual(stale.status, 0, 'stale default-branch CLI was wrongly accepted');
+    assert.match(stale.stderr, /superseded/);
+  });
+});
+
+test('real main pull_request_target path loads GitHub API and publishes ONLY failure while disabled', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'clack-governance-main-pr-'));
+  const oldExit = process.exitCode;
+  try {
+    const eventFile = join(dir, 'event.json');
+    writeFileSync(eventFile, JSON.stringify({ pull_request: { number: PR } }));
+    const d = fixture();
+    const mock = mockGitHubApi(d);
+    const httpFetch = async (url, options = {}) => {
+      const root = 'https://api.github.com';
+      assert.ok(url.startsWith(root), 'unexpected mock API host');
+      assert.equal(options.headers.Authorization, 'Bearer SYNTHETIC_NOT_A_CREDENTIAL');
+      const output = await mock.api(url.slice(root.length), {
+        method: options.method, body: options.body ? JSON.parse(options.body) : undefined,
+      });
+      return { ok: true, status: 200, json: async () => output };
+    };
+    await main({
+      GITHUB_EVENT_NAME: 'pull_request_target', GITHUB_EVENT_PATH: eventFile,
+      GITHUB_REPOSITORY: REPO, GITHUB_REF: 'refs/heads/main',
+      GITHUB_SHA: BASE_SHA, GITHUB_TOKEN: 'SYNTHETIC_NOT_A_CREDENTIAL',
+      CLACK_EVIDENCE_RECEIPT_PUBLIC_KEY_PEM: evidencePub,
+      CLACK_EVIDENCE_SIGNER_KEY_ID: KEY_ID,
+      CLACK_ACCEPTANCE_OWNER_PUBLIC_KEY_PEM: ownerPub,
+      CLACK_CI_WORKFLOW_ID: '297568453',
+    }, { fetcher: httpFetch });
+    assert.equal(mock.getFinal()?.conclusion, 'failure');
+    assert.equal(process.exitCode, 1);
+    assert.ok(mock.calls.some((x) => x.route === '/repos/' + REPO));
+  } finally {
+    process.exitCode = oldExit;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('mock REST loads only one immutable run attempt and eight real jobs', async () => {
   const d = fixture();

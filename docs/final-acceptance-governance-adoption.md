@@ -7,6 +7,10 @@ maintenance head `7c9434fab86d08d9e1f3ee96e0f00612b4a4557b` and its
 genuine eight-job run `46114988736` are historical inputs, NOT governance
 qualification of this candidate. Original private evidence remains 19 pass,
 LM11 historical T01 blocked. All tests in this branch are synthetic controls.
+Genuine hosted governance CI run `46119175857` qualified all eight jobs and
+successful **Draft portable** frontend acceptance; **full original acceptance
+was not executed**. This is accepted source-level/portable qualification, not
+full private-evidence approval.
 
 ## What is implemented and what is not
 
@@ -36,6 +40,82 @@ positive evaluation is published as **failure**, not success, until a separate
 trusted code review proves issuer isolation, check terminal-state lifecycle,
 and synchronous merge-time revalidation. The prototype must not be mistaken
 for a deployable release gate.
+
+## Independent 2026-11-28 defect review and smallest available adoption path
+
+The original `makeApi()` rejected **its own** initial request `GET
+/repos/hyvvs/clack-ide` while accepting only paths with a trailing `/`. The
+corrected wrapper permits exactly that bare repository metadata endpoint and
+its real descendant paths; it rejects repository prefix collisions, alternate
+repository owners, `..`/`.`/empty path segments, percent-encoded path
+ambiguity, backslashes, URL fragments, control characters, external URLs and
+unapproved repo overrides. The actual `main()` initialization, real CLI
+entrypoint, and mocked full `pull_request_target` → `main()` → REST → check
+publisher execution are now regression-tested using **synthetic** data; no
+actual GitHub write token is used. The full original `npm test` still remains
+unexecuted on the Draft governance PR and original T01 remains blocked.
+
+**Actual read-only repository checks:** `hyvvs/clack-ide` is a **public,
+personal-user-owned** repository (`owner.type=User`, default branch `main`).
+`GET /repos/hyvvs/clack-ide/rulesets` returned `[]`; no currently active
+rulesets exist. The repository collaborators endpoint returned **one** account,
+and PR #50 had **zero** review submissions. `GET /user` did not expose a plan
+name (`plan=null`); do not infer the account's paid tier. Main currently
+enforces admins and conversation resolution but has zero required approvals
+and `required_status_checks=null`. No permission, rule or review changes were
+made by this workstream.
+The observed Actions configuration is `default_workflow_permissions=read`,
+`can_approve_pull_request_reviews=true`. Because PR-authored workflows may
+request elevated permissions where allowed, this setting alone does **not**
+isolate the trusted final-check issuer behind GitHub Actions App `15368`.
+
+**Constrained options (no new service, credentials or plan assumed):**
+
+| Mechanism | Available on this exact repository? | Security conclusion |
+| --- | --- | --- |
+| Public-repo classic branch protection + required eight exact CI contexts, strict base, independent PR approvals, no admin bypass | **Supported but NOT configured**, owner authorization needed | Smallest enforceable *ordinary GitHub* CI/review baseline. Checks still do not prove every essential stage, original private receipt or full 20/20. |
+| Repository branch ruleset requiring PR review/status checks | **API available; no ruleset currently installed** | Can strengthen baseline, not an independent required-workflow/check issuer or synchronous revalidation of a custom signed receipt. |
+| Manual owner-controlled, single-writer serialized integration using the offline verifier just before each merge | **Operationally possible after owner + independent reviewer authorization**, not used here | Lowest operational cost with no new resident service. Review exact PR/source/base/latest run + attempt, all eight raw steps, receipt expiry/revocation, protected workflow blobs, approvals; abort on change. **Not a machine-enforced atomic final-acceptance check** and cannot alone establish the requested race-proof ninth status. |
+| GitHub Actions default-branch `workflow_run` custom ninth check | **Source candidate only; not installed** | Current App ID `15368` is shared with other Actions; completed same-SHA check cannot be assumed revoked or reopened. Fail closed; success remains disabled. |
+| Organization/enterprise ruleset `Require workflows to pass before merging` | **Not available in this personal repository** | Requires separately authorized org/enterprise governance; cannot be enabled merely by adding a repo ruleset. |
+| Native GitHub merge queue | **Not available for personal-user-owned repositories** | Public organization repositories can use it; moving repository ownership is a separate significant authorization, not part of this maintenance task. |
+| Dedicated check-writing GitHub App/always-running validation service | **Not deployed or approved** | Could isolate check issuer but creates credential/installation duties; a custom App alone does not solve stale success and merge-time races. Do not provision as default. |
+
+**Minimum decision now:** retain the separate Draft PR and disabled ninth
+acceptance switch. If the owner wants a minimal **manual** integration path
+later, first appoint at least one genuinely independent reviewer with actual
+write/review ability, review and adopt strict required **genuine eight** CI
+contexts and fresh independent approvals on protected `main`, prohibit
+unreviewed workflow changes and automated merges, and document an exclusive
+owner-held integration window. Only after the full original hosted acceptance
+and separately authenticated private 20/20 have truly passed may the owner
+run the read-only verifier again immediately before a separately authorized
+manual merge, re-reading the exact PR/head/base/workflow blobs, source hashes,
+current run ID/attempt, essential stages, unique current receipt, signature
+key/revocation, expiry and approval state. Abort if any value changes. The
+GitHub merge must be checked for its exact PR head and current target base.
+This is a **human-gated process**, not an independently enforced ninth check;
+if the owner requires *provable automatic merge-time enforcement*, defer
+activation and decide separately on a supported organization merge queue /
+issuer-isolation implementation. No single-writer process can claim immunity
+to all asynchronous stale-check races or privileged concurrent changes.
+
+**Specific lifecycle review:**
+
+| Requirement | Verified implementation/negative control | Blocker before privileged acceptance |
+| --- | --- | --- |
+| Trusted verifier source/workflow | Default-branch-only checkout, exact current `main` SHA guard, CI ID/path, same workflow and test-contract Git blobs | No independently protected main bootstrap or issuer exclusivity; event-time run-title immutability must be demonstrated on real GitHub |
+| Latest CI + rerun attempt | Independent per-attempt job+step APIs, current-run selection, pre-publication recheck, synthetic supersession tests | A rerun can start after final recheck; `workflow_run requested` misses reruns |
+| Same-SHA terminal-check revocation | Explicit refusal to silently reopen completed check; checked in synthetic regression | Cannot guarantee timely revocation on rerun, expiry, deletion, retarget, or policy/key change; old green status may outlive validation |
+| Draft/Ready, stale approvals/base | Live PR draft/base/head check; timeline transition invalidation; `edited` CI events | No independent reviewer and no enforced dismiss-stale/last-push review policy yet; event-to-check race remains |
+| Signed receipt and T01 | Domain-separated Ed25519, keyed receipt with exact test groups, source/base/run/attempt, expiry and uniqueness; synthetic tamper tests | Real original T01 blocked; no authorized 20/20 receipt; revocation cannot synchronously invalidate a completed status |
+| Duplicate/impersonated status | Expected actual eight check IDs/suite/steps; duplicate name fails synthetic policy and publisher | Shared Actions App `15368` and historical same-SHA checks can still be accepted by GitHub independently of prototype reevaluation |
+| Genuine stacked Zod CI | `pull_request` includes Zod branch and `edited`; `workflow_dispatch` contexts deliberately distinct | PR #48 has not been changed or manufactured; independently qualify actual current head/base after separately approved workflow bootstrap |
+
+No cell above constitutes privileged acceptance, signed historical T01
+equivalence, or permission to apply the nine-check JSON. The eighth-context
+baseline also cannot substitute for the required full original acceptance or
+private evidence.
 
 ## Owner-authorized bootstrap — strictly ordered, none performed here
 
