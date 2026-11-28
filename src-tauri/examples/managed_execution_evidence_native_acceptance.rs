@@ -188,7 +188,7 @@ fn restart(app:&tauri::AppHandle,selected:&Selection)->Result<Value,String> {
             "nativeEpoch":second_ready.epoch,
         });
         stop(app,selected,&second_ready.epoch)?;
-        return Ok(enriched);
+        Ok(enriched)
     }
 }
 #[cfg(windows)]

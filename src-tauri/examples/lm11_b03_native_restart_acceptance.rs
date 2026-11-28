@@ -3,7 +3,21 @@
 //! Does NOT run a model, inference, Lab, Agent, GPU or network request.
 //! A benign sleeping instance of THIS binary supplies a real managed PID.
 //! All files and window data live under CLACK_LM11_B03_ACCEPTANCE_ROOT.
-#![cfg(windows)]
+// Generic all-targets checks must not compile the native acceptance host
+// without the matching non-default feature-gated runtime ownership APIs.
+// In that configuration the example fails closed instead of simulating CAS.
+#[cfg(not(all(windows, feature = "lm11-b03-acceptance-harness")))]
+fn main() {
+    panic!("LM11 B03 native acceptance requires Windows and the explicit lm11-b03-acceptance-harness feature");
+}
+
+#[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
+fn main() {
+    native_host::run();
+}
+
+#[cfg(all(windows, feature = "lm11-b03-acceptance-harness"))]
+mod native_host {
 
 use serde_json::{json, Value};
 use std::{fs::{self, File}, path::{Path, PathBuf}, time::{Duration, SystemTime, UNIX_EPOCH}};
@@ -304,7 +318,7 @@ fn run_case(app: &tauri::AppHandle, root: &Path, mode: &str) -> Result<Value, St
         "disk":disk_summary(root)}))
 }
 
-fn main() {
+pub(super) fn run() {
     if std::env::args().any(|s| s == "--b03-benign-child") {
         // An abrupt Tauri crash does not run managed-owner shutdown; this
         // fixture child self-exits promptly without touching any model.
@@ -386,4 +400,5 @@ fn main() {
         })
         .build(context).expect("Real isolated Tauri application")
         .run(|_,_|{});
+}
 }
