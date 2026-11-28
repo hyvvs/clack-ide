@@ -56,9 +56,9 @@ pub fn run(mut command: Command, mut parent: impl Read + Send + 'static) -> i32 
     }
 }
 
-// Spawn paths call this only outside unit tests. Keep the production Unix
-// guardian wrapper while avoiding a test-only dead function.
-#[cfg(all(unix, not(test)))]
+// The POSIX integration suite imports this module with `cfg(test)` and verifies
+// the command wrapper without spawning a real SSH connection.
+#[cfg(unix)]
 pub(super) fn command(original: Command) -> Result<Command, String> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(std::env::current_exe().map_err(|_| "ssh-ownership-failed")?);

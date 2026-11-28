@@ -96,6 +96,27 @@ fn structured_arguments_preserve_spaces_and_disable_shell_proxy_password_and_glo
     assert!(a.contains(&"-N".into()));
     assert_eq!(a.last().unwrap(), &c.host);
 }
+#[cfg(unix)]
+#[test]
+fn guardian_wrapper_preserves_argument_boundaries_in_unit_builds() {
+    let mut original = Command::new("/path with spaces/ssh");
+    original.args(["-i", "/home/test/clé key", "-N"]);
+    let guarded = guardian::command(original).unwrap();
+    let args: Vec<_> = guarded
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            guardian::FLAG,
+            "/path with spaces/ssh",
+            "-i",
+            "/home/test/clé key",
+            "-N"
+        ]
+    );
+}
 #[test]
 fn key_observation_cannot_authenticate_forward_execute_or_modify_actual_trust() {
     let a = observe_args(&config(), "192.0.2.1", Path::new("isolated.observed"));
