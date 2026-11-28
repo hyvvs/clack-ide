@@ -506,30 +506,42 @@ fn check_owner(originals: &Originals, owner: &Owner) -> Result<()> {
 }
 
 fn agent_step_ranges(message: &Value) -> Option<Vec<(usize, usize)>> {
-    if message["role"] != "assistant" { return None; }
+    if message["role"] != "assistant" {
+        return None;
+    }
     let id = message["id"].as_str()?;
     // Reserve the suffix for the deterministic synthetic unit identity.
-    if id.len() > 225 || id.is_empty() || id.chars().any(char::is_control) { return None; }
+    if id.len() > 225 || id.is_empty() || id.chars().any(char::is_control) {
+        return None;
+    }
     let parts = message["parts"].as_array()?;
-    if parts.is_empty() || parts[0]["type"] != "step-start" { return None; }
+    if parts.is_empty() || parts[0]["type"] != "step-start" {
+        return None;
+    }
     let mut result = vec![];
     let mut start = 0;
     for (index, part) in parts.iter().enumerate().skip(1) {
         if part["type"] == "step-start" {
-            result.push((start,index));
+            result.push((start, index));
             start = index;
         }
     }
-    result.push((start,parts.len()));
+    result.push((start, parts.len()));
     Some(result)
 }
 
 fn agent_step_value(message: &Value, step_index: usize) -> Result<Value> {
     let ranges = agent_step_ranges(message).ok_or("memory_invalid_agent_steps")?;
-    let (start,end) = *ranges.get(step_index).ok_or("memory_missing_agent_step")?;
-    let id = message["id"].as_str().ok_or("memory_missing_message_identity")?;
-    let parts = message["parts"].as_array().ok_or("memory_invalid_agent_steps")?;
-    Ok(json!({"id": format!("agent-step:{id}:{step_index}"), "role": "assistant", "parts": &parts[start..end]}))
+    let (start, end) = *ranges.get(step_index).ok_or("memory_missing_agent_step")?;
+    let id = message["id"]
+        .as_str()
+        .ok_or("memory_missing_message_identity")?;
+    let parts = message["parts"]
+        .as_array()
+        .ok_or("memory_invalid_agent_steps")?;
+    Ok(
+        json!({"id": format!("agent-step:{id}:{step_index}"), "role": "assistant", "parts": &parts[start..end]}),
+    )
 }
 
 /// Canonical virtual source projection. Only the opt-in memory revision uses
@@ -541,22 +553,28 @@ fn coverage_units(messages: &[Value], mode: Option<&str>) -> Result<Vec<Value>> 
             let mut result = vec![];
             for message in messages {
                 if let Some(ranges) = agent_step_ranges(message) {
-                    for i in 0..ranges.len() { result.push(agent_step_value(message,i)?); }
-                } else { result.push(message.clone()); }
+                    for i in 0..ranges.len() {
+                        result.push(agent_step_value(message, i)?);
+                    }
+                } else {
+                    result.push(message.clone());
+                }
             }
             // Synthetic identities must not shadow another durable message or
             // another virtual unit. Both the frontend grouping and the native
             // commit/reload contract reject collisions independently.
             let mut ids = BTreeSet::new();
             for source in &result {
-                let id = source["id"].as_str().ok_or("memory_missing_message_identity")?;
+                let id = source["id"]
+                    .as_str()
+                    .ok_or("memory_missing_message_identity")?;
                 valid_id(id)?;
                 if !ids.insert(id) {
                     return Err("memory_duplicate_message_identity".into());
                 }
             }
             Ok(result)
-        },
+        }
         _ => Err("memory_unknown_coverage_mode".into()),
     }
 }
@@ -567,7 +585,9 @@ fn source_value(
     locator: &SourceLocator,
 ) -> Result<(Value, Vec<String>)> {
     match locator {
-        SourceLocator::Message { message_id } | SourceLocator::Part { message_id, .. } | SourceLocator::AgentStep { message_id, .. } => {
+        SourceLocator::Message { message_id }
+        | SourceLocator::Part { message_id, .. }
+        | SourceLocator::AgentStep { message_id, .. } => {
             let message = originals
                 .messages
                 .iter()
@@ -579,8 +599,11 @@ fn source_value(
                     .and_then(|parts| parts.get(*part_index))
                     .ok_or("memory_missing_part")?,
                 SourceLocator::AgentStep { step_index, .. } => {
-                    return Ok((agent_step_value(message, *step_index)?, vec![owner.session_id.clone()]));
-                },
+                    return Ok((
+                        agent_step_value(message, *step_index)?,
+                        vec![owner.session_id.clone()],
+                    ));
+                }
                 _ => message,
             };
             Ok((value.clone(), vec![owner.session_id.clone()]))
@@ -772,7 +795,11 @@ fn read_revision(root: &Path, session_id: &str, id: &str) -> Result<Revision> {
         || revision.policy_version.is_empty()
         || revision.policy_version.len() > 128
         || !valid_hash(&revision.coverage.digest)
-        || revision.coverage.unit_mode.as_deref().is_some_and(|mode| mode != AGENT_STEP_UNITS)
+        || revision
+            .coverage
+            .unit_mode
+            .as_deref()
+            .is_some_and(|mode| mode != AGENT_STEP_UNITS)
         || !valid_hash(&revision.preparation.source.transcript_hash)
         || !valid_hash(&revision.preparation.source.profile_hash)
         || revision.coverage.start >= revision.coverage.end
@@ -930,7 +957,8 @@ fn prepare_revision(
     }
     let source_units = coverage_units(&originals.messages, candidate.unit_mode.as_deref())?;
     if (candidate.unit_mode.as_deref() == Some(AGENT_STEP_UNITS))
-        != (candidate.policy_version == "c1b-extraction-agent-steps-v1") {
+        != (candidate.policy_version == "c1b-extraction-agent-steps-v1")
+    {
         return Err("memory_coverage_policy_mismatch".into());
     }
     if candidate.start >= candidate.end

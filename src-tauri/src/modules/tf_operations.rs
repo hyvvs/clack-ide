@@ -1232,7 +1232,12 @@ mod windows {
         truncated: bool,
     }
 
-    fn walk(path: &Path, depth: u64, config: &WalkConfig<'_>, state: &mut WalkState) -> Result<(), String> {
+    fn walk(
+        path: &Path,
+        depth: u64,
+        config: &WalkConfig<'_>,
+        state: &mut WalkState,
+    ) -> Result<(), String> {
         if depth > config.max_depth || state.matches.len() >= 200 {
             state.truncated = true;
             return Ok(());
@@ -1288,7 +1293,9 @@ mod windows {
                         .contains(&q.to_ascii_lowercase())
                 });
                 if glob_match && query_match {
-                    state.matches.push(serde_json::json!({"path": relative, "bytes": meta.len()}));
+                    state
+                        .matches
+                        .push(serde_json::json!({"path": relative, "bytes": meta.len()}));
                 }
             } else {
                 if meta.len() > FILE_CAP {
@@ -1368,11 +1375,18 @@ mod windows {
                     max_depth: p.request.depth.unwrap_or(4),
                     req: &p.request,
                     cancelled,
-                    deadline: Instant::now() + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
+                    deadline: Instant::now()
+                        + Duration::from_millis(p.request.timeout_ms.unwrap_or(5_000)),
                 };
-                let mut state = WalkState { visited: 0, bytes: 0, matches: Vec::new(), truncated: false };
+                let mut state = WalkState {
+                    visited: 0,
+                    bytes: 0,
+                    matches: Vec::new(),
+                    truncated: false,
+                };
                 walk(path, 0, &config, &mut state)?;
-                let mut out = Outcome::no_effect(serde_json::to_string(&state.matches).map_err(failure)?);
+                let mut out =
+                    Outcome::no_effect(serde_json::to_string(&state.matches).map_err(failure)?);
                 out.stdout_truncated = state.truncated;
                 Ok(out)
             }

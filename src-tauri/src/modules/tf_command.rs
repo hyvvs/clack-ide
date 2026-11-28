@@ -429,7 +429,13 @@ fn run_native(
     crate::modules::proc::hide_console(&mut command);
     run_owned_command(
         command,
-        TfReceiptContext { action, cwd, request_id, actor, approved },
+        TfReceiptContext {
+            action,
+            cwd,
+            request_id,
+            actor,
+            approved,
+        },
         cancelled,
         COMMAND_TIMEOUT,
     )
@@ -582,9 +588,21 @@ fn receipt(
     result: BoundedProcessResult,
 ) -> TfCommandReceipt {
     use sha2::{Digest, Sha256};
-    let TfReceiptContext { action, cwd, request_id, actor, approved } = *context;
+    let TfReceiptContext {
+        action,
+        cwd,
+        request_id,
+        actor,
+        approved,
+    } = *context;
     let BoundedProcessResult {
-        terminal, pid, exit_code, stdout, stderr, stdout_truncated, stderr_truncated,
+        terminal,
+        pid,
+        exit_code,
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
     } = result;
     let stdout_sha256 = format!("{:x}", Sha256::digest(stdout.as_bytes()));
     let stderr_sha256 = format!("{:x}", Sha256::digest(stderr.as_bytes()));
