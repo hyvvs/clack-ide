@@ -54,7 +54,7 @@ export function buildPlan(mode, nodeFiles = discoverNodeTests()) {
   for (const file of [...nodeEvidenceFiles, mixedNode]) {
     if (!nodeFiles.includes(file)) throw new Error(`Missing registered evidence test: ${file}`);
   }
-  const viteBase = [vitest, 'run', '--exclude', 'src-tauri/target/**',
+  const viteBase = [vitest, 'run', '--maxWorkers=4', '--exclude', 'src-tauri/target/**',
     ...nodeFiles.flatMap((file) => ['--exclude', file])];
   const nodeBase = ['--test', '--test-concurrency=4'];
   if (mode === 'all') return [viteBase, [...nodeBase, ...nodeFiles]];

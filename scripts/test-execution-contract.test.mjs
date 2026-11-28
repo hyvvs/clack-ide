@@ -11,6 +11,7 @@ test('all mode retains every Node suite and does not filter Vitest acceptance', 
     assert.ok(node.includes(file));
   }
   assert.ok(!vite.includes('--testNamePattern'));
+  assert.ok(vite.includes('--maxWorkers=4'));
   assert.ok(!node.some((arg) => arg.startsWith('--test-name-pattern=')));
 });
 
