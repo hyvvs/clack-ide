@@ -11,7 +11,7 @@ import { ContextBudgetError } from "@/modules/ai/lib/contextBudget";
 import {
   knownTransportContextLimit,
   modelBudgetLimits,
-  createRequestPreflight,
+  type createRequestPreflight,
 } from "@/modules/ai/lib/requestPreflight";
 import { createProxyFetch } from "@/modules/ai/lib/proxyFetch";
 import { hostedEffortFixture } from "@/modules/ai/lib/reasoningEffort.fixture";

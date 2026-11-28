@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { tool } from "ai";
-import { z } from "zod";
+import type { z } from "zod";
 import type { ToolContext } from "./context";
 import { pathWithin } from "@/modules/ai/lib/toolFabricPolicy";
 import {
