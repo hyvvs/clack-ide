@@ -273,6 +273,11 @@ fn pure_loop_is_fuel_bounded_and_wall_clock_cancellable() {
     );
     let (_root, mut p, input) = fixture(LOOP);
     p.limits.timeout_ms = 100;
+    // Exercise the independent wall-clock boundary without a race against
+    // fuel exhaustion on faster hosts. The preceding case still proves the
+    // genuine 100ms CPU/fuel limit; this fixture remains within the reviewed
+    // 120_000ms maximum CPU policy and never changes production limits.
+    p.limits.cpu_time_ms = 120_000;
     let started = Instant::now();
     assert_eq!(
         Prepared::new(p, vec![input], vec![])

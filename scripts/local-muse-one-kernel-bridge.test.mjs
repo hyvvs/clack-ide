@@ -18,6 +18,9 @@ import { startDeliveryServer } from './local-muse-delivery-cli.mjs';
 const RUN = 'muse-one-0123456789abcdef01234567';
 const PID = 1139;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+// Offline-only mock SSH identity: absolute on both POSIX and Windows. No SSH
+// process uses this path; the production bridge's absolute-path gate remains.
+const OFFLINE_SSH_KEY = path.resolve(os.tmpdir(), 'clack-muse-synthetic-ssh-key');
 
 class Child extends EventEmitter {
   constructor(pid) {
@@ -113,7 +116,7 @@ function scenario({ arm = `TCPARMED ${PID} 11434 4 1 0\n`,
     ['clocks',{sampleCount:3,remoteAnchorMonoUs:100000,
       remoteAnchorUnixUs:1794196108268000,uncertaintyUs:10000}],
   ]);
-  const bridge = createOneMuseKernelBridge({sshKey:'C:\\approved\\id',
+  const bridge = createOneMuseKernelBridge({sshKey:OFFLINE_SSH_KEY,
     workdir:HERE,start,remoteExec,onOperatorStep,armTimeoutMs:300});
   return {bridge,journal,receipts,calls,children,stages:()=>({data,ready,importer,forwarded})};
 }
@@ -288,7 +291,7 @@ test('actual Node import-kernel receives synthetic FIFO EOF and writes durable k
       return {kernelCompletions:s.kernelCompletions,loss:s.dropped+s.sourceLoss,
         pending:s.activeObservations,durable:s.ok && !s.failed && !s.sourceFailed};
     }};
-    const bridge=createOneMuseKernelBridge({sshKey:'C:\\approved\\id',
+    const bridge=createOneMuseKernelBridge({sshKey:OFFLINE_SSH_KEY,
       workdir:path.join(HERE,'..'),start,remoteExec,armTimeoutMs:2000});
     const receipts=new Map([
       ['mapping',{ollamaPid:PID}],
