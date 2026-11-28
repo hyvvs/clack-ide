@@ -601,29 +601,39 @@ pub(crate) fn finish_native_browser_effect(
     observed: bool,
     not_attempted: bool,
 ) -> Result<()> {
-    edit_record(app, id, |record| {
-        if record.tool.id != "tf.browser_operation.v1" || record.epoch != *MEMORY_EPOCH {
-            return Err("browser-ledger-owner-mismatch".into());
+    edit_record(app, id, |record| settle_native_browser_record(record, observed, not_attempted))?;
+    Ok(())
+}
+/// Shared with deterministic source tests, not exposed as an action API.
+/// Only the original owner may promote a dispatched effect on independent
+/// evidence. After a crash, an interrupted ledger row is terminal forever.
+#[cfg(any(test, all(windows, feature = "tf-browser-native-runtime")))]
+fn settle_native_browser_record(
+    record: &mut Record,
+    observed: bool,
+    not_attempted: bool,
+) -> Result<()> {
+    if record.tool.id != "tf.browser_operation.v1" || record.epoch != *MEMORY_EPOCH {
+        return Err("browser-ledger-owner-mismatch".into());
+    }
+    if observed && not_attempted {
+        return Err("browser-ledger-conflicting-effect-evidence".into());
+    }
+    if terminal(&record.state) {
+        // A record recovered as interrupted cannot later become success.
+        if observed || not_attempted {
+            return Err("browser-ledger-terminal-no-replay".into());
         }
-        if terminal(&record.state) {
-            // A record recovered as interrupted cannot later become success.
-            if observed || not_attempted {
-                return Err("browser-ledger-terminal-no-replay".into());
-            }
-        } else {
-            if observed {
-                record.effect = "reported".into();
-                transition(record, "succeeded", None);
-            } else if not_attempted {
-                record.effect = "none".into();
-                transition(record, "failed", Some("native-browser-not-attempted"));
-            } else {
-                record.effect = "unknown".into();
-                transition(record, "interrupted", Some("interrupted-no-replay"));
-            }
-        }
-        Ok(())
-    })?;
+    } else if observed {
+        record.effect = "reported".into();
+        transition(record, "succeeded", None);
+    } else if not_attempted {
+        record.effect = "none".into();
+        transition(record, "failed", Some("native-browser-not-attempted"));
+    } else {
+        record.effect = "unknown".into();
+        transition(record, "interrupted", Some("interrupted-no-replay"));
+    }
     Ok(())
 }
 fn policy(

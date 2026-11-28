@@ -219,6 +219,85 @@ fn grouped_case11_native_browser_ledger_recovers_unknown_and_blocks_duplicate_an
     assert_eq!(reopened.records.len(), MAX_RECORDS);
 }
 
+#[test]
+fn grouped_case10_cancel_before_dispatch_is_durably_not_attempted_and_not_replayable() {
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let token = "case10-original-consumed-approval";
+    let mut ledger = Ledger {
+        version: 1,
+        records: vec![native_browser_effect_record(owner.clone(), token)],
+    };
+    assert_eq!(ledger.records[0].effect, "possible");
+    assert!(settle_native_browser_record(&mut ledger.records[0], false, true).is_ok());
+    assert_eq!(ledger.records[0].state, "failed");
+    assert_eq!(ledger.records[0].effect, "none");
+    assert_eq!(
+        ledger.records[0].error.as_deref(),
+        Some("native-browser-not-attempted")
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    write_ledger(&store, &path, &ledger).unwrap();
+    let reopen = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(reopen.records[0].state, "failed");
+    assert_eq!(reopen.records[0].effect, "none");
+    assert!(append_native_browser_effect(
+        &mut ledger,
+        native_browser_effect_record(owner.clone(), token),
+        |_| Ok(owner.clone())
+    )
+    .is_err());
+    assert!(settle_native_browser_record(&mut ledger.records[0], true, false).is_err());
+}
+
+#[test]
+fn grouped_case11_crash_after_write_ahead_before_receipt_is_unknown_forever() {
+    let owner = Access {
+        session: "chat".into(),
+        workspace: "local:/work".into(),
+        agent: "builtin:coder".into(),
+        run: Some(1),
+    };
+    let token = "case11-consumed-one-use-approval";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tools.json");
+    let store = session_file::SessionFile::default();
+    let mut running = native_browser_effect_record(owner.clone(), token);
+    running.epoch = "previous-process-epoch".into();
+    let original_id = running.id.clone();
+    let ledger = Ledger {
+        version: 1,
+        records: vec![running],
+    };
+    // This write-ahead record exists before the native dispatch phase commits.
+    // A crash before settling cannot drop it or imply NotAttempted.
+    write_ledger(&store, &path, &ledger).unwrap();
+    let mut recovered = read_ledger(&session_file::SessionFile::default(), &path).unwrap();
+    assert_eq!(recovered.records[0].id, original_id);
+    assert_eq!(recovered.records[0].state, "interrupted");
+    assert_eq!(recovered.records[0].effect, "unknown");
+    assert!(!prunable(&recovered.records[0], Ok(owner.clone())));
+    assert!(append_native_browser_effect(
+        &mut recovered,
+        native_browser_effect_record(owner.clone(), token),
+        |_| Ok(owner.clone()),
+    )
+    .is_err());
+    // Even in an attempt to restore the original epoch, a terminal UNKNOWN
+    // cannot subsequently be promoted to either Observed or NotAttempted.
+    recovered.records[0].epoch = MEMORY_EPOCH.clone();
+    assert!(settle_native_browser_record(&mut recovered.records[0], true, false).is_err());
+    assert!(settle_native_browser_record(&mut recovered.records[0], false, true).is_err());
+    assert!(settle_native_browser_record(&mut recovered.records[0], false, false).is_ok());
+    assert_eq!(recovered.records[0].effect, "unknown");
+}
+
 #[tokio::test]
 async fn mcp_success_preserves_external_provenance_and_untrusted_output_in_t2_history() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

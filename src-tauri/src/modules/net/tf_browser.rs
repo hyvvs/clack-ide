@@ -42,6 +42,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::sync::{watch, Semaphore};
 
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+#[path = "tf_browser_action_phase.rs"]
+mod tf_browser_action_phase;
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+use tf_browser_action_phase::{
+    cancel_native_action_phase, commit_native_action_phase, NATIVE_CLICK_CANCELLED,
+    NATIVE_CLICK_DISPATCH_COMMITTED, NATIVE_CLICK_QUEUED,
+};
+
+#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 use super::tf_browser_contract::{
     ActionTarget, BrowserEffect, NativeEffectOutcome, NativeEffectReceipt, NativeEffectTerminal,
     PageSnapshot, SemanticRole,
@@ -77,12 +86,6 @@ const MAX_TEXT: usize = 32 * 1024;
 const MAX_NETWORK_BYTES: usize = 64 * 1024;
 const MAX_TIMEOUT: u64 = 15_000;
 const MAX_URL: usize = 2048;
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-const NATIVE_CLICK_QUEUED: u8 = 0;
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-const NATIVE_CLICK_DISPATCH_COMMITTED: u8 = 1;
-#[cfg(all(windows, feature = "tf-browser-native-runtime"))]
-const NATIVE_CLICK_CANCELLED: u8 = 2;
 static APPROVAL_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 
 fn confined_runtime_packaged() -> bool {
@@ -1841,16 +1844,9 @@ impl Drop for NativeActionQueueGuard<'_> {
             // race used by explicit tf_browser_cancel.
             if let Some(active) = entries.active.get(&self.token) {
                 if let Some(phase) = active.native_click_phase.as_ref() {
-                    if phase
-                        .compare_exchange(
-                            NATIVE_CLICK_QUEUED,
-                            NATIVE_CLICK_CANCELLED,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
-                    {
+                    if cancel_native_action_phase(phase) {
                         active.cancelled.store(true, Ordering::Release);
+                        active.cancel_watch.send_replace(true);
                     }
                 }
             }
@@ -3334,12 +3330,7 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
             if pending.request.operation.native_action() {
                 if let Some(active) = entries.active.remove(token) {
                     if let Some(phase) = active.native_click_phase.as_ref() {
-                        let _ = phase.compare_exchange(
-                            NATIVE_CLICK_QUEUED,
-                            NATIVE_CLICK_CANCELLED,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        );
+                        let _ = cancel_native_action_phase(phase);
                     }
                     active.cancelled.store(true, Ordering::SeqCst);
                     active.cancel_watch.send_replace(true);
@@ -3400,16 +3391,11 @@ pub fn cancel(token: &str, state: &TfBrowserState, web_state: &TfWebState) -> Re
 
 #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
 fn cancel_queued_native_action(active: &Active) -> bool {
-    if !active.native_click_phase.as_ref().is_some_and(|phase| {
-        phase
-            .compare_exchange(
-                NATIVE_CLICK_QUEUED,
-                NATIVE_CLICK_CANCELLED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }) {
+    if !active
+        .native_click_phase
+        .as_ref()
+        .is_some_and(cancel_native_action_phase)
+    {
         return false;
     }
     active.cancelled.store(true, Ordering::Release);
@@ -4218,30 +4204,28 @@ async fn execute_confined_native(
                                                             ),
                                                             None,
                                                         ))
-                                                    } else if active
-                                                        .native_click_phase
-                                                        .as_ref()
-                                                        .is_none_or(|phase| {
-                                                            phase
-                                                                .compare_exchange(
-                                                                    NATIVE_CLICK_QUEUED,
-                                                                    NATIVE_CLICK_DISPATCH_COMMITTED,
-                                                                    Ordering::AcqRel,
-                                                                    Ordering::Acquire,
-                                                                )
-                                                                .is_err()
-                                                        })
-                                                    {
-                                                        Ok((NativeEffectReceipt::classify(
-                                                            NativeEffectTerminal::CancelledBeforeDispatch,
-                                                        ), None))
                                                     } else if let Ok(guard) =
                                                         NativeDurableEffect::begin(
                                                             &service_app,
                                                             &grant,
                                                         )
                                                     {
+                                                        // Persist the one-use possible-effect record
+                                                        // BEFORE any irreversible native/TF3 dispatch
+                                                        // commit. A crash cannot slip between the phase
+                                                        // transition and the durable no-replay ledger.
                                                         durable_effect = Some(guard);
+                                                        if !reservation.matches(&token, &target, &action) {
+                                                            Ok((NativeEffectReceipt::classify(
+                                                                NativeEffectTerminal::Stale,
+                                                            ), None))
+                                                        } else if active.native_click_phase.as_ref()
+                                                            .is_none_or(|phase| !commit_native_action_phase(phase))
+                                                        {
+                                                            Ok((NativeEffectReceipt::classify(
+                                                                NativeEffectTerminal::CancelledBeforeDispatch,
+                                                            ), None))
+                                                        } else {
                                                         let form = recaptured.expect(
                                                             "matched preconsent captured form",
                                                         );
@@ -4344,30 +4328,27 @@ async fn execute_confined_native(
                                                                 NativeEffectTerminal::FailedBeforeDispatch,
                                                             ), None)),
                                                         }
+                                                        }
                                                     } else {
                                                         Ok((NativeEffectReceipt::classify(NativeEffectTerminal::FailedBeforeDispatch), None))
                                                     }
-                                                } else if active
-                                                    .native_click_phase
-                                                    .as_ref()
-                                                    .is_none_or(|phase| {
-                                                        phase
-                                                            .compare_exchange(
-                                                                NATIVE_CLICK_QUEUED,
-                                                                NATIVE_CLICK_DISPATCH_COMMITTED,
-                                                                Ordering::AcqRel,
-                                                                Ordering::Acquire,
-                                                            )
-                                                            .is_err()
-                                                    })
-                                                {
-                                                    Ok((NativeEffectReceipt::classify(
-                                                        NativeEffectTerminal::CancelledBeforeDispatch,
-                                                    ), None))
                                                 } else if let Ok(guard) =
                                                     NativeDurableEffect::begin(&service_app, &grant)
                                                 {
+                                                    // The write-ahead ledger must exist even if
+                                                    // the owner crashes directly after commit.
                                                     durable_effect = Some(guard);
+                                                    if !reservation.matches(&token, &target, &action) {
+                                                        Ok((NativeEffectReceipt::classify(
+                                                            NativeEffectTerminal::Stale,
+                                                        ), None))
+                                                    } else if active.native_click_phase.as_ref()
+                                                        .is_none_or(|phase| !commit_native_action_phase(phase))
+                                                    {
+                                                        Ok((NativeEffectReceipt::classify(
+                                                            NativeEffectTerminal::CancelledBeforeDispatch,
+                                                        ), None))
+                                                    } else {
                                                     // Capture the request floor BEFORE native
                                                     // dispatch: requests begun during the COM
                                                     // call but before its ACK must not be lost.
@@ -4391,6 +4372,7 @@ async fn execute_confined_native(
                                                             .await
                                                     } else {
                                                         browser.dispatch_retained_action_in_control_turn(grant, &reservation).await
+                                                    }
                                                     }
                                                 } else {
                                                     Ok((NativeEffectReceipt::classify(NativeEffectTerminal::FailedBeforeDispatch), None))
@@ -7839,6 +7821,125 @@ mod tests {
     }
     #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
     #[test]
+    fn grouped_case10_real_owner_cancel_first_prevents_dispatch_and_remains_not_attempted() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::mpsc::sync_channel;
+        let (_dir, _registry, state, web) = setup();
+        let token = nonce().unwrap();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        state.entries.lock().unwrap().active.insert(token.clone(), active.clone());
+        let witnessed_effects = AtomicUsize::new(0);
+        let (ready_tx, ready_rx) = sync_channel(0);
+        let (permit_tx, permit_rx) = sync_channel(0);
+        std::thread::scope(|scope| {
+            let actor = scope.spawn(|| {
+                ready_tx.send(()).unwrap();
+                permit_rx.recv().unwrap();
+                if commit_native_action_phase(active.native_click_phase.as_ref().unwrap()) {
+                    witnessed_effects.fetch_add(1, Ordering::SeqCst);
+                    true
+                } else {
+                    false
+                }
+            });
+            ready_rx.recv().unwrap();
+            // This is the real application token-cancellation authority,
+            // not a test-only bool or a simulated desktop consent.
+            assert!(cancel(&token, &state, &web).unwrap());
+            assert!(*active.cancel_watch.borrow());
+            permit_tx.send(()).unwrap();
+            assert!(!actor.join().unwrap());
+        });
+        assert_eq!(witnessed_effects.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            active.native_click_phase.as_ref().unwrap().load(Ordering::Acquire),
+            NATIVE_CLICK_CANCELLED
+        );
+        let effect = NativeEffectReceipt::classify(
+            NativeEffectTerminal::CancelledBeforeDispatch
+        );
+        assert_eq!(effect.effect_state, "NotAttempted");
+        assert_eq!(effect.canonical_terminal, NativeEffectOutcome::Cancelled);
+        assert!(!effect.auto_retry);
+        assert!(!cancel(&token, &state, &web).unwrap());
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn grouped_case10_real_owner_commit_first_must_report_unknown_never_replay() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::mpsc::sync_channel;
+        let (_dir, _registry, state, web) = setup();
+        let token = nonce().unwrap();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        state.entries.lock().unwrap().active.insert(token.clone(), active.clone());
+        let witnessed_effects = AtomicUsize::new(0);
+        let (committed_tx, committed_rx) = sync_channel(0);
+        let (release_tx, release_rx) = sync_channel(0);
+        std::thread::scope(|scope| {
+            let actor = scope.spawn(|| {
+                assert!(commit_native_action_phase(active.native_click_phase.as_ref().unwrap()));
+                witnessed_effects.fetch_add(1, Ordering::SeqCst);
+                committed_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            committed_rx.recv().unwrap();
+            assert!(!cancel(&token, &state, &web).unwrap());
+            assert!(!active.cancelled.load(Ordering::Acquire));
+            release_tx.send(()).unwrap();
+            actor.join().unwrap();
+        });
+        assert_eq!(witnessed_effects.load(Ordering::SeqCst), 1);
+        assert!(!commit_native_action_phase(active.native_click_phase.as_ref().unwrap()));
+        let effect = NativeEffectReceipt::classify(NativeEffectTerminal::Unknown);
+        assert_eq!(effect.canonical_terminal, NativeEffectOutcome::Unknown);
+        assert_eq!(effect.effect_state, "Unknown");
+        assert_eq!(effect.retry, "NEVER_REPLAY");
+        assert!(!effect.auto_retry);
+        assert_eq!(witnessed_effects.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
+    fn grouped_case10_abandoned_ui_future_revokes_queued_active_phase() {
+        let (_dir, _registry, state, web) = setup();
+        let token = nonce().unwrap();
+        let active = Arc::new(Active {
+            native_click_phase: Some(AtomicU8::new(NATIVE_CLICK_QUEUED)),
+            ..Active::default()
+        });
+        state.entries.lock().unwrap().active.insert(token.clone(), active.clone());
+        {
+            let _queue = NativeActionQueueGuard {
+                state: &state,
+                browser_id: "synthetic-original-owner".to_owned(),
+                token: token.clone(),
+            };
+            assert_eq!(
+                active.native_click_phase.as_ref().unwrap().load(Ordering::Acquire),
+                NATIVE_CLICK_QUEUED
+            );
+        }
+        assert_eq!(
+            active.native_click_phase.as_ref().unwrap().load(Ordering::Acquire),
+            NATIVE_CLICK_CANCELLED
+        );
+        assert!(active.cancelled.load(Ordering::Acquire));
+        assert!(*active.cancel_watch.borrow());
+        assert!(!commit_native_action_phase(active.native_click_phase.as_ref().unwrap()));
+        assert!(!cancel(&token, &state, &web).unwrap());
+        // The actor's BusyGuard, not this early-future drop, owns final lease
+        // release for consumed approvals; no physical cleanup is claimed here.
+    }
+
+    #[cfg(all(windows, feature = "tf-browser-native-runtime"))]
+    #[test]
     fn grouped_case10_native_dispatch_and_cancel_have_one_winner() {
         use std::sync::Barrier;
         for _ in 0..32 {
@@ -7858,17 +7959,7 @@ mod tests {
             std::thread::scope(|s| {
                 let dispatch = s.spawn(|| {
                     barrier.wait();
-                    active
-                        .native_click_phase
-                        .as_ref()
-                        .unwrap()
-                        .compare_exchange(
-                            NATIVE_CLICK_QUEUED,
-                            NATIVE_CLICK_DISPATCH_COMMITTED,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
+                    commit_native_action_phase(active.native_click_phase.as_ref().unwrap())
                 });
                 barrier.wait();
                 let cancelled = cancel(&token, &state, &web).unwrap();

@@ -75,6 +75,10 @@ try {
         if ($sourceHash -ne $stagedHash -or $stagedHash -notmatch '^[0-9a-f]{64}$') {
             throw 'TF4 native staged host differs from the exact built executable.'
         }
+        # A later Tauri build may replace target/release/clack-browser-host.exe.
+        # This is the immutable pre-bundle compiled SHA of the actual staged
+        # resource, NOT a post-bundle compilation artifact.
+        Write-Output "TF4_PRE_STAGE_HOST_SHA256=$sourceHash"
         $env:CLACK_TF4_NATIVE_HOST_SHA256 = $stagedHash
         & npm.cmd run tauri -- build --features tf-browser-native-runtime --config $config --bundles $Bundles
         if ($LASTEXITCODE -ne 0) { throw 'TF4 native main application bundle failed.' }
