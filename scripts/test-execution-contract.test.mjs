@@ -4,7 +4,7 @@ import { buildPlan, discoverNodeTests, evidenceRequirements } from './test-execu
 
 test('all mode retains every Node suite and does not filter Vitest acceptance', () => {
   const files = discoverNodeTests();
-  const [vite, shell, node] = buildPlan('all', files);
+  const [vite, recovery, shell, node] = buildPlan('all', files);
   assert.ok(files.length >= 23);
   for (const file of files) {
     assert.ok(vite.some((arg, index) => arg === '--exclude' && vite[index + 1] === file));
@@ -12,6 +12,10 @@ test('all mode retains every Node suite and does not filter Vitest acceptance', 
   }
   assert.ok(!vite.includes('--testNamePattern'));
   assert.ok(vite.includes('--maxWorkers=4'));
+  assert.ok(recovery.includes('--maxWorkers=1'));
+  assert.ok(recovery.includes('src/modules/ai/store/agentRequestFailureRecovery.integration.test.ts'));
+  assert.ok(vite.some((arg, index) => arg === '--exclude' && vite[index + 1] === 'src/modules/ai/store/agentRequestFailureRecovery.integration.test.ts'));
+  assert.ok(!recovery.includes('--testNamePattern'));
   assert.ok(shell.includes('--maxWorkers=1'));
   for (const file of ['scripts/acceptance-approval.test.mjs', 'scripts/acceptance-correction.test.mjs']) {
     assert.ok(vite.some((arg, index) => arg === '--exclude' && vite[index + 1] === file));
@@ -21,7 +25,10 @@ test('all mode retains every Node suite and does not filter Vitest acceptance', 
 });
 
 test('portable filters only named evidence checks and retains mixed deterministic controls', () => {
-  const [vite, shell, node, mixed] = buildPlan('portable');
+  const [vite, recovery, shell, node, mixed] = buildPlan('portable');
+  assert.ok(recovery.includes('src/modules/ai/store/agentRequestFailureRecovery.integration.test.ts'));
+  assert.ok(recovery.includes('--maxWorkers=1'));
+  assert.ok(!recovery.includes('--testNamePattern'));
   assert.ok(shell.includes('--maxWorkers=1'));
   assert.ok(shell.includes('scripts/acceptance-approval.test.mjs'));
   assert.ok(shell.includes('scripts/acceptance-correction.test.mjs'));

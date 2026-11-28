@@ -16,6 +16,11 @@ const nativeShellVitest = [
   'scripts/acceptance-approval.test.mjs',
   'scripts/acceptance-correction.test.mjs',
 ];
+// Native recovery's first-output test drives an exact 120-second fake-clock
+// boundary while its durable checkpoint hashes resolve on the real event loop.
+// A separate worker prevents parallel Vite transform/crypto scheduling from
+// consuming that finite completion window; execute every original assertion.
+const recoveryVitest = 'src/modules/ai/store/agentRequestFailureRecovery.integration.test.ts';
 const museReplay = 'scripts/muse-continuation-allocation-offline-20261104.test.ts';
 const mixedVitest = [
   'src/test/hostedEgressIsolationGuard.test.ts',
@@ -63,12 +68,15 @@ export function buildPlan(mode, nodeFiles = discoverNodeTests()) {
   }
   const viteBase = [vitest, 'run', '--maxWorkers=4', '--exclude', 'src-tauri/target/**',
     ...nodeFiles.flatMap((file) => ['--exclude', file]),
-    ...nativeShellVitest.flatMap((file) => ['--exclude', file])];
+    ...nativeShellVitest.flatMap((file) => ['--exclude', file]),
+    '--exclude', recoveryVitest];
   const shellBase = [vitest, 'run', '--maxWorkers=1', '--exclude', 'src-tauri/target/**', ...nativeShellVitest];
+  const recoveryBase = [vitest, 'run', '--maxWorkers=1', '--exclude', 'src-tauri/target/**', recoveryVitest];
   const nodeBase = ['--test', '--test-concurrency=4'];
-  if (mode === 'all') return [viteBase, shellBase, [...nodeBase, ...nodeFiles]];
+  if (mode === 'all') return [viteBase, recoveryBase, shellBase, [...nodeBase, ...nodeFiles]];
   if (mode === 'portable') return [
     [...viteBase, '--exclude', museReplay, '--testNamePattern', without(mixedVitestEvidence)],
+    recoveryBase,
     shellBase,
     [...nodeBase, ...nodeFiles.filter((file) => !nodeEvidenceFiles.includes(file) && file !== mixedNode)],
     // Node treats a matching parent suite as permission to run its children.
