@@ -2,7 +2,21 @@
 //! authentication-aware loopback HTTP child. No model executable or inference.
 //! This example is available only with `lm11-authenticated-webview-acceptance`.
 //! Every writable path is under a fresh direct child of the fixed cases root.
-#![cfg(windows)]
+// Cargo's generic `--all-targets` check also compiles examples without their
+// explicit opt-in features. Do not compile or expose the physical acceptance
+// harness unless the native owner has its matching feature-gated APIs.
+#[cfg(not(all(windows, feature = "lm11-authenticated-webview-acceptance")))]
+fn main() {
+    panic!("Authenticated WebView acceptance requires Windows and the explicit lm11-authenticated-webview-acceptance feature");
+}
+
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+fn main() {
+    authenticated_host::run();
+}
+
+#[cfg(all(windows, feature = "lm11-authenticated-webview-acceptance"))]
+mod authenticated_host {
 
 use serde_json::{json, Value};
 use sha2::Digest;
@@ -4142,7 +4156,7 @@ fn restart_inspect() -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
+pub(super) fn run() {
     if std::env::args().nth(1).as_deref() == Some("--synthetic-service") {
         if let Err(error) = synthetic_service() {
             eprintln!("Synthetic service failed: {error}");
@@ -4686,4 +4700,5 @@ fn main() {
                 }
             }
         });
+}
 }
