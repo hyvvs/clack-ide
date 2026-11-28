@@ -4,7 +4,7 @@ import { buildPlan, discoverNodeTests, evidenceRequirements } from './test-execu
 
 test('all mode retains every Node suite and does not filter Vitest acceptance', () => {
   const files = discoverNodeTests();
-  const [vite, node] = buildPlan('all', files);
+  const [vite, shell, node] = buildPlan('all', files);
   assert.ok(files.length >= 23);
   for (const file of files) {
     assert.ok(vite.some((arg, index) => arg === '--exclude' && vite[index + 1] === file));
@@ -12,11 +12,19 @@ test('all mode retains every Node suite and does not filter Vitest acceptance', 
   }
   assert.ok(!vite.includes('--testNamePattern'));
   assert.ok(vite.includes('--maxWorkers=4'));
+  assert.ok(shell.includes('--maxWorkers=1'));
+  for (const file of ['scripts/acceptance-approval.test.mjs', 'scripts/acceptance-correction.test.mjs']) {
+    assert.ok(vite.some((arg, index) => arg === '--exclude' && vite[index + 1] === file));
+    assert.ok(shell.includes(file));
+  }
   assert.ok(!node.some((arg) => arg.startsWith('--test-name-pattern=')));
 });
 
 test('portable filters only named evidence checks and retains mixed deterministic controls', () => {
-  const [vite, node, mixed] = buildPlan('portable');
+  const [vite, shell, node, mixed] = buildPlan('portable');
+  assert.ok(shell.includes('--maxWorkers=1'));
+  assert.ok(shell.includes('scripts/acceptance-approval.test.mjs'));
+  assert.ok(shell.includes('scripts/acceptance-correction.test.mjs'));
   const vp = new RegExp(vite[vite.indexOf('--testNamePattern') + 1]);
   const np = new RegExp(mixed.find((arg) => arg.startsWith('--test-name-pattern=')).split('=').slice(1).join('='));
   assert.ok(!vp.test('suite > enumerates REAL production and legacy persisted IDs through normal selectors without ever registering synthetic fixture'));

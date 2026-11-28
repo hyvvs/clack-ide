@@ -9,6 +9,13 @@ import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vitest = 'node_modules/vitest/vitest.mjs';
+// These two suites exercise real per-command PowerShell parsing and filesystem
+// inspection. Run them in their own bounded pool so unrelated Vite transforms
+// do not starve the native parser's existing 5-second *test* deadlines.
+const nativeShellVitest = [
+  'scripts/acceptance-approval.test.mjs',
+  'scripts/acceptance-correction.test.mjs',
+];
 const museReplay = 'scripts/muse-continuation-allocation-offline-20261104.test.ts';
 const mixedVitest = [
   'src/test/hostedEgressIsolationGuard.test.ts',
@@ -55,11 +62,14 @@ export function buildPlan(mode, nodeFiles = discoverNodeTests()) {
     if (!nodeFiles.includes(file)) throw new Error(`Missing registered evidence test: ${file}`);
   }
   const viteBase = [vitest, 'run', '--maxWorkers=4', '--exclude', 'src-tauri/target/**',
-    ...nodeFiles.flatMap((file) => ['--exclude', file])];
+    ...nodeFiles.flatMap((file) => ['--exclude', file]),
+    ...nativeShellVitest.flatMap((file) => ['--exclude', file])];
+  const shellBase = [vitest, 'run', '--maxWorkers=1', '--exclude', 'src-tauri/target/**', ...nativeShellVitest];
   const nodeBase = ['--test', '--test-concurrency=4'];
-  if (mode === 'all') return [viteBase, [...nodeBase, ...nodeFiles]];
+  if (mode === 'all') return [viteBase, shellBase, [...nodeBase, ...nodeFiles]];
   if (mode === 'portable') return [
     [...viteBase, '--exclude', museReplay, '--testNamePattern', without(mixedVitestEvidence)],
+    shellBase,
     [...nodeBase, ...nodeFiles.filter((file) => !nodeEvidenceFiles.includes(file) && file !== mixedNode)],
     // Node treats a matching parent suite as permission to run its children.
     // Use a separate positive selection rather than a broad negative filter.
