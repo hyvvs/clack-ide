@@ -1,8 +1,8 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { canonicalJson } from "@/modules/ai/lib/canonicalJson";
 import { isTfOperationTool, tfOperationEffectful, validateTfOperationInput } from
-  "@/modules/ai/tools/tfOperations";
-import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWeb";
+  "@/modules/ai/tools/tfOperationSchemas";
+import { isTfWebTool, validateTfWebInput } from "@/modules/ai/tools/tfWebSchemas";
 import {
   setAgentWorkspacePermissions,
   type AgentWorkspacePermission,
