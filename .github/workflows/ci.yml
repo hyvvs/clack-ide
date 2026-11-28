@@ -148,7 +148,7 @@ jobs:
           fi
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
@@ -226,7 +226,7 @@ jobs:
           fi
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
@@ -288,7 +288,7 @@ jobs:
           fi
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
@@ -335,7 +335,7 @@ jobs:
           fi
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: ${{ github.event_name != 'workflow_dispatch' }}
       - name: Verify dispatched source checkout
         if: github.event_name == 'workflow_dispatch'
